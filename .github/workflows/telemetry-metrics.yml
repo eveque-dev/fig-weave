@@ -1,0 +1,80 @@
+name: Distribution metrics
+
+# 每天一次，把**发行量**（GitHub Release 资产下载数、PyPI 日下载量、仓库 star）
+# 采集成快照送进分析后端。
+#
+# **和桌面遥测是两条完全不同的链路，别混。**
+#   * 桌面遥测：用户显式同意后，从他自己的机器上发；丢事件必须无声无息。
+#   * 这一条：公开数据，从 CI 上发，不对应任何一个人；**丢数据必须有人看见**，
+#     所以采集器失败就让这个 workflow 红。
+#
+# 上面那条保证只覆盖采集器**执行之后失败**。run 从没被创建时（GitHub 的
+# schedule 会整槽丢弃，2026-08-27 实际发生过）不产生任何红灯，只产生沉默。
+# 补这个洞的是 metrics-freshness.yml——它盯的是「有没有跑」，不是「跑得
+# 对不对」。改这里的 cron 时记得看那边：两道 cron 不能挤进同一个调度窗口。
+#
+# GitHub 的 download_count 是**累计计数器**，采集器发的是快照，区间下载量由
+# 看板在两个快照之间做差（见 docs/analytics/yc-metrics.md）。因此重跑这个
+# workflow 不会让数字翻倍——同一天同一个资产的 snapshot_key 是一样的。
+
+on:
+  schedule:
+    # 每天 03:17 UTC。**刻意不是整点**：整点是 GitHub Actions 的高峰，
+    # 排队几十分钟很常见，而 PyPIStats 的当日数据本来就要等它自己跑批。
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只采集与打印，不上报"
+        type: boolean
+        default: false
+
+# 只读。这个工作流不写仓库、不建 Release、不碰 Pages。
+permissions:
+  contents: read
+
+concurrency:
+  # 两次运行同时上报同一天的快照没有正确性问题（snapshot_key 会去重），
+  # 但没必要；后来者等前面那次跑完。
+  group: distribution-metrics
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.13" }
+
+      - name: 演练（只打印，不上报）
+        if: inputs.dry_run
+        run: python scripts/collect_distribution_metrics.py --dry-run
+
+      - name: 采集并上报
+        if: ${{ !inputs.dry_run }}
+        env:
+          # 内置 token，**只用来读**公开的 Releases API（提高配额而已）。
+          # 上面的 permissions: contents: read 已经把它限死。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 代理的 bearer token。**只能来自 secret**——YAML 里一个字节都不许写。
+          TAVOTTO_METRICS_TOKEN: ${{ secrets.TAVOTTO_METRICS_TOKEN }}
+          # 地址不是秘密：用仓库变量覆盖（演练环境指向自己的代理），
+          # 没配就走脚本里的默认值 https://telemetry.tavotto.com/v1/metrics
+          TAVOTTO_TELEMETRY_METRICS_URL: ${{ vars.TAVOTTO_TELEMETRY_METRICS_URL }}
+          # Actions 本来就会注入它；显式写一遍是为了让「脚本依赖这个变量」
+          # 在这里看得见——「没配 token」在本仓库是真失败、在 fork 里是预期内
+          # 的未配置，分档要先知道自己是谁（见 `token_situation`）。
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        # **判定整个在脚本里，这里一行 shell 都不写。** 原来这里有一段
+        # `if [ -z "$TAVOTTO_METRICS_TOKEN" ]; then echo "::error::..."` ——
+        # 两个毛病：
+        #   1. 同一条保证实现了两遍（脚本里也判），而 YAML 这份还盖住了脚本
+        #      那份，脚本里那条分支在 CI 上永远走不到；
+        #   2. Actions 会把这一步的 shell 源码原样打进 `##[group]Run …` 抬头。
+        #      于是 2026-09-02 那份日志里**同时**出现了「上报失败: HTTP 400」和
+        #      「仓库还没配 TAVOTTO_METRICS_TOKEN」——后者根本没执行，只是被
+        #      回显的源码，却让 issue #227 一开始就把病因记成了「没配 token」。
+        #      实际上那次 token 配得好好的（代理对认证问题回 401，不是 400）。
+        run: python scripts/collect_distribution_metrics.py

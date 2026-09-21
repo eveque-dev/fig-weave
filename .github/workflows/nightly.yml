@@ -1,0 +1,823 @@
+name: Nightly install matrix
+
+# 每晚一次的重装测试。不排列组合所有情况——只取几台有代表性的组合：
+#   * 无 Python（**装完必须照样能渲染**——安装包自带内置 runtime）/ conda / 官方 Python
+#   * 中文系统区域 + 中文用户名
+#   * 普通用户、无管理员权限、低权限目录
+#   * 断网启动
+#
+# 每次提交都跑这些太贵（PR 上跑的是 ci.yml 里的 windows-exe-smoke），
+# 但每天至少要验证一遍——安装器、升级覆盖、卸载这条链路只有真装一遍才知道。
+on:
+  schedule:
+    - cron: "0 18 * * *"     # UTC 18:00 = 北京时间次日 02:00
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# CI 里跑起来的每一个 Tavotto 进程都**硬关**匿名用量统计。
+# 单靠「配置目录是新的、同意态是 unset」不够：那是默认值，而默认值会变、
+# 会被某个用例改掉、会被缓存的用户目录带进来。CI 绝不能产生真实的产品事件——
+# 一台每天跑几十次的机器足以让「有多少人在用」这个数字彻底失真。
+# 与 TAVOTTO_NO_UPDATE_CHECK 是两个独立开关，别指望其中一个代管另一个。
+env:
+  TAVOTTO_NO_TELEMETRY: "1"
+
+jobs:
+  # ────────────────────────────────────────────────────────────────
+  # 线上更新链的消费者保真检查
+  #
+  # 发布链上每条既有绿灯量的都是**生产者侧的替身指标**（zip 存在、.sig 存在、
+  # 文件名匹配、清单两平台齐全），没有一步以真实消费者（tauri-plugin-updater）
+  # 的身份消费产物——于是「签名后重打 zip 用了 deflate、插件只解得开 STORED」
+  # 让 Windows 应用内更新从 v0.7.0 起坏了四个版本，而整条链全绿。
+  # 这个 job 每晚下载**线上已发布**的 latest.json 与它指向的全部平台更新包：
+  # 应用内置公钥 minisign 验签；Windows 包用与插件逐字同形态的 zip 依赖
+  # （default-features = false，见 tools/updater-extract-probe）真解一次并
+  # 断言顶层恰好一个 exe；macOS 包做 tar.gz 解包冒烟。
+  # 查线上而不是构建产物：这个 bug 住在**发出去的字节**里（签名后重打那步），
+  # 构建机上的中间产物检查（tests/test_updater_zip.py）抓不住这类回归。
+  #
+  # ⚠️ **对 v0.10.0 及更早的线上版本，这个 job 是红的——这是预期，说明门禁
+  # 真的在量**（那批 Windows 更新包就是 deflate 的坏产物）。下一个正式版本
+  # 发布后它会转绿。发布前看到红灯，请不要来「修」这个门禁。
+  # ────────────────────────────────────────────────────────────────
+  updater-consumer-fidelity:
+    timeout-minutes: 60  # 上限是防挂死、不是性能预算：把损失从「无限」变成「有界」
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: tools/updater-extract-probe
+      - name: 装 minisign（验签用的是应用内置公钥，工具本身随 runner 装）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+      - name: 构建插件同形态的解包探针
+        run: cargo build --release --manifest-path tools/updater-extract-probe/Cargo.toml
+      - name: 消费者保真检查（先反证自检，再打线上）
+        # 退出码约定见脚本抬头。2 = 网络波动（GitHub 抓不下来）——那不是产物
+        # 信号，且明晚就会再量一次，所以降级成 warning 而不是红灯；其余非零
+        # 一律红：抓下来了却消费不了，正是这条门禁唯一要挡的东西。
+        run: |
+          set -uo pipefail
+          rc=0
+          python3 scripts/ci/updater_consumer_check.py \
+            --probe tools/updater-extract-probe/target/release/updater-extract-probe \
+            --workdir "$RUNNER_TEMP/updater-consumer-check" || rc=$?
+          if [ "$rc" = "2" ]; then
+            echo "::warning::GitHub 抓取失败（infra 波动），本晚跳过线上检查——断言一条都没跑"
+            exit 0
+          fi
+          exit "$rc"
+
+  # ────────────────────────────────────────────────────────────────
+  # Matplotlib 版本矩阵（CompatBench）
+  #
+  # 「Tavotto 支持 matplotlib >= 3.8」以前只是 pyproject 里的一句话——
+  # 实际发行的内置 runtime 是 3.11.x，浏览器 playground 是 3.10.x，而宣称的
+  # 那条下界**从来没有人跑过**。这个 job 让三档都真的跑一遍 corpus。
+  #
+  # 版本从锁文件现读（`tests/compat/matrix.json` 只写「去哪读」），唯一写死
+  # 精确版本的是 minimum——它不对应任何发行产物，而 `pip install
+  # matplotlib>=3.8` 在 CI 上等于装 latest，那样这一档什么都没验。
+  #
+  # 放在 GitHub 托管机上：minimum 那档要 Python 3.10（matplotlib 3.8 不支持
+  # 3.13），self-hosted 实验室机上未必有；`setup-python` 现成。
+  # 不跑保真度：那是 lab-ci 的 nightly 档在**一个固定机器**上做的事，
+  # 换机器比像素没有意义。
+  # ────────────────────────────────────────────────────────────────
+  compat-version-matrix:
+    timeout-minutes: 60  # 上限是防挂死、不是性能预算：把损失从「无限」变成「有界」
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # minimum：pyproject 宣称的下界。numpy 必须 <2（mpl 3.8 不兼容 2.x）。
+          - { target: minimum, python: "3.10" }
+          # bundled：桌面版内置 runtime——用户真正拿到的那一套。
+          - { target: bundled, python: "3.13" }
+          # browser：playground 的 Pyodide 版本组合，只跑 browser_eligible 子集
+          # （子集由 tests/compat/matrix.json 的 `subset` 声明，runner 照做）。
+          #
+          # **这里的 3.13 是「拿哪个 CPython 跑 browser.py」，不是 Pyodide 的
+          # 那个 Python。** 锁文件里的 `python: 3.14.2` 说的是 Pyodide 内部的
+          # 解释器版本，与 runner 无关——所以它在 matrix.json 里解析成
+          # `pyodide_python`，不参与 runner 的 Python 版本核对。写成 `python`
+          # 的那一版让这条腿**永久红**：版本核对当场退出 2，一个 case 都跑不到。
+          #
+          # **如实记账**：跑的是 engine/browser.py 在 CPython 上的语义，
+          # 真 Pyodide 在 web/e2e/playground.spec.ts，不在这里。
+          - { target: browser, python: "3.13" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: 装依赖（版本由 tests/compat/matrix.json 指到的锁文件决定）
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,ci]"
+          PINS=$(python - <<'EOF'
+          import sys
+          sys.path.insert(0, "scripts/ci")
+          import compat_corpus as CC
+          spec = CC.resolve_target(CC.load_matrix(), "${{ matrix.target }}")
+          # 装渲染相关 + CompatBench 语料要用的那几个。少装 pandas/scipy 的话
+          # sci_pandas_* / sci_scipy_fit 会在 execute 挂掉，而它们在清单里是
+          # full_support —— classify 会把它们记成**假的 product_bug**。
+          want = ("matplotlib", "numpy", "pandas", "scipy", "seaborn", "pillow")
+          print(" ".join(f"{k}=={spec[k]}" for k in want if spec.get(k)))
+          EOF
+          )
+          echo "pins: $PINS"
+          # shellcheck disable=SC2086
+          pip install $PINS
+          python -c "import matplotlib, numpy; print(matplotlib.__version__, numpy.__version__)"
+
+      # 结构性不变式在**这个 target 钉的 matplotlib 版本**上再跑一遍。
+      #
+      # 环境已经在这儿了（上一步按锁文件装好了精确版本），所以这一步几乎是白捡
+      # 的覆盖——而它逮到过真东西：`interpolation` 的 `"auto"` 是 mpl 3.9 才加
+      # 的，**minimum 档的 3.8.4 上根本不存在**，界面照样把它列出来、用户一点
+      # 就报错、写回被堵死。PR 档跑的是锁文件那一版（3.11.1），那里 `auto` 合法，
+      # 怎么跑都是绿的。同一轮还逮到 `_linespacing` 的默认值在 3.11 起变成字符串
+      # `'normal'`——那条反过来只在**新**版本上现形。
+      #
+      # 一句话：不变式验的是引擎自己的契约，而**契约的对手方会随版本变**。
+      # 只在一个版本上验它，等于只验了一半。
+      #
+      # `test_legend_binding.py` 在这里是**这次事故加的**：`legend_fresh_handle`
+      # 写死了 `get_figure(root=False)`（3.10 才有的关键字），而 3.8 / 3.9 上那个
+      # TypeError 被 `bind_legend_entries` 的 `except Exception` 咽掉，于是整套
+      # 「图例项 ↔ 图中源对象」在宣称的下界上**整片失效**、一句报错都没有。
+      # 这一档当时唯一的红是不变式里一条远端症状（撤销后示意线换了个类），
+      # 报文指向 `axes_0.legend.texts_2` ——离病因十万八千里，连红十一天没人读懂。
+      # 直接盯着这条契约的判据是这个文件：修之前它在 3.8.4 上红 12 条，修之后
+      # 29 条全绿。
+      - name: 结构性不变式（本 target 的 matplotlib 版本）
+        run: |
+          set -euo pipefail
+          python -m pytest -q \
+            tests/test_invariants_engine.py \
+            tests/test_artist_families.py \
+            tests/test_legend_binding.py
+
+      - name: CompatBench
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.target }}" = "browser" ]; then
+            # 浏览器这一档只有 browser_eligible 的子集有意义。
+            ARGS="--all --browser --no-fidelity"
+          else
+            ARGS="--all --no-fidelity"
+          fi
+          # shellcheck disable=SC2086
+          python scripts/ci/compat_matrix.py $ARGS \
+            --target "${{ matrix.target }}" --gate nightly \
+            --out "$RUNNER_TEMP/compat" \
+            --json "$RUNNER_TEMP/compat-${{ matrix.target }}.json"
+
+      - name: 诊断
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-${{ matrix.target }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/compat/**
+            ${{ runner.temp }}/compat-${{ matrix.target }}.json
+          retention-days: 14
+          if-no-files-found: warn
+
+  windows-install:
+    timeout-minutes: 60  # 上限是防挂死、不是性能预算：把损失从「无限」变成「有界」
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 三种代表性的 Python 环境。自带内置 runtime 之后，「无 Python」
+          # 不再是降级场景而是**主场景**：绝大多数用户就是这台机器。
+          # 另外两档验的是「用户指定自己的环境时仍然优先」这条兼容承诺。
+          #
+          # 冒烟用的项目**按档给**：runtime_check 要的是整套科学栈
+          # （numpy/pandas/scipy/seaborn/PIL），只有内置 runtime 满足它；
+          # 另外两档把渲染解释器指向用户自己的 Python，那儿只装了 matplotlib，
+          # 拿全栈脚本去冒烟等于要求 worker 变出 pandas——那时报
+          # missing_dependency 正是**对的行为**，红的是用例不是产品。
+          # 它们要验的是解释器优先级与中文路径，examples/figures
+          # （numpy + matplotlib）就够；全栈验收由「无 Python」那档
+          # 连同后面的 --expect-packages 承担。ci.yml 的冒烟③同此约定。
+          - { name: "无 Python", python: none, figures: 'examples\runtime_check' }
+          - { name: "官方 Python", python: cpython, figures: 'examples\figures' }
+          - { name: "Conda", python: conda, figures: 'examples\figures' }
+    name: Windows · ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 打包用的解释器与「用户的 Python」是两回事：前者永远要有，
+      # 后者才是矩阵在变的东西
+      - uses: actions/setup-python@v5
+        id: buildpy
+        with: { python-version: "3.13" }
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: 构建前端进包
+        run: python scripts/build_frontend.py
+
+      # tavotto.spec 从 workerd/target/release/ 取 Rust supervisor，取不到直接
+      # 失败（桌面产物必须自带它）
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # workerd 是随 sidecar 发出去的 Rust supervisor；src-tauri 是壳，
+          # 「无 Python」那档要现打一个 NSIS 安装器出来（见文末的安装链路）
+          workspaces: |
+            workerd
+            src-tauri
+      - name: 构建 Rust supervisor（tavotto-workerd）
+        run: cargo build --release --manifest-path workerd/Cargo.toml
+
+      - name: 缓存 CPython embeddable 下载
+        uses: actions/cache@v4
+        with:
+          path: build/runtime-cache
+          key: cpython-embed-${{ hashFiles('packaging/runtime-lock.json') }}
+
+      - name: 构建内置渲染 runtime
+        run: python scripts/build_worker_runtime.py --clean
+
+      - name: 打包（内置 runtime 必须进包）
+        env:
+          TAVOTTO_REQUIRE_RUNTIME: "1"
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          python -m pip install "flask>=3.1,<4" "pymupdf>=1.24,<2"
+          pyinstaller packaging/tavotto.spec --noconfirm
+
+      - name: 准备「用户的 Python」— conda
+        if: matrix.python == 'conda'
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: false
+          python-version: "3.12"
+
+      - name: 准备「用户的 Python」— 官方
+        if: matrix.python == 'cpython'
+        run: python -m pip install matplotlib
+
+      - name: 装 matplotlib 到 conda 环境
+        if: matrix.python == 'conda'
+        shell: bash -el {0}
+        run: conda install -y matplotlib
+
+      - name: 冒烟（中文用户名 + 中文区域）
+        shell: pwsh
+        env:
+          # 中文区域是国内机器的默认值，也是历来最容易出问题的一档：
+          # 系统默认编码是 cp936，控制台、管道、文件名全都受影响
+          PYTHONUTF8: "0"
+        run: |
+          $dst = "$env:RUNNER_TEMP\张三 的论文\figures"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Copy-Item "${{ matrix.figures }}\*" $dst -Recurse -Force
+          # none：什么都不指定 → 必须落到内置 runtime 并**完整跑通**渲染与导出。
+          # 其余两档：显式指定用户自己的解释器 → 必须压过内置的。
+          if ("${{ matrix.python }}" -ne "none") {
+            $env:TAVOTTO_WORKER_PYTHON = (Get-Command python).Source
+            $expect = "env_override"
+          } else {
+            $env:TAVOTTO_WORKER_PYTHON = $null
+            $expect = "bundled"
+          }
+          # 控制面与解释器是两回事：不管渲染跑在谁的 Python 上，产物自带的
+          # Rust supervisor 都必须被自动找到并真的用上——回退到 Python 池
+          # 功能全在、只是慢、零报错，不断言就永远发现不了。
+          # 这里**不设 TAVOTTO_WORKERD**：要验的正是自动发现。
+          python scripts/smoke_app.py --exe dist\Tavotto\Tavotto.exe `
+            --figures "$dst" --expect-source $expect `
+            --expect-control-plane workerd
+
+      - name: 无 Python：确认整套内置科学栈都能用
+        # 装完即用是产品承诺的全部内容。这里不只看「起得来」，而是逐个 import
+        # 并要求报出版本——文件都在但某个 .pyd 被杀毒软件隔离时，只看启动会漏。
+        if: matrix.python == 'none'
+        shell: pwsh
+        run: |
+          $env:TAVOTTO_WORKER_PYTHON = $null
+          python scripts/smoke_app.py --exe dist\Tavotto\Tavotto.exe `
+            --figures examples\runtime_check --expect-source bundled `
+            --expect-control-plane workerd `
+            --expect-packages numpy,pandas,scipy,seaborn,PIL,matplotlib
+
+      - name: 断网启动
+        # 对外请求只有检查更新与（同意之后的）匿名用量统计；断网时必须照常可用。
+        # 两个开关是独立的，所以两个都要关——工作流级的 env 已经关了遥测，
+        # 这里再显式关掉检查更新。
+        shell: pwsh
+        run: |
+          $env:TAVOTTO_NO_UPDATE_CHECK = "1"
+          $p = Start-Process -PassThru dist\Tavotto\Tavotto.exe `
+               -ArgumentList "--port","5398","--no-browser"
+          try {
+            foreach ($i in 1..60) {
+              try { Invoke-RestMethod http://127.0.0.1:5398/api/version | Out-Null; break }
+              catch { Start-Sleep 1 }
+            }
+            Invoke-RestMethod http://127.0.0.1:5398/api/version | Out-Null
+            Write-Host "✓ 断网可用"
+          } finally { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+
+      # ---------------- 装一遍再冒烟：NSIS → 启动 → 升级覆盖 → 卸载 ----------------
+      # 这条链路只有真装一遍才知道，而它一度是**空转**的：判的是
+      # packaging\tavotto.iss，而 Inno Setup 那条链在 v0.3.0 随旧 desktop.yml
+      # 一起退役删除了，于是每晚只打一条 notice 就过。现在改挂唯一在发的
+      # Windows 发行形态——Tauri 的 NSIS 安装器。
+      #
+      # 只挂「无 Python」这一档：它就是绝大多数用户那台机器（装完即用是产品
+      # 承诺的全部内容），而 Tauri 壳要现编译一遍 Rust，三档各来一次只是把
+      # nightly 慢三倍。
+      - name: Tauri 打包（NSIS 安装器）
+        if: matrix.python == 'none'
+        # CLI 版本钉死 2.11.4：src-tauri/windows/installer.nsi 是按这个版本的
+        # 上游模板打的品牌补丁，模板与打包器必须同源（tests/test_nsis_template.py
+        # 看护四处版本一致）。前端 / workerd / sidecar 前面几步已经出好，
+        # 这里不再走 build_desktop.py 的完整链路，只补最后一步。
+        #
+        # **必须就地关掉 createUpdaterArtifacts**：tauri.conf.json 里它常开
+        # （发行链要它），而打包器一开它就要 minisign 私钥签名——私钥只在
+        # release 的 secret 里，nightly 没有也不该有。不关的话安装包明明已经
+        # 打出来了，tauri 仍以「A public key has been found, but no private
+        # key」退出 1，整条安装/升级/卸载验收根本跑不到。
+        # 同一处理 scripts/build_desktop.py 早就有了（那条链路走它，所以没暴露）；
+        # 这一步是自己拼的 tauri 调用，得自己补上。nightly 验的是装/卸载，
+        # 更新包本来就用不着。
+        # 覆盖配置走**文件**而不是内联 JSON：内联那串里全是引号和花括号，
+        # 经 pwsh 再到 pnpm 再到 tauri，任何一层的引号处理不同都会把它拆坏，
+        # 而拆坏的表现是「参数没生效」——又是一个不报错的失败。
+        run: |
+          [System.IO.File]::WriteAllText(
+            "$PWD\no-updater.json", '{"bundle":{"createUpdaterArtifacts":false}}')
+          pnpm dlx @tauri-apps/cli@2.11.4 build --bundles nsis --config "$PWD\no-updater.json"
+          if ($LASTEXITCODE -ne 0) { throw "tauri build 失败（$LASTEXITCODE）" }
+
+      # 仓库模板只是原料：真正喂给 makensis 的是 Tauri 把 {{...}} 展开后的
+      # 那份中间脚本。installMode / license / startMenuFolder / 语言表都是
+      # 打包器那一刻才落定的——「没配许可证所以没有许可证页」这种话，只有
+      # 在中间脚本里才算得上证据。找不到脚本直接失败：静默 skip 的门禁比
+      # 没有门禁更坏，它还在报平安。
+      - name: 生成的中间 NSIS 脚本也得是这套页面
+        if: matrix.python == 'none'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $gen = @(Get-ChildItem src-tauri\target\release\nsis -Recurse `
+                     -Filter installer.nsi -ErrorAction SilentlyContinue)
+          if ($gen.Count -lt 1) {
+            throw "找不到 tauri 渲染出来的中间脚本（打包器换了输出布局？）"
+          }
+          # 这一档的 venv 只装了打包用的东西，pytest 得现装
+          python -m pip install --quiet --disable-pip-version-check pytest
+          $env:TAVOTTO_NSIS_GENERATED = $gen[0].FullName
+          Write-Host "中间脚本: $env:TAVOTTO_NSIS_GENERATED"
+          python -m pytest -q tests/test_nsis_template.py
+          if ($LASTEXITCODE -ne 0) { throw "中间脚本的页面结构不对（退出码 $LASTEXITCODE）" }
+
+      - name: 安装器 → 启动 → 升级覆盖 → 外部程序发现 → 卸载
+        if: matrix.python == 'none'
+        shell: pwsh
+        env:
+          # 壳探针那段会真起一次应用：数据目录必须隔离，别把 runner 的
+          # 用户目录当垃圾场，也别让上一步的状态泄进来
+          TAVOTTO_DATA_DIR: ${{ runner.temp }}\inst-data
+          TAVOTTO_CONFIG_DIR: ${{ runner.temp }}\inst-config
+        run: |
+          $ErrorActionPreference = "Stop"
+          $nsis = @(Get-ChildItem src-tauri\target\release\bundle\nsis\*.exe)
+          if ($nsis.Count -ne 1) { throw "NSIS 产物数量异常（$($nsis.Count) 个）" }
+          $setup = $nsis[0].FullName
+
+          # /S = 静默；模板的 installMode 是 currentUser，全程不需要管理员。
+          # **不给 /R**——那才是装完自动启动，启动时机这里要自己控制。
+          Start-Process -Wait $setup -ArgumentList "/S"
+
+          # 安装位置以**注册表为准**（模板把 InstallLocation 写进 UNINSTKEY，
+          # 值带引号），读不到才退回 currentUser 模式的默认落点。顺带验了一件
+          # 用户真会碰的事：控制面板的「应用」列表里认不认得它。
+          $key  = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Tavotto"
+          $inst = $null
+          if (Test-Path $key) {
+            $inst = (Get-ItemProperty $key).InstallLocation -replace '^"|"$', ''
+          }
+          if (-not $inst) {
+            Write-Warning "注册表里没有 InstallLocation（控制面板里将看不到它），退回默认位置"
+            $inst = "$env:LOCALAPPDATA\Tavotto"
+          }
+          $shell = Join-Path $inst "Tavotto.exe"
+          if (-not (Test-Path $shell)) { throw "装完找不到壳: $shell" }
+          Write-Host "安装位置: $inst"
+
+          # sidecar 的落点由 tauri.conf.json 的 bundle.resources 决定，这里
+          # **不写死**：写死等于把同一份约定抄成第二处权威，改了映射只会在
+          # 这儿报一个假故障。要看的是「安装器有没有把 sidecar 和它的内置
+          # runtime 带过来」——漏收它们是「本地能跑、用户装完不能渲染」最
+          # 典型的成因，而界面上一点症状都没有。
+          function Find-Sidecar($root, $shellExe) {
+            $hit = Get-ChildItem $root -Recurse -Filter Tavotto.exe -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -ne $shellExe } | Select-Object -First 1
+            if (-not $hit) { throw "装出来的目录里没有 sidecar（bundle.resources 漏了？）" }
+            return $hit
+          }
+          $side = Find-Sidecar $inst $shell
+          Write-Host "sidecar: $($side.FullName)"
+          $internal = Join-Path $side.Directory.FullName "_internal"
+          foreach ($rel in @("runtime\python.exe",
+                             "runtime\runtime-manifest.json",
+                             "tavotto-workerd.exe")) {
+            if (-not (Test-Path (Join-Path $internal $rel))) {
+              throw "安装后缺 $rel（安装器没把它带进来）"
+            }
+          }
+          Write-Host "✓ 安装目录里有 sidecar + 内置 runtime + workerd"
+          # 项目许可证随安装包走（issue #182）。Windows 的 resource_dir 就是壳所在的
+          # 安装根，tauri.conf.json 把仓库根 LICENSE 映射到那里；只查「文件在」不够
+          # ——映射错了源也算在——所以还要认 AGPL 全文的抬头。
+          $lic = Join-Path $inst "LICENSE"
+          if (-not (Test-Path $lic)) { throw "安装后缺 LICENSE（bundle.resources 没把项目许可证带进来）" }
+          if (-not (Select-String -Path $lic -Pattern "GNU AFFERO" -Quiet)) {
+            throw "安装目录里的 LICENSE 不是 AGPL 全文: $lic"
+          }
+          Write-Host "✓ 安装目录里有项目 LICENSE（AGPL）"
+
+          # 壳探针：用户从开始菜单点的就是它。这一步同时是安装布局的**唯一
+          # 权威验证**——壳靠 resource_dir() 找 sidecar，找得到才说明落点真的对。
+          # **把壳自己的 stdout/stderr 接出来。** 它是 windows 子系统的可执行
+          # 文件（`windows_subsystem = "windows"`），没有控制台时 stderr 是个
+          # 无效句柄，Rust 的 panic 信息（`.expect("Tavotto 桌面壳初始化失败")`
+          # 那条）就此消失得无影无踪——2026-08-18 起这条腿一直红着，而唯一的
+          # 线索只有「壳退了」。重定向给了它一个有效句柄，panic 会落进文件。
+          $shellOut = Join-Path $env:RUNNER_TEMP "shell-stdout.log"
+          $shellErr = Join-Path $env:RUNNER_TEMP "shell-stderr.log"
+          $p = Start-Process -FilePath $shell -PassThru `
+               -RedirectStandardOutput $shellOut -RedirectStandardError $shellErr
+          $child = $null
+          foreach ($i in 1..60) {
+            Start-Sleep -Milliseconds 500
+            $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($p.Id)" |
+                     Where-Object { $_.CommandLine -match "desktop-sidecar" }
+            if ($child) { break }
+          }
+          if (-not $child) {
+            # **诊断在前，清理在后**，而且清理不许自己抛。
+            # 壳自己先退了（起不来的典型样子）时 Stop-Process 会以
+            # 「Cannot find a process with the process identifier」失败，
+            # 在 $ErrorActionPreference="Stop" 下当场中断脚本——底下那段
+            # 日志转储一行都跑不到，CI 里只剩一句与病因毫不相干的
+            # PowerShell 报错。2026-08-18 那晚就是这么丢掉证据的。
+            $alive = $null -ne (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)
+            if (-not $alive) {
+              Write-Host "! 壳进程 $($p.Id) 已自行退出（连 sidecar 都没起），退出码 $($p.ExitCode)"
+            }
+            # 壳自己那两条流：sidecar.log 还不存在时，这里是唯一的线索
+            @($shellOut, $shellErr) | Where-Object { Test-Path $_ } | ForEach-Object {
+              $body = (Get-Content $_ -Raw)
+              if ($body) { Write-Host "---- $_ ----"; Write-Host $body }
+              else { Write-Host "---- $_ ---- （空）" }
+            }
+            # 失败路径不许吞：壳把 sidecar 的日志写在 app_log_dir（起不来时
+            # 界面上显示的也是这个路径），起不来的原因全在里面
+            @("$env:LOCALAPPDATA\com.tavotto.tavotto\logs\sidecar.log",
+              "$env:TEMP\tavotto-logs\sidecar.log") |
+              Where-Object { Test-Path $_ } | ForEach-Object {
+                Write-Host "---- $_ ----"; Get-Content $_ -Tail 60
+              }
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw "装好的壳没有拉起 sidecar（壳进程存活=$alive）"
+          }
+          # 模拟异常退出：sidecar 必须自行跟随退出
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          foreach ($i in 1..30) {
+            Start-Sleep -Milliseconds 500
+            if (-not (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue)) { break }
+          }
+          if (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue) {
+            throw "壳被杀后 sidecar 未退出（孤儿进程）"
+          }
+          Write-Host "✓ 壳 → sidecar → 跟随退出"
+
+          # 装出来的东西真能渲染。**不设 TAVOTTO_WORKER_PYTHON**：这台机器上要么
+          # 没有科学栈、要么与内置的无关，渲染必须落到装进来的那份 runtime；
+          # 控制面同理，回退到 Python 池是静默降级，不断言就发现不了。
+          $env:TAVOTTO_WORKER_PYTHON = $null
+          # 每次调用后显式看 $LASTEXITCODE：pwsh 里原生命令的失败**不会**
+          # 中断脚本（是否随 $ErrorActionPreference 走要看 PowerShell 版本），
+          # 而 runner 只把最后一条命令的退出码当成步骤结果——中间这条冒烟
+          # 挂了却全程绿灯，正是这一步最该防的静默失灵。
+          python scripts\smoke_app.py --exe "$($side.FullName)" `
+            --figures examples\runtime_check --expect-source bundled `
+            --expect-control-plane workerd `
+            --expect-packages numpy,pandas,scipy,seaborn,PIL,matplotlib
+          if ($LASTEXITCODE -ne 0) { throw "装出来的 sidecar 冒烟失败（退出码 $LASTEXITCODE）" }
+
+          # 覆盖安装（升级路径）。同版本盖同版本验的是安装器的 reinstall 分支，
+          # 不是版本比较——用户点升级时走的就是这条。
+          Start-Process -Wait $setup -ArgumentList "/S"
+          if (-not (Test-Path $shell)) { throw "覆盖安装后壳不见了" }
+          $side = Find-Sidecar $inst $shell
+          python scripts\smoke_app.py --exe "$($side.FullName)" `
+            --figures examples\runtime_check --expect-source bundled `
+            --expect-control-plane workerd
+          if ($LASTEXITCODE -ne 0) { throw "覆盖安装后冒烟失败（退出码 $LASTEXITCODE）" }
+
+          # ---- 外部程序（Codex 插件）在这台机器上发现得了 Tavotto 吗 ----
+          # 这是本条链路唯一能回答的问题：只装了桌面程序、没有用户 Python、
+          # PATH 里没有 tavotto、没设 TAVOTTO_CLI。源码级测试证明不了它——
+          # 要装出来的那份 tavotto-cli 真的在、真的能跑、清单真的写了。
+          $env:TAVOTTO_CLI = $null
+          if (Get-Command tavotto -ErrorAction SilentlyContinue) {
+            throw "PATH 里有 tavotto，这一步就验不到「只装了桌面版」了"
+          }
+
+          # 安装器装完就该有清单（NSIS 段里那次 doctor --write-manifest）
+          $manifest = "$env:TAVOTTO_CONFIG_DIR\install.json"
+          if (-not (Test-Path $manifest)) { throw "安装器没写安装清单: $manifest" }
+          $mf = Get-Content $manifest -Raw | ConvertFrom-Json
+          if (-not (Test-Path $mf.cli)) { throw "清单里的 CLI 不存在: $($mf.cli)" }
+          Write-Host "✓ 安装清单: $manifest → $($mf.cli)"
+
+          # 装出来的 CLI 自己也得能体检（无 GUI、不起服务）
+          & $mf.cli doctor --json | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "装出来的 tavotto-cli doctor 失败" }
+
+          # 中文 + 空格的项目路径：交接全程不许被拆开
+          $proj = "$env:RUNNER_TEMP\我的 图库"
+          if (Test-Path $proj) { Remove-Item $proj -Recurse -Force }
+          Copy-Item examples\runtime_check $proj -Recurse
+          $script = @(Get-ChildItem $proj -Filter *.py)[0].FullName
+
+          # --no-launch：只登记，不起界面
+          $plugin = "codex-plugin\skills\tavotto-figure\scripts\handoff.py"
+          $out = python $plugin "$script" --run never --no-launch
+          if ($LASTEXITCODE -ne 0) { throw "插件交接失败（退出码 $LASTEXITCODE）: $out" }
+          $j = $out | Select-Object -Last 1 | ConvertFrom-Json
+          if (-not $j.ok) { throw "插件回了 ok=false: $out" }
+          if ($j.parameterizable -ne $true) { throw "图不可参数化: $out" }
+          if ($j.launch) { throw "--no-launch 却起了界面: $($j.launch)" }
+          if ($j.tavotto.source -notin @("manifest", "install")) {
+            throw "CLI 不是从桌面安装里发现的（source=$($j.tavotto.source)）"
+          }
+          # 注册表已随 fixture 就位（新名）：交接的正确行为是读到它、报 status、
+          # **不**另写一份（stem 已登记 → status=already，见 handoff.ensure_registered）。
+          # 旧断言「必须生成 tavotto_registry.json」在 fixture 还叫 mm_registry.json
+          # 的那几晚永远红：读取端回退认旧名、无需写盘，新名文件自然不出现。
+          # 这条路径上**只有 `unchanged` 是对的**，四态里其余三个都要拒绝：
+          #   created  没认出这个图库，又按新名写了第二份
+          #   merged   fixture 漂移了，扫出了新脚本 / 新 stem
+          #   already  **扫描被短路了**——见下
+          #
+          # 曾经写死 `-ne "already"`，连红一周：`already` 由 ensure_registered
+          # 第一个提前返回产生，前提是 `stem is not None`；而这里跑的是脚本
+          # 目标，open_target 对脚本目标刻意传 `stem=None`（先做一遍全量静态
+          # 发现，探测路由要读注册表现状）。扫描真跑了，按 docstring 就该是
+          # `unchanged`——`already` 在这条路径上结构性不可达。
+          #
+          # **不要因为「already 也表示没写盘」就把它一起接受。** 那个提前返回
+          # 是在 engine_discover.merge() **之前**短路的：拿到 already 就意味着
+          # 全量扫描根本没跑，于是 fixture 漂移（merged）从此测不出来，而这盏
+          # 灯照样绿。实测：给漂移过的图库传 stem=None 报 merged，传已登记的
+          # stem 报 already。接受 already = 把漂移检测悄悄让掉。
+          if ($j.registry_status -ne "unchanged") {
+            throw "注册表状态应为 unchanged，实际 $($j.registry_status): $out"
+          }
+          # 项目层必须正好是这个图库。少了这条，上面那条 Test-Path 光靠
+          # Copy-Item 就能满足——交接一个字节都没干也照样绿。
+          $want = [IO.Path]::GetFullPath($proj).TrimEnd('\')
+          $got  = [IO.Path]::GetFullPath($j.project).TrimEnd('\')
+          if ($got -ne $want) {
+            throw "项目层解析错了（向上找注册表越界？）：期望 $want，实际 $got"
+          }
+          if (-not (Test-Path "$proj\tavotto_registry.json")) {
+            throw "项目里没有 tavotto_registry.json: $proj"
+          }
+          Write-Host "✓ 插件发现 Tavotto（source=$($j.tavotto.source)），注册表状态 $($j.registry_status)"
+
+          # 清单被删掉（企业策略、用户清理）也要能走通——不许把任何单一
+          # 机制当成唯一依据。这次只能靠已知安装位置。
+          Remove-Item $manifest -Force
+          $out = python $plugin "$script" --run never --no-launch
+          if ($LASTEXITCODE -ne 0) { throw "没有清单时交接失败: $out" }
+          $j = $out | Select-Object -Last 1 | ConvertFrom-Json
+          if ($j.tavotto.source -ne "install") {
+            throw "清单没了却不是从已知安装位置找到的（source=$($j.tavotto.source)）"
+          }
+          Write-Host "✓ 清单缺失时仍能按已知安装位置发现"
+
+          # 不带 --no-launch：必须拉起**原生窗口**（不是浏览器）
+          $before = @(Get-Process Tavotto -ErrorAction SilentlyContinue).Id
+          $out = python $plugin "$script" --run never
+          if ($LASTEXITCODE -ne 0) { throw "带唤起的交接失败: $out" }
+          $j = $out | Select-Object -Last 1 | ConvertFrom-Json
+          if ($j.launch -ne "desktop") { throw "没走桌面模式: $($j.launch)" }
+          $spawned = $null
+          foreach ($i in 1..60) {
+            Start-Sleep -Milliseconds 500
+            $spawned = @(Get-Process Tavotto -ErrorAction SilentlyContinue) |
+                       Where-Object { $_.Id -notin $before }
+            if ($spawned) { break }
+          }
+          if (-not $spawned) { throw "交接没有拉起 Tavotto 窗口进程" }
+          Write-Host "✓ 交接拉起了原生 Tavotto（pid $($spawned.Id -join ','))"
+
+          # 起来的这一下应该把清单**刷回来**（应用每次启动刷一遍）。这是
+          # 「用户把 .app 拖到别处 / 免安装形态 / macOS 没有装后钩子」那条自愈
+          # 路径在真产物上的唯一验证点——所以要**等**，不能刚看见进程就杀。
+          # 顺带它也让下面「卸载后清单不该还在」那条断言重新变得有意义：
+          # 上面我们自己把清单删掉了，不刷回来的话那条断言恒真，卸载钩子
+          # 完全失灵也照样绿。空转的门禁比没有门禁更坏，它还在报平安。
+          foreach ($i in 1..60) {
+            if (Test-Path $manifest) { break }
+            Start-Sleep -Milliseconds 500
+          }
+          if (-not (Test-Path $manifest)) {
+            # 同上：清理不许把真正的失败信息挤掉
+            $spawned | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+            throw "应用启动后没有刷新安装清单: $manifest"
+          }
+          Write-Host "✓ 应用启动时把安装清单刷了回来"
+
+          $spawned | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+          foreach ($i in 1..30) {
+            Start-Sleep -Milliseconds 500
+            if (-not (Get-Process -Name Tavotto -ErrorAction SilentlyContinue)) { break }
+          }
+          Get-Process -Name Tavotto -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+
+          # 卸载
+          $uninst = "$inst\uninstall.exe"
+          if (-not (Test-Path $uninst)) { throw "没有卸载器: $uninst" }
+          # 卸载前**再确认一次清单确实在**：下面那条「卸载后不该还在」只有在
+          # 这时候真的有文件，才算验到了卸载钩子。
+          if (-not (Test-Path $manifest)) { throw "卸载前清单就不在了，下面的断言将毫无意义" }
+          Start-Process -Wait $uninst -ArgumentList "/S"
+          # NSIS 卸载器会把自己复制到 temp 再回头删安装目录，-Wait 等到的是
+          # 外面那层壳——所以这里轮询，别当场断言
+          foreach ($i in 1..30) {
+            Start-Sleep -Milliseconds 500
+            if (-not (Test-Path $shell) -and -not (Test-Path $key)) { break }
+          }
+          if (Test-Path $shell) { throw "卸载后可执行文件仍在: $shell" }
+          # 注册表项留着 = 控制面板里还挂着一个卸不掉的条目
+          if (Test-Path $key) { throw "卸载后注册表项仍在: $key" }
+          # 安装清单同理：留下一份指向已删文件的清单，外部程序会拿着不存在
+          # 的路径去 spawn，报出来的是「执行不了」而不是「没装」
+          if (Test-Path $manifest) { throw "卸载后安装清单仍在: $manifest" }
+          if (Test-Path $inst) {
+            $left = Get-ChildItem $inst -Recurse -File | Select-Object -First 20
+            if ($left) {
+              Write-Warning "卸载后安装目录仍有残留: $($left.FullName -join '; ')"
+            }
+          }
+          Write-Host "✓ 安装 → 启动 → 渲染 → 升级覆盖 → 卸载 全链路通过"
+
+      # ---------------- 首次安装的页面序列（真 GUI，不给 /S） ----------------
+      # 上一步全程 /S，验的是装出来的东西对不对；用户看到的**那几屏**它一个
+      # 都没碰过。这一步接在卸载之后跑，所以又是一次干净的首次安装：
+      # 启动安装器 → 直接是真实安装进度 → 自动进完成页，中间不许出现
+      # 「你要装到哪儿」。判据是安装器窗口上真实出现过的控件文字，不是源码。
+      - name: 首次安装的页面序列（真 GUI）
+        if: matrix.python == 'none'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = @(Get-ChildItem src-tauri\target\release\bundle\nsis\*.exe)[0].FullName
+
+          # 先看一件与运行账户无关的硬事实：PE 清单里的 requestedExecutionLevel。
+          # 这台 runner 本身就是管理员，「没弹 UAC」在这儿什么都证明不了，
+          # 清单里写着 asInvoker 才是「不会提权」的证据。
+          $len   = (Get-Item $setup).Length
+          $probe = [int][Math]::Min([double]$len, 33554432)
+          $fs = [IO.File]::OpenRead($setup)
+          try {
+            $buf = New-Object byte[] $probe
+            $null = $fs.Read($buf, 0, $probe)
+          } finally { $fs.Dispose() }
+          $head = [Text.Encoding]::ASCII.GetString($buf)
+          if ($head -match 'level="requireAdministrator"') { throw "安装器清单要求管理员权限" }
+          if ($head -notmatch 'requestedExecutionLevel[^>]*level="asInvoker"') {
+            throw "安装器清单里找不到 asInvoker（扫了前 $probe 字节）"
+          }
+          Write-Host "✓ 清单 asInvoker：安装器不请求提权"
+
+          Add-Type -Language CSharp -TypeDefinition @'
+          using System;
+          using System.Collections.Generic;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class NsisProbe {
+            delegate bool EnumProc(IntPtr h, IntPtr l);
+            [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr l);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+            public static string[] VisibleTexts(IntPtr root) {
+              var found = new List<string>();
+              EnumChildWindows(root, delegate(IntPtr h, IntPtr l) {
+                if (IsWindowVisible(h)) {
+                  var sb = new StringBuilder(1024);
+                  GetWindowTextW(h, sb, sb.Capacity);
+                  string t = sb.ToString().Trim();
+                  if (t.Length > 0) found.Add(t);
+                }
+                return true;
+              }, IntPtr.Zero);
+              return found.ToArray();
+            }
+          }
+          '@
+
+          # 安装器按系统区域挑语言（en-US 的 runner 会挑英文），两种都认。
+          # 中文常量用码点拼，免得 YAML → .ps1 的编码把它们弄坏。
+          $zhOpen       = [string][char]0x6253 + [char]0x5F00 + ' Tavotto'          # 打开 Tavotto
+          $zhInstalling = [string][char]0x6B63 + [char]0x5728 + [char]0x5B89 + [char]0x88C5 + ' Tavotto'
+          $zhBrowse     = [string][char]0x6D4F + [char]0x89C8                        # 浏览
+          $reFinish     = [regex]::Escape('Open Tavotto')       + '|' + [regex]::Escape($zhOpen)
+          $reInstalling = [regex]::Escape('Installing Tavotto') + '|' + [regex]::Escape($zhInstalling)
+          $reBrowse     = 'Browse' + '|' + [regex]::Escape($zhBrowse)
+
+          $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+          $p = Start-Process -PassThru $setup
+          $sawFinish = $false
+          foreach ($i in 1..600) {          # 0.25s × 600 = 150s 上限
+            Start-Sleep -Milliseconds 250
+            $p.Refresh()
+            if ($p.HasExited) { break }
+            if ($p.MainWindowHandle -eq [IntPtr]::Zero) { continue }
+            foreach ($t in [NsisProbe]::VisibleTexts($p.MainWindowHandle)) { [void]$seen.Add($t) }
+            if (($seen -join "`n") -match $reFinish) { $sawFinish = $true; break }
+          }
+          $all = ($seen | Sort-Object) -join "`n"
+          Write-Host "---- 安装器上出现过的可见控件文字 ----"
+          Write-Host $all
+          Write-Host "--------------------------------------"
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+
+          if (-not $sawFinish) { throw "150 秒内没走到完成页（没出现「打开 Tavotto」）" }
+          if ($all -match $reBrowse) { throw "出现了安装目录选择页（看到了浏览按钮）" }
+          if ($all -notmatch $reInstalling) { throw "没出现进度页的品牌页眉（页眉补丁没生效？）" }
+          # MUI 默认会在装完那一瞬把页眉换成这两句传统安装器说明。断言只对
+          # 英文写死：runner 是 en-US，安装器就挑英文；换成中文机器时这条会
+          # 空过，那时该补的是中文串，不是把它删掉。
+          if ($all -match 'Setup was completed successfully') {
+            throw "进度页装完时闪了 MUI 默认页眉（FINISHHEADER 补丁没生效？）"
+          }
+          if ($all -match 'Installation Complete') {
+            throw "进度页装完时闪了 MUI 默认页眉标题"
+          }
+          Write-Host "✓ 页面序列：进度页 → 完成页，没有目录页"
+
+          # 装出来的落点与快捷方式策略——首次安装固定 %LOCALAPPDATA%\Tavotto
+          $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Tavotto"
+          if (-not (Test-Path $key)) { throw "GUI 安装没写卸载注册表项" }
+          $inst = (Get-ItemProperty $key).InstallLocation -replace '^"|"$', ''
+          if ($inst -ne "$env:LOCALAPPDATA\Tavotto") {
+            throw "首次安装没落在 %LOCALAPPDATA%\Tavotto，而是 $inst"
+          }
+          $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Tavotto.lnk'
+          $smenu   = Join-Path ([Environment]::GetFolderPath('Programs')) 'Tavotto.lnk'
+          # 桌面快捷方式的**行为变化**：完成页那个复选框（默认勾选）没了，
+          # 改由 Section Install 无条件创建，所以 GUI 安装必须照样有
+          if (-not (Test-Path $desktop)) { throw "GUI 安装没建桌面快捷方式: $desktop" }
+          if (-not (Test-Path $smenu))   { throw "GUI 安装没建开始菜单快捷方式: $smenu" }
+          Write-Host "✓ 安装位置 $inst；桌面与开始菜单快捷方式都在"
+
+          Start-Process -Wait "$inst\uninstall.exe" -ArgumentList "/S"
+          foreach ($i in 1..30) {
+            Start-Sleep -Milliseconds 500
+            if (-not (Test-Path $key) -and -not (Test-Path $desktop)) { break }
+          }
+          if (Test-Path $key)     { throw "卸载后注册表项仍在" }
+          if (Test-Path $desktop) { throw "卸载后桌面快捷方式仍在" }
+          if (Test-Path $smenu)   { throw "卸载后开始菜单快捷方式仍在" }
+          Write-Host "✓ 卸载清干净"
+
+      - name: 失败时收集日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-${{ matrix.python }}-logs
+          path: |
+            ${{ runner.temp }}/**/app.log
+            ${{ runner.temp }}/**/worker.log
+            dist/Tavotto/_internal/runtime/runtime-manifest.json
+            build/**/warn-*.txt
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,36 @@
+# Tavotto 桌面壳（Tauri 2）：窗口 + 生命周期 + 菜单，业务全部在 Python sidecar。
+# 架构与安全模型见 docs/adr/0002-tauri-desktop-shell.md。
+[package]
+name = "tavotto-desktop"
+version = "0.15.0"
+description = "Tavotto 桌面应用外壳"
+edition = "2021"
+license = "AGPL-3.0-only"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+sys-locale = "0.3"
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+# 应用内更新：检查 → 下载 → 安装 → 重启（process 提供 restart）。
+# 更新包的签名由 tauri.conf.json 里的 pubkey 校验，私钥只在 CI 里。
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.9"
+url = "2"
+percent-encoding = "2"
+
+[profile.release]
+# thin LTO + 默认 codegen-units：壳的业务全在 Python sidecar，fat LTO +
+# 单 codegen unit 换不来可感知的体积/性能，却让每次发布的末端链接
+# （rust-cache 帮不上的那段）多等数分钟——Windows 腿实测 6m44s 的大头。
+lto = "thin"
+strip = true

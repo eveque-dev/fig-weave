@@ -1,0 +1,415 @@
+{
+  "schema_version": 1,
+  "kind": "implementation_requirements_not_test_results",
+  "note": "IDs are planning items, not required job count. Machine-sensitive criteria need actual deployment evidence.",
+  "requirements": [
+    {
+      "id": "CIP-001",
+      "phase": "CI00",
+      "requirement": "实际HEAD、run/attempt、样本窗口与源码/机器未知条件被记录",
+      "status": "pass",
+      "evidence": [
+        "CI_BASELINE.md#1-事实边界",
+        "CI_BASELINE.json（source_sha / head_verified / sample_window / sample_selection.runs）",
+        "evidence/actions/ci_runs_list.json",
+        "evidence/actions/runs/",
+        "evidence/pytest/local_run.json",
+        "evidence/admin_inventory.json（机器未知项）"
+      ],
+      "note": "实际 HEAD 8b95256c；86 个 run（含 4 个 cancelled、5+2 个 failure、2 个 attempt 2）；样本窗口 2026-09-12T04:37:55Z → 2026-09-15T13:48:06Z；本机与 CI 环境差异、lab 资源未知项均已写明。2026-09-15 CI00。"
+    },
+    {
+      "id": "CIP-002",
+      "phase": "CI00",
+      "requirement": "分开DAG等待、runner等待、setup、test/build和qualification时间",
+      "status": "pass",
+      "evidence": [
+        "CI_BASELINE.md#4-时间分解",
+        "evidence/actions/timing_decomposition.json（每 job dependency_wait / dispatch_gap / runner_wait / execution 按类 / feedback / qualification）",
+        "scripts/ci/ci_baseline.py（口径实现）",
+        "tests/test_ci_baseline.py::test_dependency_wait_and_runner_wait_are_different_axes（变异 M8 打红）"
+      ],
+      "note": "样本 run 34970490865 的 windows-exe-smoke：dependency_wait 2120s / runner_wait 2s / execution test 1179（Playwright 1124）；未用 updated_at（tests::test_qualification_never_uses_updated_at）。"
+    },
+    {
+      "id": "CIP-003",
+      "phase": "CI00",
+      "requirement": "旧required领域、版本平台与新位置覆盖账完整",
+      "status": "pass",
+      "evidence": [
+        "coverage_ledger.json（28 条，policy_source_sha 8b95256c，status not_run）",
+        "CI_BASELINE.md#9-覆盖账摘要",
+        "coverage_ledger.json（CI05：28 条 new_location 全部填写；24 条 status pass 各引 after run 的 job 显示名 + 结论；4 条 push main / nightly / lab / release 本轮未动保持 not_run 并写 ci05_note；policy_source_sha a174eb61）",
+        "CI_HANDOFF.md#4-覆盖迁移旧集合--新执行位置"
+      ],
+      "note": "旧领域清点完整（28 条）；new_location 待 CI01/CI03 填写后再判。2026-09-16 CI05：new_location 逐条填完，24/28 在 after run 上以新形状执行并 success（PR full-ci，不是 merge_group——合入后复核）；没有 required 领域搬到合并后。"
+    },
+    {
+      "id": "CIP-004",
+      "phase": "CI01",
+      "requirement": "verdict-only串行边被有证据地移除或保留理由清楚",
+      "status": "pass",
+      "evidence": [
+        ".github/workflows/ci.yml@7d77494c（package / windows-exe-smoke / macos-app-smoke / posix-e2e 的 needs: [frontend]；抬头与 package 段注释写明理由）",
+        "evidence/ci01/dag_diff.json（删 4 条 backend-fast→重型、frontend→重型 4 条改标 短预筛，其余逐字段无变化）",
+        "evidence/ci01/dag_edge_kinds_after.json（保留 frontend 边的理由逐条写在 note）",
+        "CI01_EVENTS_AND_DAG.md#1-dag改前--改后",
+        "tests/test_merge_queue_workflows.py::TestHeavyLaneDependencies::test_heavy_jobs_do_not_wait_for_the_backend_fast_verdict（变异 M1/M1b/M1c/M2 打红）",
+        "tests/test_merge_queue_workflows.py::TestHeavyLaneDependencies::test_heavy_jobs_keep_the_frontend_prescreen（变异 M1/M2/M2b 打红）"
+      ],
+      "note": "移除的 4 条边 CI00 判 verdict-only（下游无 download-artifact、前端自建）；保留 frontend 边作短预筛的理由：252s、删边后不在关键路径（backend-platforms windows 2443s）上，前端坏时省每候选约 45 runner 分钟。模型 Δ 中位 −892s 仍是模型，真实时长待 CI05。2026-09-16 CI01，commit 7d77494c。"
+    },
+    {
+      "id": "CIP-005",
+      "phase": "CI01",
+      "requirement": "真实artifact/data依赖继续成立",
+      "status": "pass",
+      "evidence": [
+        ".github/workflows/ci.yml@7d77494c（plugin-candidate needs: [frontend]，download-artifact codex-plugin-candidate ← frontend upload 同名）",
+        "tests/test_merge_queue_workflows.py::TestHeavyLaneDependencies::test_heavy_consumers_that_download_an_artifact_must_need_its_producer（正面判据：每个 download 的 name 由 needs 闭包里的 job 上传过；变异 M3/M3b/M3c/M2c 打红）",
+        "evidence/ci01/dag_after.json（frontend->plugin-candidate 仍标 artifact/data）"
+      ],
+      "note": "全图唯一的数据边保持；判据带非空前提（解析不出 plugin-candidate 那条 download 就红），将来在重型 job 里加 download-artifact 必须同时加生产者边。2026-09-16 CI01。"
+    },
+    {
+      "id": "CIP-006",
+      "phase": "CI01",
+      "requirement": "三个stable Gate及CLA/CodeQL/可信判定来源保持",
+      "status": "pass",
+      "evidence": [
+        "scripts/ci/aggregate_gate.py（未改动：git diff 37fb89a1..7d77494c -- scripts/ci 为空）",
+        ".github/workflows/ci.yml@7d77494c（ci-fast-gate / ci-integration-gate 的 needs 与 --required 未改动；判定器仍取默认分支 + python3 -I）",
+        "tests/test_merge_queue_workflows.py::TestGates::test_fast_gate_needs_matches_required_closed_set / test_integration_gate_needs_matches_required_closed_set / test_gates_run_the_trusted_copy_of_the_verdict / test_gates_run_on_always / test_codeql_gate_depends_on_analyze（改动后仍绿）",
+        "tests/test_cla_workflow_contract.py（全部仍绿）；tests/test_merge_queue_ruleset.py::…::test_gate_names_match_the_workflow_files / test_contexts_become_exactly_the_three_gates",
+        "tests/test_merge_queue_workflows.py::TestHeavyLaneDependencies::test_a_red_backend_fast_still_blocks_the_merge_even_when_every_heavy_job_is_green（真实 decide() + build_switch_to_gates：backend-fast 红 → fast gate failure，重型全绿 → integration gate success，ruleset 三 context 全部 required；变异 M4/M4b/M4c/M4d 打红）"
+      ],
+      "note": "三个 Gate、CLA、CodeQL、可信判定来源一处未动；ruleset 未改。2026-09-16 CI01。"
+    },
+    {
+      "id": "CIP-007",
+      "phase": "CI01",
+      "requirement": "merge_group/full-ci不能把完整合并资格deferred",
+      "status": "pass",
+      "evidence": [
+        "scripts/ci/aggregate_gate.py decide()（--allow-deferred 在 merge_group / --full-ci 下 ConfigError，未改动）",
+        "tests/test_aggregate_gate.py::TestIntegrationGate::test_merge_group_may_not_defer / test_full_ci_pr_may_not_defer / test_require_heavy_rejects_skipped / test_partial_skip_is_failure_not_deferred",
+        "tests/test_merge_queue_workflows.py::TestGates::test_integration_gate_defers_only_on_plain_pull_requests / test_heavy_jobs_run_on_merge_group / test_full_ci_label_still_triggers_the_heavy_layer",
+        "CI01_EVENTS_AND_DAG.md#2-事件--层级表"
+      ],
+      "note": "现有判据在改动后仍绿；本轮未改事件条件或判定分支。2026-09-16 CI01。"
+    },
+    {
+      "id": "CIP-008",
+      "phase": "CI01",
+      "requirement": "PR新push不取消其他PR/main/merge/release",
+      "status": "not_run",
+      "evidence": [
+        "tests/test_merge_queue_workflows.py::TestConcurrency::test_cancel_in_progress_only_for_pull_request / test_group_distinguishes_events / test_ci_and_codeql_use_distinct_namespaces（静态合同）",
+        "tests/test_release_workflow_contract.py::test_the_release_gate_cannot_be_evicted_by_a_routine_lab_run",
+        "CI01_EVENTS_AND_DAG.md#3-取消与并发合同真值表"
+      ],
+      "note": "静态合同测试通过，实机验证待 push 后的真实 run：需要 PR A push 时 PR B / merge_group / push main 各有一个运行中的 run 作对照。 2026-09-16 CI05：有了一半样本——同 PR 的 opened run 被 labeled run 取消（34993254893 → 34993304390、35031788042 → 35031790918），别的 PR 的 run（35031461863）横跨这些事件没被取消；PR push 与 merge_group / push main / release 同时刻的样本仍没有，保持 not_run。"
+    },
+    {
+      "id": "CIP-009",
+      "phase": "CI01",
+      "requirement": "ready转换后synchronize和label/full-ci策略正确",
+      "status": "not_run",
+      "evidence": [
+        "tests/test_merge_queue_workflows.py::TestGates::test_full_ci_label_still_triggers_the_heavy_layer / test_every_fast_lane_job_actually_runs_on_a_plain_pull_request（静态合同）",
+        "CI01_EVENTS_AND_DAG.md#2-事件--层级表（ready_for_review 在 types 里但无测试；任意 labeled/unlabeled 重跑快线、去掉 full-ci 会在同 SHA 上产出 deferred 的 integration gate——§4 ①③ 记录未改）"
+      ],
+      "note": "静态合同测试通过，实机验证待 push 后的真实 run：本轮未做草稿 / 非草稿分层，ready_for_review 只是多一个同 SHA 的 run；需要真实 PR 走一遍 draft → ready → labeled → unlabeled。"
+    },
+    {
+      "id": "CIP-010",
+      "phase": "CI01",
+      "requirement": "非PR必要pending候选不被无意去重覆盖",
+      "status": "not_run",
+      "evidence": [
+        "CI01_EVENTS_AND_DAG.md#3-取消与并发合同真值表（逐事件评估：merge_group 每候选 key 不同无风险；push main 三连推中间一次的落地审计会被待定取代，§4 ② 记录未改）",
+        "_lab-qualification.yml 的 job 级槽 lab-qualification-${{ github.workflow }}（tests/test_release_workflow_contract.py 看住）"
+      ],
+      "note": "静态合同测试通过，实机验证待 push 后的真实 run：GitHub 侧的待定取代行为静态钉不住，要用连续三次 push main 观察。"
+    },
+    {
+      "id": "CIP-011",
+      "phase": "CI02",
+      "requirement": "producer和consumer绑定实际SHA/recipe/target/hash",
+      "status": "pass",
+      "evidence": [
+        ".github/workflows/ci.yml@1f7f13e8 frontend（`plugin_stage.py stage --source-sha \"$(git rev-parse HEAD)\"` → verify → archive → `verify \"$ZIP\" --source-sha \"$SHA\" --content-digest \"$(plugin_stage.py digest \"$STAGE\")\"`；upload `codex-plugin-candidate` = zip + plugin-build.json）",
+        ".github/workflows/ci.yml@1f7f13e8 plugin-candidate（`SHA=\"$(git rev-parse HEAD)\"`、`DIGEST` 从 artifact 里的 plugin-build.json 读、`plugin_stage.py unpack` → `verify \"$PLUGIN\" --source-sha \"$SHA\" --content-digest \"$DIGEST\" --serve`）",
+        "src/tavotto/engine/pluginmanifest.py::write_build_manifest / verify_dir（清单字段：source_sha / build_inputs_fingerprint / lockfile_sha256 / toolchain / files[path, mode, sha256] / content_digest；audit 段不参与身份；verify 逐文件 sha256、不多不少、digest 重算 + 期望值）",
+        "tests/test_plugin_stage.py（错 SHA：test_stage_refuses_a_source_sha_that_is_not_head + verify_dir(source_sha='f'*40)；改一字节 / 少多文件 / 改过的清单：test_one_changed_byte_changes_the_content_digest / test_verify_catches_every_kind_of_drift / test_a_tampered_manifest_is_caught_by_recomputation；dotfile 与可执行位进 zip：test_zip_is_deterministic_and_round_trips / test_zip_keeps_executable_mode_from_the_manifest）",
+        "tests/test_merge_queue_workflows.py::TestBuildReuseAndCaches::test_the_plugin_candidate_consumer_verifies_head_sha_and_manifest_digest（变异 M19 / M20 / M21 打红：不核 digest、SHA 改成 github.sha、zip 复验不带 digest）+ TestHeavyLaneDependencies::test_heavy_consumers_that_download_an_artifact_must_need_its_producer（uploads['codex-plugin-candidate'] == {'frontend'}）",
+        "CI02_BUILD_REUSE.md#5-产物身份与不混同目标e"
+      ],
+      "note": "主语是「本仓库的每一条数据边」——只有 frontend → plugin-candidate 一条（CI00 §5 / CI01 dag_after.json）。它绑定 SHA（消费者取本次 checkout 的 HEAD，不信 artifact）与内容 hash（清单里的 content_digest，逐文件 sha256 + 模式）；recipe / target 没有第二个值可混：artifact 名只由 frontend 上传（合同钉住）、target 是平台中性的单文件 HTML。本轮没有新增任何数据边（§1 九行 0 行值得抽取），所以「至少一个 consumer 复用正确产物」由既有的这条边兑现——它在每个 PR / 合并组上真跑（plugin-candidate 44–69s）。2026-09-16 CI02。"
+    },
+    {
+      "id": "CIP-012",
+      "phase": "CI02",
+      "requirement": "真实TypeScript引用检查仍能捕获错误",
+      "status": "pass",
+      "evidence": [
+        "web/package.json（`build` = `tsc -b && vite build && node scripts/tailwind-scan-check.mjs`：第一条是 tsc -b）；web/tsconfig.json（files: [] + references app / node / e2e 三份，三份 noEmit，include 并集 = src / vite.config.ts / e2e / playwright.config.ts）",
+        ".github/workflows/ci.yml@1f7f13e8 frontend（`- run: pnpm build` 恰好一条，无 if / continue-on-error，无第二条 tsc 步）",
+        "evidence/ci02/tsc_mutations.json（本机反证：T1 src 植入类型错误 → `pnpm build` rc 2；T2 e2e 植入 → rc 2；**T3 references 去掉 e2e 再植入 → rc 0**；T4 还原 → rc 0，6.6s）",
+        "tests/test_merge_queue_workflows.py::TestBuildReuseAndCaches::test_the_web_build_script_starts_with_a_real_project_build / test_the_project_references_cover_every_typescript_root / test_the_frontend_job_type_checks_through_pnpm_build_without_a_safety_net（变异 M01–M09 打红：tsc --noEmit、去掉 tsc、references 少 e2e、include 少 playwright.config.ts、noEmit: false、加 continue-on-error、删步、加回 pnpm tsc --noEmit、生成物检查挪到 build 前）",
+        "CI02_BUILD_REUSE.md#3-typescript-真检查引用c"
+      ],
+      "note": "「真错误仍能阻止资格」两半都有证据：本机 T1 / T2 用退出码证明 src 与 e2e 的类型错误各让 pnpm build 非零；执行位置是 frontend 的 pnpm build（CI fast gate 闭集），合同钉住它没有安全网。T3 是新事实：references 少一份不会有任何红灯，只是那一类错误从此没有执行位置——所以合同钉的是 references 的集合而不是「有 references」。web/tsconfig.json 不需要改（e2e 本来就在里面）。CI 上没有为此跑新 run：本 PR 只改合同测试，frontend 的 pnpm build 本身在每个 PR 上照跑。2026-09-16 CI02。"
+    },
+    {
+      "id": "CIP-013",
+      "phase": "CI02",
+      "requirement": "不混同web/widget/playground/native构建目标",
+      "status": "pass",
+      "evidence": [
+        "evidence/ci02/recipe_table.json（9 行：web 应用 = vite.config.ts → 多文件 dist；MCP widget = vite.mcp.config.ts → 单文件内联 + 指纹戳；playground = vite.playground.config.ts → 多文件 + engine.zip + manifest；wheel / workerd / runtime / PyInstaller / .app 各自的命令、输入、平台绑定、输出）",
+        "evidence/ci02/local_builds.json（本机各建一次：dist 1.9 MiB 8 文件 / canvas.html 1273 KiB 指纹 24f78154bb52d971 / dist-playground 1.6 MiB 指纹 d1b9f461b86f28b0 / wheel 1.6 MiB / workerd 779 KiB——三份 web 产物形态、尺寸、指纹各不相同）",
+        "scripts/build_frontend.py / scripts/build_mcp_widget.py（EXTRA_INPUTS 与 vite_build_argv）/ scripts/build_browser_playground.py（source_fingerprint 各自独立）；packaging/tavotto.spec（datas = src/tavotto/web + runtime，binaries = workerd，按平台）",
+        ".github/workflows/ci.yml@1f7f13e8（native 目标只在各自平台的 job 里建：workerd / runtime / PyInstaller 在 windows-exe-smoke ×2 与 macos-app-smoke，posix-e2e 与 package 不建 native；web 目标各 job 自建，没有一处把 widget 或 playground 当 web 应用用、也没有一处跨平台下载 native 产物）",
+        "CI02_BUILD_REUSE.md#1-recipe-表与逐行决定a--e不混同目标"
+      ],
+      "note": "纯 web 三个目标是三个 recipe（不同 config / 入口 / 输出形态），native 四个目标平台绑定且只在本平台 job 里建；本轮决定 0 行跨 job 抽取，所以「不混同」在结构上由「没有任何跨 job 传输」保证，唯一的传输（插件候选）只有一个 recipe 一个 target。2026-09-16 CI02。"
+    },
+    {
+      "id": "CIP-014",
+      "phase": "CI02",
+      "requirement": "下载/编译cache与成功环境/结果cache分开",
+      "status": "pass",
+      "evidence": [
+        "evidence/ci02/cache_inventory.json（仓库缓存 60 条原样 + 按家族 / ref 作用域汇总：全部条目属于 setup-node pnpm store（第一类）/ rust-cache（第二类）/ cpython 归档（第一类）三类；main 上 0 条来自 ci.yml）",
+        ".github/workflows/ci.yml@1f7f13e8（actions/cache 只有两处：path build/runtime-cache、key cpython-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packaging/runtime-lock.json') }}，恢复在 build_worker_runtime.py 之前；setup-node cache: pnpm + cache-dependency-path: web/pnpm-lock.yaml ×5；rust-cache workspaces 各自点名 ×4、无 shared-key / cache-on-failure；package 的 venv 在 runner.temp 不缓存；测试结果只走 if: failure() 的 upload-artifact）",
+        "tests/test_merge_queue_workflows.py::TestBuildReuseAndCaches::test_actions_cache_steps_are_exactly_the_cpython_archive_downloads / test_every_setup_node_pnpm_cache_is_keyed_by_the_lockfile / test_every_rust_cache_names_its_own_workspace_and_shares_nothing / test_windows_installs_browsers_without_with_deps_and_posix_keeps_it（枚举：多一条 actions/cache、path 指向 venv、key 少 arch、恢复挪到使用后、pnpm 缓存没按锁、package 开缓存、rust-cache 加 shared-key / 不点名 workspace、posix 不装浏览器、Windows 加回 --with-deps、posix 去掉 --with-deps——变异 M10–M18 / M22 / M23 全部打红）",
+        "evidence/ci02/playwright_install_split.json（Windows 装浏览器那一步 245s = pnpm 1s + Media Foundation 226s + 浏览器下载 17s；决定不加浏览器缓存的数字）",
+        "evidence/ci02/merge_group_cache_misses.json（合并组 run 35015416419：rust-cache / cpython / pnpm 全部 miss + save）",
+        "CI02_BUILD_REUSE.md#4-缓存四类审计d",
+        "evidence/ci02/queue_ref_cache_persistence.json（已合入的 PR #361 / #362 的候选 ref 已删除，13 条缓存仍在——候选 ref 的条目没人清）"
+      ],
+      "note": "四类分开这一半成立：ci.yml 里只有第一类（pnpm store / CPython 归档）与第二类（rust-cache）两种缓存，第三类只走 artifact（插件候选，消费前验），第四类（venv / site-packages / 用户配置 / 测试结果 / 活动 worker）一处都没有，合同枚举钉住。但审计发现缓存的**作用域**是坏的：push main 上没有任何产缓存的 job，合并组候选 ref 永远冷、每个候选各 save 一份，仓库缓存 10.3–10.6 GB 已超 10 GB 上限；desktop-shell 的两份 rust-cache 占 8.1 GB。这不是「类别混了」，是「命中从不发生」——写成可执行的设计（CI02 文档 §4.1：每类缓存在合并组上的日志行、每个候选写入 ≈ 1.8 GB、淘汰证据、候选 ref 的条目没人清；修法 (a) push main 种子 job + rust-cache 改 shared-key 对齐 / (b) restore-keys 只解决锁 hash 变了、解决不了作用域），归 CI05 由用户拍板，本轮不改 push main 的 job 集合。另：Windows 两片去掉 --with-deps 的实验（每片 −204…226s，关键路径）本轮已改、由本 PR 的 full-ci run 判。2026-09-16 CI02。"
+    },
+    {
+      "id": "CIP-015",
+      "phase": "CI02",
+      "requirement": "生成物不回源码索引且精确发行链不被PR污染",
+      "status": "pass",
+      "evidence": [
+        ".github/workflows/ci.yml@1f7f13e8 frontend（`pnpm build` 之后 `python3 scripts/ci/check_generated_untracked.py`：git ls-files 里没有 + git check-ignore 命中，GENERATED = canvas.html / web/dist-mcp / web/dist-playground）+ main-landing-audit（同一脚本再查一次）",
+        "tests/test_generated_untracked.py（test_a_tracked_canvas_is_reported / test_an_unignored_canvas_is_reported_even_if_untracked / test_the_real_repository_is_clean / test_the_cli_exit_code_carries_the_verdict）；tests/test_merge_queue_workflows.py::TestBuildReuseAndCaches::test_the_frontend_job_type_checks_through_pnpm_build_without_a_safety_net（检查排在 build 之后；M09）",
+        "docs/ci/plugin-stable-channel.md（ADR 0043：候选只验不回写不发布；release.yml 在固定发行 SHA 上重建，plugin_stable 只投影 Release 资产；发行分支不触发源码 CI）——本轮未动",
+        "evidence/ci02/local_builds.json（本机建了 canvas.html / dist-playground / wheel / workerd 之后 `git status` 归零：产物落在 scratchpad 或 gitignore 的位置）",
+        "CI02_BUILD_REUSE.md#5-产物身份与不混同目标e"
+      ],
+      "note": "生成物不回索引：两条判据（索引里没有 + ignore 命中）在 PR 快线与 main 落地审计各执行一次，且排在真构建之后（生成物存在时才有意义）。发行链不被 PR 污染：本轮没有新增任何从 PR artifact 到发行输入的路径（0 行抽取），plugin-stable 通道与 release.yml 一个字节没动。2026-09-16 CI02。"
+    },
+    {
+      "id": "CIP-016",
+      "phase": "CI03",
+      "requirement": "pytest分片并集覆盖原适用集合，无遗漏或不明重复",
+      "status": "pass",
+      "evidence": [
+        "tests/support/shard.py@064bc541（assign / plan / verify：nodeid 集合的并集 == 全集、两两不交、每片非空、无重复 → ShardError）",
+        "tests/conftest.py@064bc541（--shard K/N 在同一进程 collection 之后做，ShardError → pytest.UsageError rc 4；不带 --shard 时 no-op）",
+        "tests/test_pytest_shard.py（56 条；变异反证 22/22 KILLED：evidence/ci03a/mutations.json）",
+        "tests/test_merge_queue_workflows.py::TestGates::test_pytest_shards_agree_between_the_matrix_and_the_command / test_backend_split_keeps_all_five_tiers / test_unsharded_pytest_lanes_stay_unsharded（变异反证 10/10 KILLED：evidence/ci03a/mutations_ci.json）",
+        "evidence/ci03a/collect_full.txt / collect_shard1.txt / collect_shard2.txt + compare_collect.txt（collection 层：4686 = 2184 ∪ 2502，交集 0）",
+        "evidence/ci03a/compare_sets.json（junit 层，主语 (classname, name) 集合：s1 ∪ s2 == full、s1 ∩ s2 = ∅、c1 == s1、c2 == s2、计数逐片相加、并发 outcome 逐条等于顺序、manifest selected_files == junit 文件集合；14 条 check 全 true；full 4641 passed / 42 skipped / 2 failed = s1 2156/27/1 + s2 2485/15/1，两条红见文档 §3.3）",
+        "evidence/ci03a/negative_cli_cases.txt / negative_d1_union_check.txt（D①…D⑨ 的退出码；D⑨ = --shard-manifest 必须 = 形式，tests/test_pytest_shard.py::test_the_manifest_path_may_already_exist_when_written_with_equals）",
+        "CI03A_PYTEST_SHARDS.md#3-本地实测 / #4-负例与退出码；本机三组跑各有两条红：一条本轮真缺陷（shard.py 入口没钉 UTF-8 stdout，已修）、一条后台驱动让信号用例假红（§3.4，前台 rc 0）——都不是分片造成的，三组里落在同一 nodeid",
+        "evidence/ci05/shards/ci_shard_check.json（CI05：run 35007730894 五条腿 × 两片的 junit (classname, name) 集合两片不交、并集 == 4686 == manifest nodeids_total、每片文件集合 == selected_files；五条腿并集按分隔符归一后逐条相同，并与本机 collect_full.txt 逐条相同）"
+      ],
+      "note": "本机 macOS 证据：collection 层与 junit 层的并集都逐 nodeid 相等、无交集、无 outcome 变化；漏一个文件的真实变异 rc 4，拿掉并集检查后同一变异静默漏 46 条（证明检查是载荷）。CI 侧待 PR run：Linux 3 档 × 2 片与 full-ci 下 macOS / Windows × 2 片的 manifest + junit artifact 要再比一次并集（不同 os 的 skip 集合不同，全集要按同 os 比）。2026-09-16 CI03a，commit 064bc541。 2026-09-16 CI05：CI 侧那一半也有了（同 os 比：Linux 3 档 / macOS / Windows 各自两片，skip 数按 os 不同但并集相同）。"
+    },
+    {
+      "id": "CIP-017",
+      "phase": "CI03",
+      "requirement": "Playwright各browser/locale分片完整并消费真实产物",
+      "status": "pass",
+      "evidence": [
+        ".github/workflows/ci.yml windows-exe-smoke（CI03c：matrix include 两片 chromium / webkit+chromium-en，name 显示名 windows-exe-smoke (K)，每片完整构建 + 三断言 + 冒烟①②③ + 分片自验 + `pnpm e2e ${{ matrix.projects }}`，Playwright 步 timeout-minutes 30，artifact 按片命名）",
+        "scripts/ci/playwright_shard_check.py（每片自验：本片 --list == 全集里属于本片 project 的那些、本片 ∪ 另一片 == 全集 project 集，主语 (project, file:line:col, title) 集合；清单读不懂 rc 2、分片不完整 rc 1）",
+        "tests/test_playwright_shard_check.py（35 条；变异反证 19/19 KILLED：evidence/ci03c/mutations.json）",
+        "tests/test_merge_queue_workflows.py::TestPlaywrightShards（10 条：并集 == playwright.config.ts 的 project 集、两两不交、others == 其余片之并、浏览器 == 本片 project 要的引擎、e2e / install 从 matrix 取参、自验在 e2e 之前、必需步骤无 if:、artifact 名带片号、两条 Playwright 步的 step 级 timeout、job id / Gate 闭集不变、posix-e2e 不分片；变异反证 18/18 KILLED：evidence/ci03c/mutations_ci.json）",
+        "evidence/ci03c/list_all.txt / list_shard1.txt / list_shard2.txt + selfcheck_shard{1,2}.{txt,json}（本机 --list：151 = 109 ∪ 42；自验 rc 0 / 0；--web 产出与 npx 逐字节相同）",
+        "evidence/ci03c/local_runs_summary.json + local_runs_timing.json + local_runs/（本机 macOS `python -m tavotto` 形态真跑：片 1 chromium 89 passed / 20 skipped（B1 + B2 两次前台调用，601.8s）、片 2 webkit 23 + chromium-en 17 passed / 2 skipped（320.1s）；集合比对 B1 ∪ B2 == list_shard1、C == list_shard2、B ∪ C == list_all、B ∩ C = ∅ 四条全 true；A 那次 1 红是本机 PATH 下 python3 = 系统 3.9，文档 §6.3）",
+        "evidence/ci03c/negative_cases.txt（N1…N12：漏 project / 两片重叠 / 空清单 / 认不出的行 / 拿错片 / 删一条 / 重复 / 空片 / 混参数 / 配置里没有的 project / 没有 Total，退出码全非零）",
+        "CI03C_PLAYWRIGHT_SHARDS.md#6-本地实测 / #7-负例与变异反证",
+        "evidence/ci05/shards/ci_shard_check.json（run 35011613925 与 35031790918 的 playwright-shard-check-windows-shard1/2：两片 --list 不交、并集 == 全集 151、两台机器的 list_all 逐字节相同、check.json ok 两片 true；独立解析器）",
+        "evidence/ci05/timing/timing_ci_35b912a0.json / timing_ci_bb27bdaf.json（windows-exe-smoke (1) / (2) 各自 PyInstaller → 三条断言 → 冒烟①②③ → 自验 → e2e 全 success：1076 / 945s 与 796 / 670s）",
+        "CI05_COMPARISON.md#9-ci-侧分片完整性cip-016--cip-017-的-ci-半边"
+      ],
+      "note": "「分片完整」这一半在本机有集合级证据（--list 层 + 真跑层都逐 (project, file:line:col, title) 相等、无交集）并由合同测试 + 每片自验两层钉住；「消费真实产物」这一半**一次都没跑过**：本机是 macOS + `python -m tavotto`（与 posix-e2e 同形），Windows .exe + 内置 runtime + 两台机器各自构建的形态要等本 PR 的 full-ci run（看 windows-exe-smoke (1) / (2) 各自的 playwright-shard-check-windows-shard<K> artifact 与 e2e 结论）。要求是两半的合取，所以保持 not_run；到那次 run 有结论再改。2026-09-16 CI03c。 2026-09-16 CI05：「消费真实产物」半边在 CI 上成立——两个 run 的两片各自完整构建 .exe + 内置 runtime 并跑完本片 project（chromium 89 条 / webkit 23 + chromium-en 16 条）全绿；「分片完整」半边的 CI 侧集合证据也有了。两半合取成立，改 pass。locale 那一维 = chromium-en project，在片 2。"
+    },
+    {
+      "id": "CIP-018",
+      "phase": "CI03",
+      "requirement": "端口、目录、HOME/config/cache/报告和进程owner隔离",
+      "status": "not_run",
+      "evidence": [
+        "tests/conftest.py（每个进程各自 tempfile.mkdtemp 的 TAVOTTO_DATA_DIR、每个用例各自的 TAVOTTO_CONFIG_DIR；pytest basetemp 按会话编号）",
+        "evidence/ci03a/compare_sets.json + c1.time / c2.time / timing_table.json（本机两片同时跑一次：outcome 与顺序跑逐条相同；c1 +17.8s、c2 −2.6s；峰值 RSS 582.7 + 455.3 MiB）",
+        ".github/workflows/ci.yml package（CI03b：venv 在 ${{ runner.temp }}/smoke-venv；起服务 = scripts/ci/package_smoke.py --python \"$BIN/python\" --workdir ${{ runner.temp }}/smoke-run；step timeout-minutes 5；失败时 package-smoke-logs-<os>-<python> 收走 workdir；/tmp/smoke、5199、sleep 8 都不在了）",
+        "scripts/ci/package_smoke.py（端口向系统租 + 三种租约丢失文案换号重试；就绪 = /api/version 200 + JSON 且应答者持有本实例 data dir 里的凭据（smoke_app.adopt_session_credentials + /api/session/ping 200）；终止 = 整组 SIGTERM → SIGKILL → killpg(pgid, 0) ESRCH，组里剩人再升级；data / config 每次尝试一套在 workdir 下）",
+        "tests/test_package_smoke.py（41 条：桩的 11 种 fail-mode + SIG_IGN worker + 包装形状 + 等待中收 SIGTERM + 用法错误；变异反证 28/28 KILLED：evidence/ci03b/mutations.json）",
+        "tests/test_merge_queue_workflows.py::TestPackageSmokeIsolation（7 条；变异反证 18/18 KILLED：evidence/ci03b/mutations_ci.json）",
+        "evidence/ci03b/local_runs/（本机真 wheel：build → venv → install → 脚本 rc 0，ready_seconds 2.33 vs 原来盲等 8；租约被抢的复现 occupy_then_run.py：产品顺延「端口 P 被占用，改用 P+1」→ lease_lost 3.8 s → 换号 → rc 0；终止后 ps 无残留）",
+        "CI03B_PACKAGE_SMOKE_ISOLATION.md#1-三处隔离各自的主语 / #2 / #3 / #4"
+      ],
+      "note": "CI03a 那次只做了同机并发对照（见上一版 note：c1 619.7s vs s1 601.9s、c2 538.0s vs s2 540.6s，outcome 逐条相同）。CI03b（2026-09-16）让 `package` job 这一处的目录 / 端口 / 进程 owner 隔离**成立并有单测 + 合同**：venv 与 workdir 按 job、data / config 按尝试、端口按系统租约 + 三种竞争文案重试、就绪判据钉住应答者归属、终止判据钉住进程存在性；本机对真 wheel 与人为抢占各跑过一次。**仍是部分成立**：① windows-exe-smoke 的 dist/ 与 posix-e2e 的实例隔离没动；② HOME / 字体缓存 / MPLCONFIGDIR 仍按 04 §4 的『仅在测试合同允许处』未处理；③ 同机两个 package 实例真正同时跑没试过（本机只有单实例 + 人为抢占），Windows 腿的 taskkill / 路径形状一次都没跑。所以保持 not_run；到 CI04 多 runner 主机上跑过同机双实例、且其余撞点处理完再改。"
+    },
+    {
+      "id": "CIP-019",
+      "phase": "CI03",
+      "requirement": "并发与取消不杀其他job，不沿用全局危险reaper",
+      "status": "not_run",
+      "evidence": [
+        ".github/workflows/ci.yml（分片没有加任何 reaper / pkill；每片独立 VM，取消由 job 级 timeout-minutes 承担，未改）",
+        "scripts/ci/package_smoke.py（终止只对**自己起的**进程组（start_new_session=True，先核 pgid == pid）发信号，Windows 用 taskkill /T /F 只杀自己的 pid 树；没有任何 pkill / 扫共享目录；`smoke_app._leftover_workers` 按本实例 data dir 认残留）",
+        "tests/test_package_smoke.py::test_wait_group_gone_answers_by_existence_not_by_having_signalled（不是组长的 pid 不许被当成组）、::test_a_worker_that_ignores_sigterm_…（组里剩人升级 SIGKILL 后核空）、::test_termination_leaves_neither_the_server_nor_its_worker"
+      ],
+      "note": "CI03a 那次未做取消实验、未新增清理动作。CI03b（2026-09-16）新增的唯一清理动作是 package_smoke.py 对**自己起的**进程组的终止：作用域 = 自己 setsid 出来的那个组（先核组长，不是组长就退回只杀直接子进程，绝不 killpg 到别人的组）/ Windows 自己 pid 的进程树；没有全局 reaper、没有 pkill、没有按名字扫进程。脚本对 SIGTERM / SIGINT 装了处理器（抛 SystemExit，让 finally 里的终止跑完再退），本机用例验过：等待就绪期间收到 SIGTERM，脚本退 143 且服务与 worker 都不在了。「取消不杀其他 job」这一半仍只是托管 VM 的既有性质；runner 在 step 超时 / 取消时对步骤进程树发 SIGINT → SIGTERM → 杀树的那条链在 CI 上一次没跑过。所以保持 not_run。"
+    },
+    {
+      "id": "CIP-020",
+      "phase": "CI03",
+      "requirement": "嵌套并行CPU/RAM预算有真实验证",
+      "status": "not_run",
+      "evidence": [
+        "evidence/ci03a/full.time / s1.time / s2.time / c1.time / c2.time（/usr/bin/time -l：本机顺序与并发各自的峰值 RSS 与墙钟）"
+      ],
+      "note": "只有本机数字（12 核 Mac mini），没有 CI VM 的；本 PR 没有在同一 VM 内增加并行（每片一台机、无 -n），「嵌套并行预算」在这个形状下没有主语。真实预算验证要等同机多进程或 xdist 那一步。"
+    },
+    {
+      "id": "CIP-021",
+      "phase": "CI03",
+      "requirement": "skip/缺资源/重试不伪造必需资格",
+      "status": "not_run",
+      "evidence": [
+        "evidence/ci03a/compare_sets.json（skipped 27 + 15 = 42 == full，且逐条 outcome 不变：本机没有一条因分片从 skipped 变 passed 或反过来）",
+        ".github/workflows/ci.yml（pytest 命令带 -rs：skip 理由进日志，CI00 记录三条腿原先都拿不到）",
+        "tests/support/shard.py verify()（空片 → rc 4，不是绿）",
+        "scripts/ci/playwright_shard_check.py（CI03c：本片 --list 为空 / 配置里的 project 不在任何一片 → rc 非零，不是绿；evidence/ci03c/negative_cases.txt N1 / N3 / N9）",
+        "evidence/ci03c/local_runs_summary.json（本机分片跑的 skip 集合：chromium 20 条 playground*、chromium-en 2 条，与 CI00 记录的 CI 形状一致（posix 腿形状）；分片没有把任何一条从 skipped 变成 passed）"
+      ],
+      "note": "本机证据只覆盖「分片不改变 skip 集合」这一维；「缺资源 / 重试不伪造资格」在 CI 侧未测（本 PR 没动任何 skip 条件，也没有 retry）。CI 上不同 os 的 skip 集合本来就不同，判「没伪造」要按同 os 比 manifest 与 junit。 CI03c 补充：Playwright 分片不改任何 skip 条件、不改 retries（attempt 2 那次的 1 flaky 仍靠 retries: 1 过，coverage_ledger 的 known_limitations 继续挂着）；「缺资源」这一维只在本机自验层验过（空清单 rc 2）。 2026-09-16 CI05：CI 侧看到分片后各腿的 skip 数（Linux 35+24 / 32+23、macOS 28+17、Windows 51+26）与 CI00 记录的形状一致、failure 0；「缺资源 / 重试不伪造」仍没有 CI 演练（没有删产物看红、没有 retry 样本），保持 not_run。"
+    },
+    {
+      "id": "CIP-022",
+      "phase": "CI04",
+      "requirement": "现有lab职责和资格基线不被PR池悄然改变",
+      "status": "pass",
+      "evidence": [
+        "CI04_RUNNER_PILOT.md#5-runner_pool_ready-not_run以及每个验收项为什么是现在这个状态",
+        "CI04_RUNNER_PILOT.md#7-验证命令与退出码2026-09-16worktree-ci-foundation本-pr-的树（`git diff --stat 8b95256c..HEAD -- <lab 五文件>` 输出 0 行）",
+        "tests/test_merge_queue_workflows.py::TestRunnerTrustZones::test_untrusted_events_reach_only_hosted_runners（变异 M01–M05 / M09 / M10 / M13–M16 打红）",
+        "tests/test_merge_queue_workflows.py::TestRunnerTrustZones::test_the_lab_label_reaches_only_the_reusable_qualification_and_its_trusted_callers（变异 M01 / M09 / M10 / M11 / M13 / M14 打红）",
+        "evidence/ci04/mutations.json",
+        "evidence/ci04/workflow_events_and_runners.json"
+      ],
+      "note": "主语 = 本 PR 栈（8b95256c..HEAD）对 lab 五个文件（_lab-qualification.yml / lab-ci.yml / bootstrap_lab_runner.sh / lab_preflight.py / cleanup.py）的 diff 为空 + 静态守卫①②（PR 事件的 workflow 触不到 lab 标签；lab 标签只在可复用资格 workflow 里、调用方只有 lab-ci.yml / release.yml、事件只有 push / schedule / workflow_dispatch）。**不是**「lab 机器没被改」——tavotto-ci-01-2/-3/-4 的存在本身就是机器侧的变化，那一半待管理员（ADMIN_HANDOFF A-2）。2026-09-16 CI04。"
+    },
+    {
+      "id": "CIP-023",
+      "phase": "CI04",
+      "requirement": "新池真实VM资源和网络已测；未知项不冒充可用",
+      "status": "not_run",
+      "evidence": [
+        "evidence/ci04/runner_budget_plan.json（status not_run，physical_host_capacity 未核）",
+        "ADMIN_HANDOFF_RUNNER_POOL.md#b-若批准试点操作表每步写作用对象--资源--回退--验收（B-1 / B-7）",
+        "evidence/admin_inventory.json（needs_admin_input 18 项）"
+      ],
+      "note": "没有 VM；网络清单一条没测（B-7 列了命令）；宿主容量六项待管理员。未知项没有冒充可用：仓库里没有任何 job 路由到不存在的池（守卫④）。2026-09-16 CI04。"
+    },
+    {
+      "id": "CIP-024",
+      "phase": "CI04",
+      "requirement": "PR无法通过修改runs-on接触可信lab/签名/真实数据",
+      "status": "pass",
+      "evidence": [
+        "ADMIN_HANDOFF_RUNNER_POOL.md#f1-操作表（F-8 / F-10 两行的验收命令与结果）",
+        "evidence/ci04/f10_reverse_probe.json（公开仓库 runners total_count=0 + 探针 job 十分钟采样：始终 queued、无 runner；同一时刻 ci-infra 的 tavotto-lab-01 online idle 作对照）",
+        "tests/test_merge_queue_workflows.py::TestRunnerTrustZones（静态半边，未变）",
+        "CI04_RUNNER_PILOT.md#22-动态同仓库有写权限的人在-pr-里加一行-runs-on-self-hosted-tavotto-lab-会怎样（当时的推断，已被 F-10 实测取代）"
+      ],
+      "note": "动态半边**已实测**（2026-09-17）：lab runner 迁到私有仓库 Tavotto/ci-infra（F 组，PR #384 / #386 / #388 + ci-infra），公开仓库注销全部 self-hosted runner（A-2 三台 + F-8 的 tavotto-ci-01，`actions/runners` total_count = 0）。F-10 探针：同仓库分支 PR #391 里 `runs-on: [self-hosted, tavotto-lab]` 的空 job（run 35175791807 / job 105057089268）十分钟内始终 queued、runner 为空，而同一时刻 ci-infra 的 tavotto-lab-01 online 且 idle——它接得到 ci-infra 的 job（F-5 run 35135034102 就落在它上面），接不到公开仓库的。挡住的机制是**结构**（公开仓库没有 runner），不是策略（org free 计划没有 runner group 限制）。签名 / 发布凭据留在 hosted 这一条不变。静态半边（守卫 ①–④）仍在挡合并。"
+    },
+    {
+      "id": "CIP-025",
+      "phase": "CI04",
+      "requirement": "执行VM无管理面凭据，单job身份与磁盘清洁得到验证",
+      "status": "not_run",
+      "evidence": [
+        "ADMIN_HANDOFF_RUNNER_POOL.md#b-若批准试点操作表每步写作用对象--资源--回退--验收（B-3 / B-4 / D-7）"
+      ],
+      "note": "没有执行 VM。设计：一 job 一 VM、JIT 注册、凭据只在控制面、模板里无 .credentials / .runner / 私钥；验收命令在 B-3 / B-4 / D-7。2026-09-16 CI04。"
+    },
+    {
+      "id": "CIP-026",
+      "phase": "CI04",
+      "requirement": "多槽真并行、离线route退出和同等hosted恢复有效",
+      "status": "not_run",
+      "evidence": [
+        "ADMIN_HANDOFF_RUNNER_POOL.md#c-本仓库侧要配合的改动只描述本轮不做（C-3 路由开关）",
+        "ADMIN_HANDOFF_RUNNER_POOL.md#d-演练清单b-9-之前每条各做一次记录结论d-1d-2-参考-03-6不因本地离线就跳过资格（D-1 … D-5）"
+      ],
+      "note": "没有槽。退出路线 = hosted：repo variable 缺省即 hosted 名、池离线删变量不改 yml；已失败 / 取消的必需实例在同一 SHA 重跑取得资格。多槽并发与异常隔离的演练在 D 组。2026-09-16 CI04。"
+    },
+    {
+      "id": "CIP-027",
+      "phase": "CI05",
+      "requirement": "缺shard/错artifact/误取消/跨任务污染等负例会红",
+      "status": "pass",
+      "evidence": [
+        "CI05_COMPARISON.md#10-负例清单05-3-的九条每条怎么证明会红（九条逐条：CI 真红 / 本机反证 / not_run 与要开什么坏 PR 才能证）",
+        "evidence/ci05/actions/runs/run_35004450721.json + jobs_35004450721.raw.json（#374 首跑：backend-platforms (windows-latest, 2) failure → CI integration gate failure——缺片 / 分片红 → Gate 红的实机记录）",
+        "evidence/ci05/actions/runs/run_35024490379.json / run_35028309531.json（#376 两次：backend-platforms (macos-latest, 2) failure → Gate failure）",
+        "evidence/ci05/actions/runs/run_34994534095.attempt1.json（#373 attempt 1：windows-exe-smoke 挂 60 min 被 job 级 timeout cancelled → Gate failure）",
+        "evidence/ci05/shards/negative_cases.txt（CI 侧分片检查器的 9 条负例：删一条 / 报告充数 / 重叠 / manifest 总数改小 / 重复 / Playwright 少一条 / ok=false / 清单抄另一片 / 认不出的行，rc 1 或 2）",
+        "evidence/ci02/tsc_mutations.json（TypeScript 真错误：T1 / T2 rc 2；T3 references 少 e2e → rc 0，所以合同钉 references 集合）",
+        "tests/test_plugin_stage.py（坏 artifact：错 SHA / 改一字节 / 少多文件 / 改过的清单各红）；evidence/ci03b/mutations.json（端口 / 目录 / 进程组的负例）；evidence/ci04/mutations.json（PR 事件派到 lab 标签 → 红）",
+        "CI05_COMPARISON.md#6-三种演练真实材料不是合成（同 PR opened run 被 labeled run 取消、别的 PR 不受影响：34993254893 → 34993304390、35031788042 → 35031790918）"
+      ],
+      "note": "「会红」的证据分三类并逐条标明：CI 上真红过的三种（分片红 / 硬杀 / 误配 Gate 判失败）引 run + job；只在本机反证过的（坏 artifact / tsc / 端口目录 / lab 标签）引各阶段的变异清单；两边都没有的（CI 上把 matrix 轴写成 [1, 1]、CI 上推坏 artifact、推带类型错误的 PR、PR push 与 merge_group 同时刻）写 not_run 与要开什么样的一次性坏 PR 才能证——本轮不开。没有一条写成「加了反例」。2026-09-16 CI05。"
+    },
+    {
+      "id": "CIP-028",
+      "phase": "CI05",
+      "requirement": "前后测量不编2×/30–60%或不足样本p95",
+      "status": "pass",
+      "evidence": [
+        "CI05_COMPARISON.md#2-两个总时长before-中位-vs-after-各样本（before 29 个 merge_group 中位 1964 / 3412；after 每 run 单值；q₀ 标明是口径不是测量）",
+        "CI05_COMPARISON.md#5-争抢-runner-的样本单列不进可比列",
+        "evidence/ci05/comparison.json（rules.no_percentiles / rules.contended / rules.qualification_model_zero_runner_wait）",
+        "evidence/ci05/compare.py（只算 median / min / max，没有分位数函数）",
+        "evidence/ci05/timing/（每个 after run 用它执行时那份 ci.yml 分解；快照在 evidence/ci05/workflows/）"
+      ],
+      "note": "没有 2× / 30–60% 这类承诺：无争抢样本 #374 资格 −50%、反馈 −43%（n = 1）；#375 24.8 min 且关键路径带 205s 等待；含全部改动的两个样本在争抢窗口里只给扣除 runner_wait 的口径（1412 / 1498s）并写明它不是测量；每档 n = 1–2，不算 p95；托管 ubuntu 自身 ±30% 漂移写在明处。2026-09-16 CI05。"
+    },
+    {
+      "id": "CIP-029",
+      "phase": "CI05",
+      "requirement": "ci_hosted_ready与runner_pool_ready独立如实报告",
+      "status": "pass",
+      "evidence": [
+        "CI_HANDOFF.md#0-两个状态独立判（ci_hosted_ready: pass，主语 = hosted 上的 PR full-ci 验证，合入后复核命令在 §12；runner_pool_ready: not_run）",
+        "README.md#实施状态2026-09-16",
+        "CI04_RUNNER_PILOT.md#5-runner_pool_ready-not_run以及每个验收项为什么是现在这个状态"
+      ],
+      "note": "两个状态分开判、各有理由：hosted 那边按 05 §1 的五条逐条对（DAG / 分片隔离 / Gate 与事件 / 覆盖不缩小 / 真实样本），并写明 pass 的主语是 PR 上的 hosted 验证、七个 PR 未合入；pool 那边没有 VM 就是 not_run，不借源码脚本声称服务器就绪。四种状态（源测试通过 / 服务器部署 / 代码合并 / 产品发布）分开写。2026-09-16 CI05。"
+    },
+    {
+      "id": "CIP-030",
+      "phase": "CI05",
+      "requirement": "统一计划入口/CI交接更新且U00不重复建调度系统",
+      "status": "not_run",
+      "evidence": [
+        "CI_HANDOFF.md（按 templates/CI_HANDOFF.md 与 06 的必填逐项填；§14 写了 U00 应沿用的接口与需重新调查的产品问题；§15 是要贴进统一计划 README 的那段文字）",
+        "README.md#实施状态2026-09-16"
+      ],
+      "note": "CI 交接这一半完成（CI_HANDOFF.md）；「统一计划入口更新」这一半 not_run：docs/implementation/tavotto-foundation/ 今天不在仓库里，06 第 1 条要加进它 README 的那段文字原样放在 CI_HANDOFF.md §15，入库时粘贴。「U00 不重复建调度系统」是对 U00 的约束，本轮只能把接口写清（§14），不能替它验。2026-09-16 CI05。"
+    }
+  ]
+}

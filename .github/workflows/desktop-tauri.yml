@@ -1,0 +1,852 @@
+name: Desktop apps (Tauri)
+
+# 桌面发行的唯一链路：macOS .app/.dmg（签名 + 公证）与 Windows NSIS，
+# 两个平台都是 Tauri 真窗口——桌面产物不再有「启动后开浏览器」的形态。
+# 旧链路（desktop.yml：PyInstaller 直发 + Inno Setup + 免安装 zip）已于
+# v0.3.0 退役删除，git 历史可找回。架构见 docs/adr/0002-tauri-desktop-shell.md。
+#
+# **两个平台的安装包都带内置渲染 runtime**（进 sidecar 的 _internal/runtime，
+# 由 scripts/build_worker_runtime.py 生成、经 packaging/tavotto.spec 收进）：
+# 用户不用装 Python，首次渲染不联网。
+#   Windows: 官方 embeddable          → runtime\python.exe
+#   macOS:   python-build-standalone  → runtime/bin/python3.13（可重定位，逐个可签名；
+#            python/python3 两个别名在构建时剪掉，Tauri 会把符号链接拍平成真副本）
+# macOS 目前**只发 arm64**（runner 只有 Apple Silicon 一档）；Intel 的目标在
+# packaging/runtime-lock.json 里标着 shipped=false，没构建过也没冒烟过。
+#
+# 验收原则：门禁打的是**最终用户启动的产物**——
+# 1. sidecar 冒烟（scripts/smoke_desktop.py）对 PyInstaller 真二进制走完整链路：
+#    动态端口 / nonce 认证 / 重放拒绝 / 打开项目 / 渲染 / 导出 / EOF 退出无孤儿；
+# 2. 两个平台都跑 smoke_app.py --expect-source bundled --expect-runtime
+#    （内置 runtime 真能渲染，且是「本该带、带的这份完整」）。
+#    **刻意不建 worker-env、不设 TAVOTTO_WORKER_PYTHON**：一条借来的解释器会让
+#    「runtime 根本没打进去」全程绿灯，而那正是这条门禁唯一要挡的东西；
+# 3. macOS 还要对**签完名的 .app 本体**再跑一次 smoke_app（从中文+空格路径），
+#    并逐个校验 .app 里每个 Mach-O 都签到了、架构都对——签名/公证之后产物
+#    还会不会跑，只有真跑一次才知道；
+# 4. Windows 对 Tauri 真 .exe 做启动-探活-退出探针（壳 → sidecar → 收尾）。
+on:
+  # **不再由 tag 直接触发。** 从前 release.yml 与本工作流由同一个 tag 各自
+  # 启动，本工作流构建完就轮询 `gh release view` 等对方把 Release 建出来
+  # （最长 190 分钟）。那个拓扑有两个不可修的毛病：
+  #   · 等待没有上界——lab gate 的**排队**时间本身没有上界；
+  #   · 两条腿各自 checkout tag，而 tag 是可移动的引用，
+  #     「同一个 tag」证明不了「同一个 commit」。
+  # 现在 release.yml 是 tag 的唯一入口，它用 workflow_call 调本工作流，
+  # 并把已经验过、已经解析好的**精确 SHA** 传进来。轮询整段删掉了。
+  workflow_call:
+    inputs:
+      sha:
+        description: "已经由调用方验过可达 main 的精确 commit SHA"
+        required: true
+        type: string
+      version:
+        description: "版本号（不带 v），用于产物命名与清单核对"
+        required: true
+        type: string
+      release_build:
+        description: >-
+          这是不是一次**发行构建**：要签名、要公证、要 provenance、要更新包。
+          **与「挂不挂 Release」是两件事** —— 本工作流根本不挂 Release
+          （那归 release.yml 的 publish job），所以它不需要知道 publish。
+        required: false
+        default: false
+        type: boolean
+    # **每一个 secret 都显式声明。** `secrets: inherit` 只能写在**调用方**
+    # （`jobs.<id>.secrets: inherit`），写在被调用方是语法错误——actionlint
+    # 当场逮到了。显式列一遍还有第二个好处：这份清单就是「桌面发布链需要
+    # 哪些凭据」的唯一出处，少配一个时症状不再是「构建出来但没签名」。
+    # 全部 `required: false`：没配签名密钥时构建照跑，只是产物不签名
+    # （build_desktop.py 会就地关掉 createUpdaterArtifacts 并打 warning）。
+    secrets:
+      MACOS_CERTIFICATE:
+        required: false
+      MACOS_CERTIFICATE_PASSWORD:
+        required: false
+      MACOS_SIGN_IDENTITY:
+        required: false
+      APPLE_ID:
+        required: false
+      APPLE_APP_PASSWORD:
+        required: false
+      APPLE_TEAM_ID:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+      SIGNPATH_API_TOKEN:
+        required: false
+
+  # 单独跑桌面构建（排查用）。**不挂 Release**——挂 Release 只有一条路，
+  # 就是 release.yml 的 publish job。
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "基于哪个 tag 构建（如 v0.2.0）"
+        required: true
+
+# **全程只读**（1.0 审计 P1-04：secret-bearing 工作流最小权限）。
+# 从前 build 与 updater-manifest 各要了一次 `contents: write`，因为它们
+# 各自往 Release 上挂东西。现在挂 Release 只有一条路——release.yml 的
+# publish job——这条链一个字节都不写。
+permissions:
+  contents: read
+  actions: read
+
+# CI 里跑起来的每一个 Tavotto 进程都**硬关**匿名用量统计。
+# 单靠「配置目录是新的、同意态是 unset」不够：那是默认值，而默认值会变、
+# 会被某个用例改掉、会被缓存的用户目录带进来。CI 绝不能产生真实的产品事件——
+# 一台每天跑几十次的机器足以让「有多少人在用」这个数字彻底失真。
+# 与 TAVOTTO_NO_UPDATE_CHECK 是两个独立开关，别指望其中一个代管另一个。
+env:
+  TAVOTTO_NO_TELEMETRY: "1"
+
+jobs:
+  # ────────────────────────────────────────────────────────────────
+  # 信任链第一环（与 release.yml 的 trust 同构）：tag → 精确 SHA，且必须
+  # 可达于受保护的 origin/main。本工作流握着 macOS 证书、Apple 公证凭据与
+  # updater 私钥——一个指向未经评审 commit 的 tag 绝不能碰到它们
+  # （1.0 审计 P1-04）。之后所有 job 只认这里输出的 SHA。
+  # ────────────────────────────────────────────────────────────────
+  trust:
+    timeout-minutes: 60  # 上限是防挂死、不是性能预算：把损失从「无限」变成「有界」
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: resolve
+        env:
+          # **被调用时用调用方传进来的 SHA，不自己再解析一次 tag。**
+          # 自己解析等于给同一个问题留两个答案：release.yml 的 trust 与这里
+          # 各 checkout 一次 tag，中间 tag 被指向别处的话，wheel 与桌面产物
+          # 就来自两个 commit，而没有任何一步会报错。
+          GIVEN_SHA: ${{ inputs.sha }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "${GIVEN_SHA:-}" ]; then
+            # 信任但仍要核实：调用方给的必须是本仓库里一个真实、可达 main 的 commit
+            if ! git cat-file -e "${GIVEN_SHA}^{commit}" 2>/dev/null; then
+              echo "::error::调用方给的 $GIVEN_SHA 不是本仓库里的 commit"
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$GIVEN_SHA" origin/main; then
+              echo "::error::$GIVEN_SHA 不可达于 origin/main——发布只接受已经合并进受保护 main 的提交"
+              exit 1
+            fi
+            echo "sha=$GIVEN_SHA" >> "$GITHUB_OUTPUT"
+            echo "✅ 调用方传入 $GIVEN_SHA（可达 origin/main）"
+            exit 0
+          fi
+          if ! SHA="$(git rev-parse --verify "refs/tags/${TAG}^{commit}" 2>/dev/null)"; then
+            echo "::error::$TAG 不是本仓库里的一个 tag——拒绝进入桌面发布链"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$TAG → $SHA 不可达于 origin/main——发布只接受已经合并进受保护 main 的提交"
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "✅ $TAG → $SHA（可达 origin/main）"
+
+  # Rust supervisor 的静态门禁。**只在 Linux 上跑一份**：它是纯标准库 + serde
+  # 的 stdio 进程，没有任何平台分支，三平台各跑一遍只是把发布慢三倍。
+  # 刻意不做 build 的 `needs`：clippy 挑剔一条命名不该把发行链堵死，
+  # 但它必须与桌面构建同时可见（golden vectors 是 patch 身份的硬验收，
+  # 那条真跑在 cargo test 里）。
+  workerd:
+    needs: trust
+    timeout-minutes: 60  # 上限是防挂死、不是性能预算：把损失从「无限」变成「有界」
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workerd
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.trust.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: workerd
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # supervisor_behaviour.rs 起的是真二进制 + tests/fake_worker.py，
+      # 靠 runner 自带的 python3（`PYTHON` 可覆盖）
+      - run: cargo test
+
+  build:
+    needs: trust
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,   bundles: app,  artifact: dmg }
+          - { os: windows-latest, bundles: nsis, artifact: nsis }
+    timeout-minutes: 60  # 上限是防挂死、不是性能预算：把损失从「无限」变成「有界」
+    runs-on: ${{ matrix.os }}
+    permissions:
+      # **不再需要 contents: write**：这条腿只把产物传成 workflow artifact，
+      # 挂 Release 归 release.yml 的 publish job。留着一个用不上的写权限，
+      # 等于把发行凭据放在一个不需要它的地方。
+      contents: read
+      actions: read
+      # 桌面安装包/更新包的 build provenance（审计 P1-04）
+      id-token: write
+      attestations: write
+    env:
+      # tag 触发时 inputs 为空，一律经这个变量取目标 tag
+      RELEASE_TAG: ${{ inputs.tag || format('v{0}', inputs.version) }}
+      # 发行构建 = 产物会挂上 Release。签名门禁按它分岔：发行构建缺任一
+      # 签名/公证凭据必须**失败**而不是 warning（1.0 审计 P1-07）；
+      # 非发行的 dispatch 构建（attach=false）保留降级路径，便于试构建。
+      # **Windows 的 Authenticode 是这条纪律里唯一的例外**，理由见下面门禁那一步。
+      IS_RELEASE_BUILD: ${{ inputs.release_build && '1' || '0' }}
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # 更新器包的 minisign 私钥（与 tauri.conf.json 里的 pubkey 配对）。
+      # 没配 secret 时 createUpdaterArtifacts 会失败，所以构建那步按有没有
+      # 密钥分岔——**发行链不能因为「暂时没配更新器」整个断掉**。
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.trust.outputs.sha }}
+
+      - name: 确认该 tag 含 Tauri 配置
+        shell: bash
+        run: |
+          test -f src-tauri/tauri.conf.json || {
+            echo "::error::$RELEASE_TAG 这个 tag 里没有 src-tauri/——请选更新的 tag"
+            exit 1
+          }
+
+      - name: 发行签名门禁（缺凭据的发行构建就失败在这里，不是 warning）
+        # 1.0 审计 P1-07：签名与安全更新不能是「可选能力」。发出去的安装包
+        # 必须签名（macOS 还要能公证），更新包必须带 minisign 签名——缺任一
+        # secret 的「发行」等于把不可信更新链发给全体用户，而且工作流全绿。
+        # 试构建（workflow_dispatch + attach=false）不受影响。
+        #
+        # **Windows 的 Authenticode 是唯一的例外，而且是自觉的**（2026-08-22，
+        # v0.9.0 第一次真正触发这道门禁时定的）：SignPath Foundation 的开源订阅
+        # 要外部审批，拿不到之前这条硬失败挡掉的不是「未签名的安装包」，而是
+        # **整个 Windows 桌面版**——连带 updater-manifest 的两平台硬要求一起
+        # 落空，于是 macOS 用户也收不到更新（latest.json 根本不合成）。
+        # 「Windows 用户没有安装包、macOS 用户没有更新」比「Windows 安装包未签名」
+        # 坏得多，而后者正是 0.8.0 及更早一直在发的形态，不是本次新增的风险。
+        #
+        # 例外只限 Authenticode 这一项，其余一条没松：`TAURI_SIGNING_PRIVATE_KEY`
+        # 仍是硬要求（更新链的可信度不靠 Authenticode，靠 minisign），macOS 的
+        # 证书与公证仍是硬要求。SignPath 配好之后把 `if` 那支改回 `missing+=`
+        # 即可恢复原纪律——那时它挡的才是真的「本可以签却没签」。
+        # 政策与措辞见 docs/code-signing-policy.md。
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$IS_RELEASE_BUILD" = "1" ] || { echo "非发行构建：跳过签名门禁"; exit 0; }
+          missing=()
+          [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ] || missing+=("TAURI_SIGNING_PRIVATE_KEY（更新包签名）")
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            [ -n "${MACOS_CERTIFICATE:-}" ]   || missing+=("MACOS_CERTIFICATE")
+            [ -n "${MACOS_SIGN_IDENTITY:-}" ] || missing+=("MACOS_SIGN_IDENTITY")
+            [ -n "${APPLE_ID:-}" ]            || missing+=("APPLE_ID（公证）")
+          elif [ "${SIGNPATH_ENABLED_VAR:-}" != "true" ]; then
+            # 不进 missing——见上面那段。但要在**运行页顶部**看得见，而不是
+            # 只在第 33 步的日志里躺着：发出去的东西没签名，得有人知道。
+            echo "::warning title=Windows 安装包未签名::vars.SIGNPATH_ENABLED 未开启——本次发行的 Windows 安装包没有 Authenticode 签名，用户首次运行会看到 SmartScreen 警告。更新包仍有 minisign 签名，自动更新链是可信的。"
+            {
+              echo "### ⚠️ Windows 安装包未签名"
+              echo
+              echo "\`vars.SIGNPATH_ENABLED\` 未开启，本次发行的 \`Tavotto-*-Windows-Setup.exe\` **没有 Authenticode 签名**。"
+              echo
+              echo "- 用户首次运行会看到 SmartScreen 警告；"
+              echo "- 更新包（\`*-setup.nsis.zip\`）仍带 minisign 签名，自动更新链本身可信；"
+              echo "- 安装包仍有 build provenance attestation，可用 \`gh attestation verify\` 核对来源。"
+              echo
+              echo "配好 SignPath 之后这条会自动消失，见 \`docs/code-signing-policy.md\`。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error::发行构建缺少签名凭据：%s\n' "${missing[*]}"
+            exit 1
+          fi
+          echo "✅ 签名凭据齐全（Windows Authenticode 见上面的例外说明）"
+        env:
+          SIGNPATH_ENABLED_VAR: ${{ vars.SIGNPATH_ENABLED }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.13" }
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with: { version: 11 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # 两个 crate 都要缓存：src-tauri 是壳，workerd 是随 sidecar 一起发出去的
+          # Rust supervisor（由 build_desktop.py 在 PyInstaller 之前 cargo build，
+          # 跟随本平台的 host target，不交叉编译）
+          workspaces: |
+            src-tauri
+            workerd
+
+      - name: 缓存 CPython 归档下载
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: build/runtime-cache
+          key: cpython-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packaging/runtime-lock.json') }}
+
+      - name: 构建内置渲染 runtime
+        # 两个平台都要。脚本自己做 SHA-256 校验（macOS 那份的期望值取自
+        # python-build-standalone 上游发布的 SHA256SUMS）、按 .dist-info 核对
+        # 版本，并用 runtime 自己的解释器逐个 import + 画一张真图。
+        # 任何一步不过就失败在这里——发出去之后再发现就晚了。
+        # 目标按本机平台/架构自动挑（--target 可覆盖，交叉构建时才需要）。
+        run: python scripts/build_worker_runtime.py --clean
+
+      - name: 装打包依赖（Flask 父进程那点；科学栈刻意不装，免得进 sidecar）
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          python -m pip install "flask>=3.1,<4" "pymupdf>=1.24,<2"
+
+      - name: 构建前端 + workerd + sidecar（PyInstaller onedir）
+        # build_desktop.py 会先 cargo build --release 出 tavotto-workerd，
+        # tavotto.spec 再把它收进 _internal/。cargo 缺席时脚本当场中止——
+        # 静默少一个 workerd 的包在界面上完全看不出来（功能全在、只是慢）
+        env:
+          # **两个平台的发行包都必须自带 runtime**（落在 sidecar 的
+          # _internal/runtime；NSIS 与 .app 各自经 bundle.resources 一起收走）。
+          # 打开它之后 tavotto.spec 会额外确认：清单 schema 对、平台/架构与本次
+          # 构建一致、冒烟状态是 passed——少任何一条都当场失败，而不是安静地
+          # 产出一个「装完不能渲染」的安装包。
+          TAVOTTO_REQUIRE_RUNTIME: "1"
+        run: python scripts/build_desktop.py --skip-tauri
+
+      - name: 壳的单测（交接契约 --open/--stem）
+        # **只在 macOS 这条腿跑一份**：解析的是纯字符串 argv，没有平台分支，
+        # 两边各跑一遍只是多花一次 debug 编译。放在 sidecar 构建之后是因为
+        # build.rs 要 ../dist/Tavotto 这个资源存在才肯生成清单。
+        # 契约的另一半在 Python 侧（tests/test_handoff.py::test_desktop_argv_contract）。
+        if: runner.os == 'macOS'
+        working-directory: src-tauri
+        run: cargo test
+
+      # 这里**刻意没有**「建一个 worker-env 再设 TAVOTTO_WORKER_PYTHON」那一步。
+      # 它曾经存在于 macOS 这条腿上，代价是整条门禁失去意义：借来的解释器让
+      # 冒烟一路绿灯，而「内置 runtime 根本没打进安装包」这件事没有任何一处
+      # 会发现——那正是用户装完打不开图的原因。渲染腿现在只能走内置 runtime，
+      # 走不通就该红。
+
+      - name: sidecar 冒烟（真产物：认证/项目/渲染/导出/退出）
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then EXE=dist/Tavotto/Tavotto.exe
+          else EXE=dist/Tavotto/Tavotto; fi
+          python scripts/smoke_desktop.py --sidecar "$EXE"
+
+      - name: 发布前冒烟：内置 runtime 真能渲染
+        # --expect-source bundled     渲染真的走了内置环境（没被别的 Python 抢先）
+        # --expect-runtime            该带 runtime 的形态，且带的这份完整可用
+        # --expect-packages           逐个 import 内置科学栈（文件在 ≠ 能用）
+        # --expect-control-plane      这次渲染真的跑在 Rust supervisor 上
+        # 少了它们，「runtime / workerd 根本没打进去」都会全程绿灯——
+        # 两种缺失在界面上都毫无症状。
+        # **刻意不设 TAVOTTO_WORKERD**：要验的是产物自带的那份被自动找到。
+        # 脚本自己会把 TAVOTTO_WORKER_PYTHON / Conda / PYTHONHOME 等一律摘干净。
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then EXE=dist/Tavotto/Tavotto.exe
+          else EXE=dist/Tavotto/Tavotto; fi
+          python scripts/smoke_app.py --exe "$EXE" \
+            --figures examples/runtime_check \
+            --expect-source bundled --expect-runtime \
+            --expect-control-plane workerd \
+            --expect-packages numpy,pandas,scipy,seaborn,PIL,matplotlib \
+            --tutorial
+
+      - name: Tauri build
+        # CLI 版本钉死：src-tauri/windows/installer.nsi 按这个版本的上游模板
+        # 打品牌补丁，模板与打包器必须同源（升级时同步 scripts/build_desktop.py）
+        #
+        # createUpdaterArtifacts 打开时打包器要签名，没有私钥会直接失败。
+        # 没配 secret 就地关掉它并打一条 warning——安装包照发，只是这一版
+        # 不进「软件内直接更新」。**不许静默**：空转的更新链比没有更坏。
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            pnpm dlx @tauri-apps/cli@2.11.4 build --bundles ${{ matrix.bundles }}
+          else
+            echo "::warning::没有 TAURI_SIGNING_PRIVATE_KEY——本次不产出更新包，桌面版只能手动下载新版"
+            pnpm dlx @tauri-apps/cli@2.11.4 build --bundles ${{ matrix.bundles }} \
+              --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          fi
+
+      # 发行链上的安装界面门禁。判的是 Tauri 把 {{...}} 展开后**真正喂给
+      # makensis 的那份**中间脚本，不是仓库模板：installMode / license /
+      # startMenuFolder / 语言表都是打包器那一刻才落定的。首次安装只应剩
+      # 进度页与完成页；页面序列、UAC、中文路径这些要真装一遍才算数，
+      # 那条链路挂在 nightly.yml 的「装一遍再冒烟」上。
+      - name: 安装界面门禁（生成的中间 NSIS 脚本）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $gen = @(Get-ChildItem src-tauri\target\release\nsis -Recurse `
+                     -Filter installer.nsi -ErrorAction SilentlyContinue)
+          if ($gen.Count -lt 1) {
+            throw "找不到 tauri 渲染出来的中间脚本（打包器换了输出布局？）"
+          }
+          # 这一档的 venv 只装了打包用的东西，pytest 得现装
+          python -m pip install --quiet --disable-pip-version-check pytest
+          $env:TAVOTTO_NSIS_GENERATED = $gen[0].FullName
+          python -m pytest -q tests/test_nsis_template.py
+          if ($LASTEXITCODE -ne 0) { throw "安装界面门禁不过（退出码 $LASTEXITCODE）" }
+
+
+      # ---------------- macOS：签名 + 公证（复用已趟通的流程，不经 Tauri 签名） ----------------
+      - name: 导入签名证书
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE != ''
+        run: |
+          set -euo pipefail
+          echo "$MACOS_CERTIFICATE" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p ci /tmp/build.keychain
+          security default-keychain -s /tmp/build.keychain
+          # 必须把钥匙串加进搜索列表（详见 desktop.yml 同名步骤的注释与教训）
+          EXISTING=$(security list-keychains -d user | sed 's/^ *"//;s/"$//')
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s /tmp/build.keychain $EXISTING
+          security unlock-keychain -p ci /tmp/build.keychain
+          security set-keychain-settings -lut 21600 /tmp/build.keychain
+          security import /tmp/cert.p12 -k /tmp/build.keychain \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -A -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k ci /tmp/build.keychain >/dev/null
+          rm -f /tmp/cert.p12
+          security find-identity -v -p codesigning /tmp/build.keychain
+
+      - name: 架构核对（.app 里不许混进另一个架构的 Mach-O）
+        # 签名**之前**先看架构：一个 x86_64 的 .so 混进 arm64 的包里，签名照样
+        # 能过、公证也可能过，症状要等到用户 import 那个包时才出现
+        # （"incompatible architecture"）。放在签名前是因为这一步不需要签名，
+        # 而且没证书的构建（fork / 本地）也该被它挡住。
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          APP=src-tauri/target/release/bundle/macos/Tavotto.app
+          python scripts/codesign_macos.py scan --app "$APP" --quiet \
+            --expect-arch "$(python -c 'import platform;print(platform.machine())')"
+
+      - name: 签名 .app（含嵌套 sidecar 与内置渲染 runtime）
+        if: runner.os == 'macOS' && env.MACOS_SIGN_IDENTITY != ''
+        run: |
+          set -euo pipefail
+          APP=src-tauri/target/release/bundle/macos/Tavotto.app
+          # 自内向外签**所有** Mach-O——漏一个公证就 Invalid，这是 0.1.3 时代
+          # 用真公证换来的教训。内置 runtime 进来之后这件事从「几十个」变成
+          # 「五百多个」（解释器 + numpy/scipy/pandas 的全部扩展模块），
+          # 靠 `--deep` 是签不到的：它们躺在 Resources 里，不被识别为嵌套代码。
+          # 脚本读魔数而不是 fork `file`，并且只给可执行文件挂 entitlements。
+          python scripts/codesign_macos.py sign --app "$APP" \
+            --identity "$MACOS_SIGN_IDENTITY" \
+            --entitlements packaging/entitlements.plist
+
+      - name: 签名验收（逐个 Mach-O + 架构 + 签名主体）
+        if: runner.os == 'macOS' && env.MACOS_SIGN_IDENTITY != ''
+        run: |
+          set -euo pipefail
+          APP=src-tauri/target/release/bundle/macos/Tavotto.app
+          ARCH=$(python -c "import platform;print(platform.machine())")
+          # `--verify --deep` 验不出「Resources 里躺着一个没签名的 .so」——
+          # 那种文件是被当作*资源*封进签名的，封条本身合法。所以必须逐个验。
+          python scripts/codesign_macos.py verify --app "$APP" \
+            --expect-arch "$ARCH" \
+            --expect-identity "Authority=Developer ID Application"
+
+      - name: 最终 .app 冒烟（签完名的产物，中文 + 空格路径）
+        # **这一步才是「用户拿到的东西能不能用」**。前面那次冒烟打的是
+        # dist/Tavotto（PyInstaller 的裸产物），此刻这份已经被 Tauri 收进
+        # .app、又被逐个重签过——hardened runtime 会不会拦下内置解释器加载
+        # numpy 的 .dylib、签名有没有把某个扩展模块弄坏，只有真跑一次才知道。
+        #
+        # 从**中文 + 空格**的路径跑：国内用户最常见的一档，而 macOS 上
+        # `.app` 被拖到「我的 文档」里是家常便饭。用 ditto 而不是 cp -R——
+        # 它是 Apple 用来保留签名与扩展属性的那个工具。
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC=src-tauri/target/release/bundle/macos/Tavotto.app
+          DEST="$RUNNER_TEMP/我的 应用 目录"
+          mkdir -p "$DEST"
+          ditto "$SRC" "$DEST/Tavotto.app"
+          SIDECAR="$DEST/Tavotto.app/Contents/Resources/sidecar/Tavotto/Tavotto"
+          test -x "$SIDECAR" || { echo "::error::.app 里没有可执行的 sidecar: $SIDECAR"; exit 1; }
+          # 项目许可证随 .app 走（issue #182）：tauri.conf.json 的 bundle.resources
+          # 把仓库根 LICENSE 映射到 $RESOURCES/LICENSE；只查「文件在」不够，
+          # 空文件或映射错了源也算在，所以还要认 AGPL 全文的抬头。
+          LIC="$DEST/Tavotto.app/Contents/Resources/LICENSE"
+          grep -q "GNU AFFERO" "$LIC" || { echo "::error::.app 里没有项目 LICENSE（AGPL 全文）: $LIC"; exit 1; }
+          # 拷完再验一次签名：ditto 保不住签名的话，用户从 dmg 拖进
+          # /Applications 的那一份也一样坏
+          codesign --verify --deep --strict "$DEST/Tavotto.app"
+          python scripts/smoke_app.py --exe "$SIDECAR" \
+            --figures examples/runtime_check \
+            --workdir "$RUNNER_TEMP/冒烟 数据" \
+            --expect-source bundled --expect-runtime \
+            --expect-control-plane workerd \
+            --expect-packages numpy,pandas,scipy,seaborn,PIL,matplotlib \
+            --tutorial
+          rm -rf "$DEST"
+
+      - name: 打 .dmg
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          VER="$RELEASE_TAG"; VER="${VER#v}"
+          scripts/make_dmg.sh src-tauri/target/release/bundle/macos "out/Tavotto-$VER-macOS.dmg"
+
+      - name: 公证 .dmg
+        if: runner.os == 'macOS' && env.APPLE_ID != ''
+        run: |
+          set -euo pipefail
+          VER="$RELEASE_TAG"; VER="${VER#v}"
+          DMG="out/Tavotto-$VER-macOS.dmg"
+          codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$DMG"
+          CREDS="--apple-id $APPLE_ID --password $APPLE_APP_PASSWORD --team-id $APPLE_TEAM_ID"
+          # shellcheck disable=SC2086
+          ID=$(xcrun notarytool submit "$DMG" $CREDS --output-format json |
+               python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          echo "提交 ID: $ID"
+          # shellcheck disable=SC2086
+          xcrun notarytool wait "$ID" $CREDS || true
+          # shellcheck disable=SC2086
+          STATUS=$(xcrun notarytool info "$ID" $CREDS --output-format json |
+                   python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')
+          echo "公证结果: $STATUS"
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::group::公证详细日志"
+            # shellcheck disable=SC2086
+            xcrun notarytool log "$ID" $CREDS || true
+            echo "::endgroup::"
+            exit 1
+          fi
+          xcrun stapler staple "$DMG"
+          spctl -a -t open --context context:primary-signature -vv "$DMG"
+
+      - name: macOS 更新包（必须在签名/公证之后重做）
+        # tauri build 里顺手打的那个 tar.gz 装的是**还没签名**的 .app：更新器
+        # 换上去之后 Gatekeeper 当场拦下来，用户拿到一个打不开的应用。
+        # 所以那份丢掉，签完 + 钉上公证票据再重新打包、重新用 minisign 签名。
+        if: runner.os == 'macOS' && env.TAURI_SIGNING_PRIVATE_KEY != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=src-tauri/target/release/bundle/macos/Tavotto.app
+          test -d "$APP" || { echo "::error::找不到 $APP"; exit 1; }
+          # 公证过就把票据钉进 .app：更新器换上去的那份也要能离线过 Gatekeeper。
+          # 没公证（本地/无证书构建）时 stapler 会失败，那不该拦住整条链。
+          xcrun stapler staple "$APP" || echo "::warning::.app 未公证，更新包不带票据"
+          mkdir -p out
+          tar -czf out/Tavotto.app.tar.gz -C "$(dirname "$APP")" "$(basename "$APP")"
+          pnpm dlx @tauri-apps/cli@2.11.4 signer sign out/Tavotto.app.tar.gz
+          test -f out/Tavotto.app.tar.gz.sig || { echo "::error::签名文件没生成"; exit 1; }
+          ls -l out/Tavotto.app.tar.gz*
+
+      - name: 未签名提示（缺证书时如实标注，不冒充可发行）
+        if: runner.os == 'macOS' && env.MACOS_SIGN_IDENTITY == ''
+        run: echo "::warning::没有配置签名证书——本次 dmg 未签名，仅供测试，不可发行"
+
+      # ---------------- Windows：Tauri 真 .exe 启动-探活-退出探针 ----------------
+      - name: Windows 桌面壳探针（壳 → sidecar → 退出收尾）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:TAVOTTO_DATA_DIR   = "$env:RUNNER_TEMP\mp-data"
+          $env:TAVOTTO_CONFIG_DIR = "$env:RUNNER_TEMP\mp-config"
+          $exe = "src-tauri\target\release\Tavotto.exe"
+          if (!(Test-Path $exe)) { throw "壳二进制缺失: $exe" }
+          $p = Start-Process -FilePath $exe -PassThru
+          $side = $null
+          foreach ($i in 1..60) {
+            Start-Sleep -Milliseconds 500
+            $side = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($p.Id)" |
+                    Where-Object { $_.CommandLine -match "desktop-sidecar" }
+            if ($side) { break }
+          }
+          if (-not $side) { Stop-Process -Id $p.Id -Force; throw "壳没有拉起 sidecar" }
+          Write-Host "sidecar pid: $($side.ProcessId)"
+          Stop-Process -Id $p.Id -Force   # 模拟异常退出：sidecar 必须经父监视自行退出
+          foreach ($i in 1..30) {
+            Start-Sleep -Milliseconds 500
+            if (-not (Get-Process -Id $side.ProcessId -ErrorAction SilentlyContinue)) { break }
+          }
+          if (Get-Process -Id $side.ProcessId -ErrorAction SilentlyContinue) {
+            throw "壳被杀后 sidecar 未退出（孤儿进程）"
+          }
+          Write-Host "壳退出 → sidecar 跟随退出 ✔"
+
+      - name: 收集 Windows 产物
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          # 命名与 wheel / dmg 一致（Tavotto-<ver>-Windows-Setup.exe），不用 NSIS
+          # 默认的 Tavotto_<ver>_x64-setup.exe。**SignPath 的 artifact 配置按这个
+          # 文件名匹配**（signpath/windows-installer.artifact-configuration.xml），
+          # 改名字要两处一起改，否则签名步骤找不到文件、发出去的是未签名安装包。
+          $ver = "$env:RELEASE_TAG" -replace '^v', ''
+          $nsis = @(Get-ChildItem src-tauri\target\release\bundle\nsis\*.exe)
+          if ($nsis.Count -ne 1) { throw "NSIS 产物数量异常（$($nsis.Count) 个）" }
+          Copy-Item $nsis[0].FullName "out\Tavotto-$ver-Windows-Setup.exe"
+          # 更新包不在这里收：它要装**签过名的**那个 exe，而签名要等 SignPath
+          # 回来（见后面「Windows 更新包」那步）。此刻 out/ 整个目录会被当成
+          # 签名请求的输入，多塞一个 zip 进去只会让 SignPath 那边对不上。
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "APP_VERSION=$ver`n")
+          Get-ChildItem out | Format-Table Name, Length
+
+      - name: 上传待签名 Windows 安装包
+        if: runner.os == 'Windows'
+        id: upload-unsigned-windows-artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-installer-signing-input-${{ github.run_id }}
+          path: out/*
+          if-no-files-found: error
+
+      - name: 提交 Windows 安装包到 SignPath
+        if: runner.os == 'Windows' && vars.SIGNPATH_ENABLED == 'true'
+        id: signpath-windows
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned-windows-artifact.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-out
+          parameters: |
+            version: "${{ env.APP_VERSION }}"
+
+      - name: 替换为 SignPath 签名结果
+        if: runner.os == 'Windows' && vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          $signed = @(Get-ChildItem signed-out -Recurse -File -Filter "Tavotto-$env:APP_VERSION-Windows-Setup.exe")
+          if ($signed.Count -ne 1) {
+            throw "SignPath 返回的签名安装包数量异常（$($signed.Count) 个）"
+          }
+          Copy-Item $signed[0].FullName "out\Tavotto-$env:APP_VERSION-Windows-Setup.exe" -Force
+          $signature = Get-AuthenticodeSignature "out\Tavotto-$env:APP_VERSION-Windows-Setup.exe"
+          if ($signature.Status -ne 'Valid') {
+            throw "SignPath 返回的安装包签名无效：$($signature.Status)"
+          }
+          Write-Host "SignPath 签名有效：$($signature.SignerCertificate.Subject)"
+
+      - name: 标记未签名产物
+        if: runner.os == 'Windows' && vars.SIGNPATH_ENABLED != 'true'
+        run: Write-Warning "SIGNPATH_ENABLED 未开启：本次 Windows 安装包没有 Authenticode 签名（更新包的 minisign 签名不受影响）"
+
+      - name: Windows 更新包（必须在 SignPath 签名之后重做）
+        # 与 macOS 同一条道理：打包器顺手打的那个 nsis.zip 装的是**还没签名**的
+        # 安装器，自动更新推给用户的就成了一个 SmartScreen 会拦的 exe——新装的人
+        # 拿到签名版、升级的人拿到未签名版，比不签更难查。所以这里用 out/ 里那份
+        # 最终安装包（SignPath 换过的那个）现做一个 zip，再用 minisign 签它。
+        #
+        # zip 里放什么名字不影响更新器：它解开后找第一个 .exe 执行。但 **zip 自己
+        # 的文件名要能被 make_updater_manifest.py 认出来**（*-setup.nsis.zip）。
+        #
+        # 重打**必须走 make_updater_zip.py（STORED，不压缩）**，不能用
+        # Compress-Archive：更新器插件对 Windows 的 zip 依赖关掉了 deflate
+        # 解压 feature，只解得开 STORED 条目。Compress-Archive 默认 deflate，
+        # 装出去的每一次应用内更新都会在下载完成后报「无法安装更新」——
+        # v0.7.0 到 v0.10.0 的 Windows 更新包全是这么坏的，而整条链全绿。
+        # 判据与复现记录见 make_updater_zip.py 抬头与 tests/test_updater_zip.py。
+        if: runner.os == 'Windows' && env.TAURI_SIGNING_PRIVATE_KEY != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = "out\Tavotto-$env:APP_VERSION-Windows-Setup.exe"
+          if (!(Test-Path $exe)) { throw "找不到最终安装包: $exe" }
+          $zip = "out\Tavotto_${env:APP_VERSION}_x64-setup.nsis.zip"
+          python scripts/make_updater_zip.py --exe $exe --out $zip
+          pnpm dlx @tauri-apps/cli@2.11.4 signer sign $zip
+          if (!(Test-Path "$zip.sig")) { throw "更新包签名没生成" }
+          Get-ChildItem out | Format-Table Name, Length
+
+      # **两条腿都要传**：updater-manifest 只看 desktop-tauri-* 这些 artifact，
+      # 「挂到 Release」那步喂不到它。这里曾经写着 runner.os == 'Windows'，
+      # 于是 macOS 的 Tavotto.app.tar.gz(.sig) 只上了 Release、从没进过清单，
+      # latest.json 里一直只有 windows-x86_64——dmg 装的那批用户永远查不到
+      # 新版本，而整条链全绿（v0.7.0 就是这么发出去的）。
+      - name: 上传最终桌面产物（更新清单的输入）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-tauri-${{ matrix.artifact }}
+          path: out/*
+          if-no-files-found: error
+
+      - name: 桌面产物 provenance（发行构建）
+        # 用户可用 `gh attestation verify <安装包> -R Tavotto/Tavotto` 验证
+        # 「这份安装包出自本仓库这次受信 SHA 的构建」（审计 P1-04 / Gate B）
+        if: ${{ inputs.release_build }}
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: out/*
+
+      # **这里从前有一段轮询**：`for i in $(seq 1 380); … sleep 30`，
+      # 最长等 190 分钟，等 release.yml 把 Release 建出来，然后 attach。
+      # 整段删掉了，理由不是「等得太久」，是**这个拓扑本身是错的**：
+      #   · 等待没有上界——lab gate 的排队时间本身没有上界（#62 的注释自己
+      #     承认「没有任何固定上限是够的」）；
+      #   · 两条腿各自 checkout tag，「同一个 tag」证明不了「同一个 commit」。
+      # 现在桌面产物只做一件事：**传成 workflow artifact**。
+      # 挂 Release 由 release.yml 的 publish job 统一做，一次挂全部。
+
+      - name: 这条腿的产物清单
+        # 下游（checksums / SBOM / provenance / updater / Release 附件）
+        # **只读清单**，不再各自猜文件名——#63 的根因就是七处各猜一次。
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.trust.outputs.sha }}
+          LEG: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          VER="$RELEASE_TAG"; VER="${VER#v}"
+          ARGS=()
+          while IFS= read -r f; do
+            base="$(basename "$f")"
+            case "$base" in
+              *-Windows-Setup.exe)  role=windows-installer; plat=windows-x86_64 ;;
+              *.dmg)                role=macos-installer;   plat=darwin-aarch64 ;;
+              *-setup.nsis.zip)     role=windows-updater;   plat=windows-x86_64 ;;
+              *.app.tar.gz)         role=macos-updater;     plat=darwin-aarch64 ;;
+              *) continue ;;          # .sig 等随包文件不单独登记角色
+            esac
+            ARGS+=(--add "${role}:${f}:${plat}")
+          done < <(find out -maxdepth 1 -type f | sort)
+          if [ "${#ARGS[@]}" -eq 0 ]; then
+            echo "::error::out/ 里没有任何可登记的桌面产物"
+            ls -la out || true
+            exit 1
+          fi
+          python3 scripts/ci/artifact_manifest.py build \
+            --version "$VER" --source-sha "$SOURCE_SHA" \
+            --out "out/artifact-manifest-${LEG}.json" "${ARGS[@]}"
+
+      - name: 上传这条腿的产物清单
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: artifact-manifest-${{ matrix.artifact }}
+          path: out/artifact-manifest-${{ matrix.artifact }}.json
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 更新清单：两条腿都跑完才拼得出来（每条腿只知道自己那一半）
+  # ---------------------------------------------------------------------------
+  # 桌面版「软件内直接更新」的最后一环。壳按 tauri.conf.json 里的 endpoint
+  # 拉 latest.json → 比版本 → 下载对应平台的包 → 用内置公钥校验签名 → 安装。
+  # **没有这一份，壳永远查不到新版本**，前一版的用户就停在原地了。
+  updater-manifest:
+    needs: [trust, build]
+    if: ${{ inputs.release_build }}
+    timeout-minutes: 60  # 上限是防挂死、不是性能预算：把损失从「无限」变成「有界」
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read    # 只产出 latest.json 这个 artifact，挂 Release 归 publish job
+    env:
+      RELEASE_TAG: ${{ inputs.tag || format('v{0}', inputs.version) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.trust.outputs.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.13" }
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+          pattern: desktop-tauri-*
+
+      # **按名字点名，紧跟在 pattern 下载之后。** v0.14.0 演练（run 34208652704）
+      # 实测：两个 artifact 都排了队，只有 dmg 打出完成校验，步骤仍报 success；
+      # 下游 make_updater_manifest 报的是「清单缺平台 windows-x86_64」——报文
+      # 离病因隔着一整个 job，第一反应会去查 Windows 构建腿（issue #327）。
+      # 判据的主语：下载目录里**每个期望名字的子目录非空**；期望名单就是上面
+      # build 矩阵每条腿上传的 `desktop-tauri-<artifact>`，
+      # `tests/test_update_chain_gates.py` 看着这份名单与矩阵严格同源。
+      - name: 点名下载到的桌面产物（download-artifact 少下一个也报 success）
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in desktop-tauri-dmg desktop-tauri-nsis; do
+            if ! test -n "$(ls -A "artifacts/$name" 2>/dev/null)"; then
+              echo "::error::artifact $name 没下到（download-artifact 报了 success）"
+              missing=1
+            fi
+          done
+          ls -laR artifacts || true
+          exit "$missing"
+
+      - name: 有没有更新包（发行构建缺了就失败——半份更新链不许全绿）
+        id: probe
+        shell: bash
+        run: |
+          if compgen -G "artifacts/**/*.sig" > /dev/null; then
+            echo "have=1" >> "$GITHUB_OUTPUT"
+          else
+            # 本 job 只在发行构建（push tag / attach=true）触发，走到这里
+            # 意味着发出去的桌面版无法自动更新。这必须红（P1-07），
+            # 不是一条没人看的 warning——空转的更新链比没有更坏。
+            echo "::error::本次发行没有任何更新包（TAURI_SIGNING_PRIVATE_KEY 缺失或签名步骤没跑）——桌面版这一版将无法自动更新"
+            exit 1
+          fi
+
+      - name: 合成 latest.json
+        if: steps.probe.outputs.have == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # **更新说明取仓库里的 release notes 文件，不再回头查 Release。**
+          # 从前它 `gh release view` 读 release.yml 刚写好的正文——那是另一条
+          # 「等对方先做完」的隐式依赖，而现在这个 job 跑在 Release 存在之前。
+          # 文件拿不到就留空（更新链照常，只是壳里那段说明是空的）。
+          NOTES=""
+          if [ -f "docs/release-notes/${RELEASE_TAG}.md" ]; then
+            NOTES="$(cat "docs/release-notes/${RELEASE_TAG}.md")"
+          fi
+          # 少一个平台 = 那个平台的用户永远收不到更新，而且全绿。硬要求两个都在。
+          python scripts/make_updater_manifest.py \
+            --artifacts artifacts --tag "$RELEASE_TAG" \
+            --require darwin-aarch64,windows-x86_64 \
+            --notes "$NOTES" --out out/latest.json
+          cat out/latest.json
+
+      # **不再自己挂 Release。** 挂 Release 只有一条路：release.yml 的
+      # publish job，一次挂全部。这个 job 现在只产出 latest.json 这个产物。
+      - name: 上传 latest.json
+        if: steps.probe.outputs.have == '1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: updater-manifest
+          path: out/latest.json
+          if-no-files-found: error

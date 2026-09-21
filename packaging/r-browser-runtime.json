@@ -1,0 +1,6 @@
+{
+  "webr_version": "0.6.0",
+  "base_url": "https://webr.r-wasm.org/v0.6.0/",
+  "repo_url": "https://repo.r-wasm.org/",
+  "ggplot2_version": "4.0.3"
+}

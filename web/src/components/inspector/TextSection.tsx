@@ -1,0 +1,483 @@
+import { useRef } from 'react'
+import { useTranslation } from 'react-i18next'
+import { CaseSensitive, ChevronDown, CornerDownLeft, Subscript, Superscript, Underline } from '@/components/ui/icons'
+import { ICON_SIZE } from '@/components/ui/Icon'
+import {
+  DEFAULT_INTERPRETATION,
+  hasScientificChars,
+  TEXT_INTERPRETATIONS,
+  toggleScript,
+  transformCase,
+  type CaseMode,
+  type TextInterpretation,
+} from '@/lib/richText'
+import { textDiagnostics } from '@/lib/glyphPlan'
+import { msg, t as translate, type UiMessage } from '@/i18n'
+import { BASE_FONT_PT, effectivePt, round1 } from '@/lib/units'
+import { ALT, combo, modKey } from '@/lib/utils'
+import { updateObjects } from '@/store/actions'
+import { useDocumentStore } from '@/store/documentStore'
+import { useUiStore } from '@/store/uiStore'
+import { panelFullSize, type PanelObject, type TextObject } from '@/types/document'
+import { useInspectorPrefs } from '@/store/inspectorPrefs'
+import { Button } from '../ui/Button'
+import { Reveal, Row, Section } from '../ui/Field'
+import { INSPECTOR_LABEL_W } from './layout'
+import { GroupToggle } from './GroupToggle'
+import { ColorField, NumberField, TextArea } from '../ui/Input'
+import { Menu, MenuItem } from '../ui/Menu'
+import { Segmented } from '../ui/Segmented'
+import { canvasFieldOf, coerceTypography, displayValueOf } from '@/lib/typography'
+import { EffectToggle } from './controls/EffectToggle'
+import { TypographyControls } from './controls/TypographyControls'
+import { useCanvasTypography } from './typographyAdapter'
+import { shared } from './common'
+
+/** 本组文案 inspector:text.*，历史标签 inspector:history.* */
+const tx = (key: string, values?: Record<string, unknown>) =>
+  translate(`text.${key}`, { ns: 'inspector', ...(values ?? {}) })
+const hist = (key: string): UiMessage => msg(`history.${key}`, undefined, 'inspector')
+
+/**
+ * 上下标快捷键：Mod+↑ = 上标、Mod+↓ = 下标（Mod = ⌘ / Ctrl，两边都认）。
+ *
+ * 带 ⌥ / ⇧ 的组合**不认领**——那些是系统自带的「按段移动 / 选到开头」，
+ * 抢过来用户就没法在文本框里选词了；只有干净的 Mod+方向键才是我们的键位。
+ * 单独抽出来是为了能直接对它写用例，不必为每种组合去挂一次组件。
+ */
+export function scriptHotkey(
+  e: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>,
+): 'sup' | 'sub' | null {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return null
+  if (e.key === 'ArrowUp') return 'sup'
+  if (e.key === 'ArrowDown') return 'sub'
+  return null
+}
+
+/**
+ * 大小写是一次性动作而不是状态：转换完就没有「当前处于大写」这回事——所以它
+ * 不是分段选择器，而是一个菜单。旧版四个格子写着 AA / aa / Aa / A.，四个都长
+ * 得像，得逐个悬停才知道哪个是哪个（审计 T27）；菜单里每一项直接是全名，
+ * 键盘也走得通（方向键 + 首字母）。
+ */
+const CASE_MODES: readonly CaseMode[] = ['upper', 'lower', 'title', 'sentence']
+const caseLabel = (mode: CaseMode) =>
+  tx(`case${mode[0].toUpperCase()}${mode.slice(1)}` as 'caseUpper')
+
+export function TextSection({ objs }: { objs: TextObject[] }) {
+  useTranslation('inspector')
+  const taRef = useRef<HTMLTextAreaElement>(null)
+  const ids = objs.map((o) => o.id)
+  const one = objs.length === 1 ? objs[0] : null
+  const typography = useCanvasTypography(objs)
+  const underline = shared(objs, (o) => (o as TextObject).underline === true)
+  const bg = shared(objs, (o) => (o as TextObject).bg ?? null)
+  const borderColor = shared(objs, (o) => (o as TextObject).borderColor ?? null)
+
+  const patch = (label: UiMessage, fn: (o: TextObject) => void) =>
+    updateObjects(ids, label, (o) => {
+      if (o.type === 'text') fn(o)
+    })
+
+  /**
+   * 输入框是逐字符 onChange 的：不开事务的话一个字一条历史，⌘Z 一次只退一个字，
+   * 长文本还会把 200 条历史上限挤爆。聚焦开事务、失焦合并成一条
+   * （与 ElementInspector 的图内文字输入框同一模式）。
+   */
+  const beginTxn = () => useDocumentStore.getState().beginTxn(hist('editText'))
+  const endTxn = () => useDocumentStore.getState().endTxn()
+
+  /** 改完文本后把光标放回去——不复位的话每点一次按钮光标就跳到末尾。 */
+  const restoreCaret = (start: number, end: number) => {
+    requestAnimationFrame(() => {
+      const el = taRef.current
+      if (!el) return
+      el.focus()
+      el.setSelectionRange(start, end)
+    })
+  }
+
+  /**
+   * 给选中的一段套上/去掉上下标标记（`^{…}` / `_{…}`）。
+   * 没有选区就插入一对空标记并把光标放进去，可以直接开始打字。
+   */
+  const wrapScript = (kind: 'sup' | 'sub') => {
+    if (!one) return
+    const ta = taRef.current
+    const start = ta?.selectionStart ?? one.text.length
+    const end = ta?.selectionEnd ?? one.text.length
+    const next = toggleScript(one.text, start, end, kind)
+    patch(hist(kind === 'sup' ? 'setSuperscript' : 'setSubscript'), (o) => (o.text = next.text))
+    restoreCaret(next.start, next.end)
+  }
+
+  /** 大小写：直接改文本内容（可撤销），不新增字段，导出零改动。 */
+  const applyCase = (mode: CaseMode) =>
+    patch(hist('transformCase'), (o) => (o.text = transformCase(o.text, mode)))
+
+  /** 在光标处插入换行；textarea 没聚焦过就接在末尾。补丁重渲染后恢复光标。 */
+  const insertNewline = () => {
+    if (!one) return
+    const ta = taRef.current
+    const start = ta?.selectionStart ?? one.text.length
+    const end = ta?.selectionEnd ?? one.text.length
+    const next = one.text.slice(0, start) + '\n' + one.text.slice(end)
+    patch(hist('insertNewline'), (o) => (o.text = next))
+    requestAnimationFrame(() => {
+      const el = taRef.current
+      if (el) {
+        el.focus()
+        el.setSelectionRange(start + 1, start + 1)
+      }
+    })
+  }
+
+  const moreOpen = useInspectorPrefs((st) => st.moreOpen['text-object'] ?? false)
+  const setMoreOpen = useInspectorPrefs((st) => st.setMoreOpen)
+  const moreSummary = [
+    bg ? tx('background') : null,
+    borderColor ? tx('border') : null,
+  ].filter(Boolean).join(' · ')
+
+  return (
+    <Section title={tx('title')}>
+      {one && (
+        <TextArea
+          ref={taRef}
+          // 名字 = 分区标题那句可见文字，同一个表达式（此前这格没有可达名）
+          aria-label={tx('title')}
+          value={one.text}
+          maxRows={6}
+          onFocus={beginTxn}
+          onBlur={endTxn}
+          onChange={(e) => patch(hist('editText'), (o) => (o.text = e.target.value))}
+          onKeyDown={(e) => {
+            e.stopPropagation()
+            const kind = scriptHotkey(e)
+            if (!kind) return
+            // 不拦默认行为的话光标会先跳到上一行/末行，标记插进去人就找不着它了
+            e.preventDefault()
+            wrapScript(kind)
+          }}
+          onDoubleClick={() => useUiStore.getState().setEditingText(one.id)}
+          placeholder={tx('placeholder')}
+          // 画布文字用文档字体预览；框本身与其它可编辑框同一副（fieldBox）
+          className="mb-1"
+          style={{ fontFamily: 'var(--font-doc)' }}
+        />
+      )}
+      {one && (
+        <div className="mb-2 flex items-center justify-start gap-1">
+          <Button
+            size="icon-sm"
+            onClick={() => wrapScript('sup')}
+            aria-label={tx('superscript')}
+            title={tx('superscriptTitle', { key: modKey('↑') })}
+          >
+            <Superscript size={ICON_SIZE.sm} />
+          </Button>
+          <Button
+            size="icon-sm"
+            onClick={() => wrapScript('sub')}
+            aria-label={tx('subscript')}
+            title={tx('subscriptTitle', { key: modKey('↓') })}
+          >
+            <Subscript size={ICON_SIZE.sm} />
+          </Button>
+          <Button
+            size="icon-sm"
+            onClick={insertNewline}
+            aria-label={tx('insertNewline')}
+            title={tx('newlineTitle', { alt: combo(ALT, '⏎'), mod: modKey('⏎') })}
+          >
+            <CornerDownLeft size={ICON_SIZE.sm} />
+          </Button>
+        </div>
+      )}
+
+      <div className="flex flex-col gap-1.5">
+        {/*
+          **与图内文字同一份控件**（`TypographyControls`）：字体 / 字号 /
+          B / I / 颜色 / 对齐一条不差，标注终于能设字体了。
+          写入经 `useCanvasTypography` → `updateObjects` → `documentStore.commit`，
+          与图内那条路各走各的 writer，界面语言却是同一套。
+        */}
+        <TypographyControls
+          adapter={typography}
+          labelWidth={INSPECTOR_LABEL_W}
+          sizeRowExtra={
+            <>
+              <Button
+                size="icon-sm"
+                active={underline === true}
+                onClick={() =>
+                  patch(hist('toggleUnderline'), (o) => {
+                    if (underline) delete o.underline
+                    else o.underline = true
+                  })
+                }
+                aria-label={tx('underline')}
+              >
+                <Underline size={ICON_SIZE.sm} />
+              </Button>
+            </>
+          }
+        />
+        <ScientificText objs={objs} adapter={typography} />
+        {one && (
+          <MatchFigureSize
+            text={one}
+            onMatch={(v) => patch(hist('matchFigureSize'), (o) => (o.sizePt = v))}
+          />
+        )}
+      </div>
+
+      {/* 与图内元素同一个「更多」模型：按角色记忆，折叠给现状摘要 */}
+      <div className="mt-1.5">
+        <GroupToggle
+          open={moreOpen}
+          onToggle={() => setMoreOpen('text-object', !moreOpen)}
+          summary={moreSummary || undefined}
+        >
+          {translate('element.more', { ns: 'inspector' })}
+        </GroupToggle>
+        <Reveal open={moreOpen}>
+          <div className="mt-1.5 flex flex-col gap-1.5">
+            <Row label={tx('case')} labelWidth={INSPECTOR_LABEL_W}>
+              <Menu
+                width={200}
+                trigger={
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="w-full justify-between"
+                    data-case-menu
+                    aria-label={tx('case')}
+                  >
+                    <span className="flex items-center gap-1">
+                      <CaseSensitive size={ICON_SIZE.sm} />
+                      {tx('caseAction')}
+                    </span>
+                    <ChevronDown size={ICON_SIZE.xs} aria-hidden className="text-ink-3" />
+                  </Button>
+                }
+              >
+                {CASE_MODES.map((mode) => (
+                  <MenuItem key={mode} data-case-mode={mode} onSelect={() => applyCase(mode)}>
+                    {caseLabel(mode)}
+                  </MenuItem>
+                ))}
+              </Menu>
+            </Row>
+            <Row label={tx('lineHeight')} labelWidth={INSPECTOR_LABEL_W}>
+              <NumberField
+                value={shared(objs, (o) => (o as TextObject).lineHeight ?? 1.25) ?? 1.25}
+                step={0.05}
+                min={0.8}
+                max={3}
+                precision={2}
+                onChange={(v) =>
+                  patch(hist('setLineHeight'), (o) => {
+                    if (Math.abs(v - 1.25) < 0.001) delete o.lineHeight
+                    else o.lineHeight = v
+                  })
+                }
+              />
+            </Row>
+            {/*
+              背景与描边**与图内文字同一个控件**（`EffectToggle`）：关着是一条
+              「＋添加」入口，开了才是真开关，颜色跟在同一行（审计 T27 验收：
+              两处的交互要一致）。关掉走开关而不是另一颗「无」按钮——图内那侧
+              早就是开关，两边各一套的话用户得学两遍。
+            */}
+            <Row label={tx('background')} labelWidth={INSPECTOR_LABEL_W}>
+              <EffectToggle
+                on={!!bg}
+                label={tx('background')}
+                addLabel={tx('addBackground')}
+                onAdd={() =>
+                  patch(hist('addTextBg'), (o) => {
+                    o.bg = '#FFFFFF'
+                    if (o.padding == null) o.padding = 1
+                  })
+                }
+                onOff={() => patch(hist('clearTextBg'), (o) => delete o.bg)}
+              />
+              {bg && (
+                <ColorField
+                  ariaLabel={tx('background')}
+                  value={bg}
+                  onChange={(v) => patch(hist('setTextBg'), (o) => (o.bg = v))}
+                />
+              )}
+            </Row>
+            <Row label={tx('border')} labelWidth={INSPECTOR_LABEL_W}>
+              <EffectToggle
+                on={!!borderColor}
+                label={tx('border')}
+                addLabel={tx('addBorder')}
+                onAdd={() =>
+                  patch(hist('addTextBorder'), (o) => {
+                    o.borderColor = '#1B1B18'
+                    if (o.padding == null) o.padding = 1
+                  })
+                }
+                onOff={() =>
+                  patch(hist('clearTextBorder'), (o) => {
+                    delete o.borderColor
+                    delete o.borderPt
+                  })
+                }
+              />
+              {borderColor && (
+                <ColorField
+                  ariaLabel={tx('border')}
+                  value={borderColor}
+                  onChange={(v) => patch(hist('setTextBorder'), (o) => (o.borderColor = v))}
+                />
+              )}
+            </Row>
+            {(bg || borderColor) && (
+              <Row label={tx('padding')} labelWidth={INSPECTOR_LABEL_W}>
+                <NumberField
+                  value={shared(objs, (o) => (o as TextObject).padding ?? 0) ?? 0}
+                  step={0.5}
+                  min={0}
+                  max={10}
+                  precision={1}
+                  unit="mm"
+                  onChange={(v) =>
+                    patch(hist('setPadding'), (o) => {
+                      if (v > 0) o.padding = v
+                      else delete o.padding
+                    })
+                  }
+                />
+              </Row>
+            )}
+          </div>
+        </Reveal>
+      </div>
+    </Section>
+  )
+}
+
+/**
+ * 标注字号是页面绝对值，图内文字的字号在面板缩放后会跟着缩放——
+ * 「都设 9pt 但看上去不一样大」的根源。给出标注所压面板的等效正文字号，
+ * 一键把标注对齐到它，视觉上就和图内正文一样大。
+ */
+function MatchFigureSize({
+  text,
+  onMatch,
+}: {
+  text: TextObject
+  onMatch: (sizePt: number) => void
+}) {
+  useTranslation('inspector')
+  // 取与标注重叠面积最大的面板；同面积取更晚（更上层）的
+  const panel = useDocumentStore((s) => {
+    let best: PanelObject | null = null
+    let bestArea = 0
+    for (const o of s.doc.objects) {
+      if (o.type !== 'panel' || o.hidden) continue
+      const w = Math.min(text.x + text.w, o.x + o.w) - Math.max(text.x, o.x)
+      const h = Math.min(text.y + text.h, o.y + o.h) - Math.max(text.y, o.y)
+      const area = Math.max(0, w) * Math.max(0, h)
+      if (area > 0 && area >= bestArea) {
+        bestArea = area
+        best = o
+      }
+    }
+    return best
+  })
+  if (!panel) return null
+
+  const scale = panelFullSize(panel).w / panel.nativeW
+  const eff = round1(effectivePt(panelFullSize(panel).w, panel.nativeW))
+  if (Math.abs(eff - text.sizePt) < 0.05) return null
+  // 面板缩得极小时算出来的等效字号会掉出字号的合法区间。**不给一个按了会被
+  // 挡下来的动作**——判据用属性能力层那一份，不在这里手写一个第二版区间。
+  if (!coerceTypography('sizePt', eff, canvasFieldOf('sizePt')).ok) return null
+
+  return (
+    <p
+      className="text-xs leading-relaxed text-ink-3"
+      title={tx('matchTitle', {
+        panel: panel.name ?? panel.fileId,
+        scale: Math.round(scale * 100),
+        base: BASE_FONT_PT,
+        eff,
+      })}
+    >
+      {tx('matchHint', { eff })}
+      <button
+        onClick={() => onMatch(eff)}
+        className="ml-1.5 text-accent underline-offset-2 hover:underline"
+      >
+        {tx('matchAction')}
+      </button>
+    </p>
+  )
+}
+
+/**
+ * 科学文本：解释档 + 字形提示。**两样都只在确有其事时才出现。**
+ *
+ * 解释档只在选中的文字里真有 Unicode 上下标字符时露面——没有那类字符时，
+ * 这个选择对用户不产生任何差别，摆出来只是噪音（`00_SHARED_RULES` §7）。
+ *
+ * 字形提示分两句，因为它们是两件事：**画不出来**（导出后是方框，问题面板
+ * 里是一条 error）与**换了一张脸画**（画出来了，只是字体不一致）。压成一句
+ * 的话，用户看到红灯却发现图上好好的，下一次就不看这盏灯了。判据来自
+ * `lib/glyphPlan`——与导出那一端读同一张覆盖表，**不是**浏览器自己的字体栈。
+ */
+function ScientificText({
+  objs,
+  adapter,
+}: {
+  objs: TextObject[]
+  adapter: ReturnType<typeof useCanvasTypography>
+}) {
+  const field = adapter.fieldOf('interpretation')
+  const value = adapter.valueOf('interpretation')
+  const showPicker = objs.some((o) => hasScientificChars(o.text))
+  // 提示按**每个对象自己的解释档**算：多选时两段文字可能各选各的。
+  const missing: string[] = []
+  const substituted: string[] = []
+  for (const o of objs) {
+    const d = textDiagnostics(o.text, o.interpretation)
+    for (const c of d.missing) if (!missing.includes(c)) missing.push(c)
+    for (const c of d.substituted) if (!substituted.includes(c)) substituted.push(c)
+  }
+  if (!field || (!showPicker && !missing.length && !substituted.length)) return null
+  const current = (displayValueOf(value) ?? DEFAULT_INTERPRETATION) as TextInterpretation
+  return (
+    <>
+      {showPicker && (
+        <div data-prop={adapter.pathOf('interpretation') ?? undefined}>
+          <Row label={tx('interpretation')} labelWidth={INSPECTOR_LABEL_W}>
+            <Segmented
+              value={value.kind === 'mixed' ? null : current}
+              onChange={(v) => adapter.writeOnce('interpretation', v)}
+              items={TEXT_INTERPRETATIONS.map((v) => ({
+                value: v,
+                label: tx(v === 'auto' ? 'interpretationAuto' : 'interpretationScientific'),
+                tip: tx(v === 'auto' ? 'interpretationAutoTip' : 'interpretationScientificTip'),
+              }))}
+              className="w-full"
+            />
+          </Row>
+        </div>
+      )}
+      {missing.length > 0 && (
+        <p className="text-xs text-danger">{tx('glyphMissing', { chars: missing.join('') })}</p>
+      )}
+      {substituted.length > 0 && (
+        <p className="text-xs text-ink-3">
+          {tx('glyphFallback', { chars: substituted.join('') })}
+        </p>
+      )}
+    </>
+  )
+}

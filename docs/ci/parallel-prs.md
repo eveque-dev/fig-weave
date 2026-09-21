@@ -1,0 +1,154 @@
+# 多 session 并行开 PR：Stacked PR 与 Train Branch
+
+Merge Queue（见 `merge-queue-rollout.md`）解决了「合一个、其余全部追 main
+重跑」；它解决不了**真正的 Git 冲突**。本仓库曾经的冲突大头不是源码，是受管
+生成物：`web/src/**` 一动，`scripts/build_mcp_widget.py` 就要重建
+`codex-plugin/mcp/widget/canvas.html`——四个互不相干的前端 PR 各带一份
+重建过的同一个文件，合掉第一个，其余三个全部 DIRTY。
+
+> **2026-09-05（ADR 0043）**：这一类冲突由构造消除。画布产物不再进版本库——CI 从本次
+> checkout 现建并验证完整插件，用户装到的来自发行分支 `plugin-stable`
+> （`docs/ci/plugin-stable-channel.md`）。PR B 落地之后，`mcp-widget` 域不再声明
+> `generated`，两个各改 `web/src` 的 PR 不再被判成「生成物重叠」；下面的 Train 一节
+> 只对**仍然入库的**生成物（playground 由网站仓库提交，不在本仓库）成立，留作历史与
+> 备用。真实源码冲突、协议、锁文件与发布控制面的协调**照旧**。
+
+`.github/conflict-domains.json` 声明了这些热点；每个 PR 上的
+「PR conflict domains」检查（咨询性，不阻断）会列出与你同域的 open PR
+并给建议。两种协作形态按「改动相关不相关」选：
+
+## 相关改动：Stacked PR
+
+同一个 issue 的协议层与 E2E、一个修复与它暴露出来的第二个修复：
+
+```
+main
+└── PR A：协议            （base: main）
+    └── PR B：基于 A 的 E2E（base: PR A 的分支）
+```
+
+规矩：
+
+* 上层 PR 的 **base 是下层的 branch**，diff 只展示自己的增量；
+* 下层变了，从底向上做 cascading rebase（`git rebase A` 到 B，依次向上）；
+* **从底向上进队列**：A 先「Merge when ready」；A 合入后把 B 的 base 改回
+  main、rebase 一次，再让 B 进队列；
+* 有明确依赖的两个 PR **不要**平行指向 main——那只是把冲突推迟到队列里；
+* 用 Merge Queue 的「Merge when ready」，**不要**用普通 auto-merge 代替它；
+* 本机 `gh` 没有专门的 stack 子命令也没关系——上面全部用普通的
+  `gh pr create --base <下层分支>` 就能做到。
+
+## 不相关但共享生成物：Train Branch
+
+多个独立前端修复都会重建 `canvas.html`（或 playground 产物）时：
+
+```
+main
+└── train/frontend-2026-08-25
+    ├── session A 的源码提交
+    ├── session B 的源码提交
+    └── session C 的源码提交
+```
+
+流程：
+
+1. 开一条 `train/<主题>-<日期>` 分支；各 session 把**源码提交**（不含
+   生成物，或含也无妨——最后会统一重建）合进来；
+2. 集成 session 解决**真实的源码冲突**；
+3. 在最终源码状态上**只跑一次**
+   `python scripts/build_mcp_widget.py`（涉及 playground 再跑
+   `python scripts/build_browser_playground.py`），只提交这一份最终生成物；
+4. 从 train branch 向 main 开**一个**集成 PR，进 Merge Queue。
+
+反模式：多个平行 PR 各自携带自己版本的同一个 bundle——除非它们确实要
+彼此独立合并（那就接受「每合一个、其余重建一次」的代价，按队列顺序逐个
+rebase + 重建，见 `managed-artifact-conflicts` 的教训）。
+
+## serialize 域
+
+`AGENTS.md` / `CLAUDE.md`、`.github/workflows/**`、`scripts/ci/**`、
+release 编排、golden vectors、锁文件：**一次只开一个动它的 PR**。这些文件
+的冲突不是文本问题，是语义问题（两个 PR 各自改 CI 控制面，合并后的组合
+谁都没验过）；train 与 stack 都救不了，只有先后。
+
+## coordinate 域：撞的是名字，不是文本
+
+`docs/adr/**`：两个 PR 各加一份 ADR，**`git merge-tree` 报零冲突**——文件名
+不同，git 看到的是两个新文件——而合完的 main 上会躺着两个「ADR 0021」。
+2026-08-28 实测撞过一次（`0021-tavotto-run-product-contract` 与
+`0021-complexity-aware-editor-preview`）。
+
+这一档既不该 stack（两份 ADR 通常毫不相干），也不该 train（没有共享生成物），
+更不该 serialize（ADR 加得很频繁，串行化会拖住一切）。要做的只有一件事：
+**开工前看一眼同域 PR 占了哪个号**。
+
+### 已经撞了怎么改号
+
+让**先开的那个**保留编号，后者改。这是**两步**，两步该核的东西不一样——
+把它们压成一句话是错的（`--msg-filter` 只动消息，动不了文件名；而真改文件名
+必然改树哈希）：
+
+```sh
+# 第 1 步：改文件名 + 全仓引用 → 一个**新提交**（树当然会变，这一步不核树）
+git mv docs/adr/0021-<slug>.md docs/adr/0022-<slug>.md
+#   连带改掉正文标题、以及所有引用它的代码注释 / 文档 / 用例
+git commit -am "ADR 改号 0021 → 0022：编号撞了 PR #NNN"
+#   核的是：`grep -rn "ADR 0021\|adr/0021-<slug>"` 一条不剩
+
+# 第 2 步：把**历史提交消息**里的旧编号一并改掉（这一步树哈希必须不变）
+git log --format='%T' origin/main..HEAD > /tmp/before-trees
+FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \
+    --msg-filter 'sed "s/ADR 0021/ADR 0022/g"' origin/main..HEAD
+git log --format='%T' origin/main..HEAD > /tmp/after-trees
+diff /tmp/before-trees /tmp/after-trees        # 必须一字不差：只动了消息
+git log --format='%an <%ae> %ad' --date=iso origin/main..HEAD   # author 与日期原样
+```
+
+**别用 `git commit --amend --reset-author`** 改任何一步：它会把 author 日期
+也改成现在。第 2 步之后如果分支已经推过，用
+`--force-with-lease=<branch>:<你实际看到的远端 SHA>`。
+
+如果改动还没提交就别急着做第 2 步——`filter-branch` 只改历史，工作区那份
+得先落进第 1 步的提交里。
+
+这类域在配置里**自带一句处方**（`advice` 字段）。通用兜底文案在这里是
+「对的判据 + 错的处方」：它说「留意合并顺序，后合的一侧 rebase 后重跑快线
+即可」，而 rebase 根本不会报冲突，重跑快线也发现不了。判据一旦对，人更会
+信它说的那句话。
+
+## 与队列的关系速查
+
+| 情形 | 做法 |
+|---|---|
+| 两个 PR 文件毫无交集 | 各自直接进队列，队列负责组合验证 |
+| 相关改动、有依赖 | Stack，从底向上进队列 |
+| 不相关、同一生成物 | Train，一个集成 PR 进队列 |
+| 同一 serialize 域 | 排队：一个合完，下一个 rebase 再开 |
+| 同一 coordinate 域 | 各自挑一个没人占的名字/编号；已撞就后开的那个改 |
+
+## 并发上限与推送节奏（2026-09-16 拍板）
+
+org `Tavotto` 是 GitHub **free** 计划（`gh api orgs/Tavotto --jq .plan.name`），托管
+runner 的并发上限按 GitHub 文档「Usage limits」是 **总 20 个 job，其中 macOS 最多 5**——
+账单页与 API 都不显示这个数，只在文档表里。它决定了下面两条规矩，也解释了为什么
+job 自己变快之后 PR 反馈还会退回 40 分钟：
+
+- 一个 plain PR 的快线是 **17 个 job**（分片后 backend-fast 占 6，两个 Gate 也是占槽的
+  job）；一个 `full-ci` run 是 **29 个**（快线 15 + Gate 2 + 重型 12）——**单独一个
+  full-ci run 自己就超 20**，排在后面的 job（2026-09-15 的样本里恰好是 Windows 与
+  package）要等前面的结束才领得到 runner。
+- 2026-09-15 22:32–23:20 三个 stacked PR 同时进队（75 个 job 排 20 个槽）：Ruff 等
+  runner 1380s、frontend 654s，快线反馈从 19 分钟退到 41 分钟，而每个 job 自身时长没变
+  （`docs/implementation/ci-foundation/CI05_COMPARISON.md` §5）。CI00 记的「几秒内推
+  5–6 个 stacked PR 都排队」同一成因。
+
+因此：
+
+1. **stacked PR 一次只让一个在跑**：从底向上直接进合并队列串行；上面的 PR 不要在下面
+   那个还在跑时再推（`synchronize` 会再起一个 17 个 job 的 run）。合并队列一次只验一个
+   候选（24–29 个 job），几乎不排队——那是它领取等待中位 2–9s 的原因。
+2. **`full-ci` 标签只给真要探平台腿的 PR**（改了 Windows / macOS 才跑到的路径、改了
+   `windows-exe-smoke` / `package` / `posix-e2e` 自己）。它把一个 run 从 17 个 job 变成
+   29 个，而合并组反正会把重型腿再跑一遍。
+3. 决定是**改习惯、不加容量**：加 Linux 自托管池对 20 这个上限是 1–3%，且解不了
+   Windows / macOS 腿（`CI04_RUNNER_PILOT.md` §4）。

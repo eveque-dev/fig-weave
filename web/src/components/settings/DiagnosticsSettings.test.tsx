@@ -1,0 +1,244 @@
+import { PRODUCT_NAME } from '@/lib/brand'
+/**
+ * 设置 → 诊断（ADR 0038）。
+ *
+ * ① 只显示健康状态、失败原因与两个动作；② Agent 页已有的 CLI 检查项不重复；
+ * ③ 渲染环境卡只出现一次（技术详情里），且内置包清单不在这里；
+ * ④ 「复制诊断」先预览脱敏后的文本再复制，文本来自后端同一份采集。
+ */
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('@/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api')>()),
+  fetchDiagnosticsSummary: vi.fn(),
+}))
+
+import { fetchDiagnosticsSummary } from '@/lib/api'
+import { t } from '@/i18n'
+import { DiagnosticsSettings } from '@/components/settings/DiagnosticsSettings'
+import { useEnvStore } from '@/store/envStore'
+import { TooltipProvider } from '@/components/ui/Tooltip'
+
+declare global {
+  // eslint-disable-next-line no-var
+  var IS_REACT_ACT_ENVIRONMENT: boolean
+}
+globalThis.IS_REACT_ACT_ENVIRONMENT = true
+Element.prototype.scrollIntoView ??= function scrollIntoView() {}
+Element.prototype.hasPointerCapture ??= () => false
+globalThis.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+} as never
+
+const summaryMock = vi.mocked(fetchDiagnosticsSummary)
+const st = (key: string, v?: Record<string, unknown>) =>
+  t(`settings.${key}`, { ns: 'dialogs', ...(v ?? {}) })
+
+const PYTHON_PATH = '/opt/homebrew/opt/python@3.13/libexec/bin/python3'
+const CHECKS = [
+  { id: 'worker_python', ok: true, label: '渲染引擎 Python', detail: `${PYTHON_PATH}（系统 Python）` },
+  { id: 'matplotlib', ok: true, label: 'matplotlib', detail: '3.10.8' },
+  { id: 'cli_codex', ok: true, label: 'Codex CLI', detail: 'codex-cli 1.2.3' },
+  { id: 'cli_claude', ok: false, label: 'Claude CLI', detail: '未安装' },
+  { id: 'project_writable', ok: false, label: '项目目录可写', detail: '/tmp/figs' },
+]
+
+let host: HTMLDivElement
+let root: Root
+
+async function mount(checks = CHECKS) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() => Promise.resolve({ json: () => Promise.resolve({ checks }), ok: true } as Response)),
+  )
+  useEnvStore.setState({
+    env: {
+      ok: true,
+      python: PYTHON_PATH,
+      source: 'system',
+      matplotlib: '3.10.8',
+      managed: false,
+      bundled: true,
+      runtime: { packages: { numpy: '2.1.0', matplotlib: '3.10.8' } } as never,
+      state: 'idle',
+    } as never,
+  })
+  host = document.createElement('div')
+  document.body.appendChild(host)
+  root = createRoot(host)
+  await act(async () => {
+    root.render(
+      <TooltipProvider>
+        <DiagnosticsSettings />
+      </TooltipProvider>,
+    )
+  })
+  await act(async () => {})
+}
+
+const text = () => document.body.textContent ?? ''
+const buttons = () => [...document.querySelectorAll('button')] as HTMLButtonElement[]
+const byName = (name: string) =>
+  buttons().find((b) => (b.getAttribute('aria-label') ?? b.textContent ?? '').trim() === name)
+
+beforeEach(() => {
+  summaryMock.mockReset()
+})
+
+afterEach(() => {
+  act(() => root.unmount())
+  host.remove()
+  vi.unstubAllGlobals()
+  document.body.innerHTML = ''
+})
+
+describe('首屏', () => {
+  it('异常项在首屏并说原因；正常项默认折叠（审计 T47）', async () => {
+    await mount()
+    expect(text()).toContain(st('diagnostics.summaryFailing', { count: 1 }))
+    expect(text()).toContain(st('about.check.project_writable'))
+    // 目录走 `PathValue`：默认只给末级目录，全路径展开可见（与项目设置同一份实现）
+    expect(text()).toContain('figs')
+    expect(text()).not.toContain('/tmp/figs')
+    await act(async () =>
+      document.body
+        .querySelector<HTMLElement>(
+          `[aria-label="${st('project.showFullPath', { name: st('about.check.project_writable') })}"]`,
+        )!
+        .click(),
+    )
+    expect(text()).toContain('/tmp/figs') // 全路径不许消失
+    // 正常项不铺首屏——它们在「技术详情」里还有一份带取值的
+    expect(text()).not.toContain(st('about.check.matplotlib'))
+    await act(async () => byName(st('diagnostics.okDetails'))!.click())
+    expect(text()).toContain(st('about.check.matplotlib'))
+    expect(text()).not.toContain(PYTHON_PATH) // 好的不摆路径
+  })
+
+  it('结论那句话不说成「全部正常」（审计 T47）', async () => {
+    await mount(CHECKS.filter((c) => c.ok))
+    expect(text()).toContain(st('diagnostics.summaryOk'))
+    // 结论那句话本身不许说成「全部正常」——它会被读成"图没问题"
+    expect(st('diagnostics.summaryOk')).not.toBe('全部正常')
+  })
+
+  it('说清本页数据什么时候取的，并且重取一次真的再发一次请求（审计 T47）', async () => {
+    await mount()
+    expect(text()).toContain(st('diagnostics.fetchedAt', { time: '' }).replace(/\s*$/, ''))
+    const calls = () => (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length
+    const before = calls()
+    await act(async () => byName(st('diagnostics.refetch'))!.click())
+    await act(async () => {})
+    expect(calls()).toBeGreaterThan(before)
+  })
+
+  it('两个环境不再同名，并且说清它们不是同一个（审计 T47）', async () => {
+    await mount()
+    await act(async () => byName(st('techDetails'))!.click())
+    expect(text()).toContain(st('diagnostics.envNote', { product: PRODUCT_NAME }))
+    // 「自带的」与「这个项目的」是两个不同的名字，不许有一个光叫「Tavotto 环境」
+    const bundled = t('engine.sourceLabel.bundled', { ns: 'errors', product: PRODUCT_NAME })
+    const managed = t('engine.managedEnvUsing', { ns: 'errors', product: PRODUCT_NAME, version: '3.13' })
+    expect(bundled).not.toBe(`${PRODUCT_NAME} 环境`)
+    expect(managed.startsWith(`${PRODUCT_NAME} 环境`)).toBe(false)
+    expect(bundled).not.toBe(managed)
+  })
+
+  it('Agent 页已有的 CLI 检查项不在这里重复', async () => {
+    await mount()
+    expect(text()).not.toContain('Codex CLI')
+    expect(text()).not.toContain('codex-cli 1.2.3')
+    expect(text()).not.toContain(st('about.check.cli_claude'))
+    // 上面 cli_claude 是坏的，但过滤在前：异常数是 1 不是 2
+    expect(text()).toContain(st('diagnostics.summaryFailing', { count: 1 }))
+  })
+
+  it('全部正常时一句话', async () => {
+    await mount(CHECKS.filter((c) => c.ok))
+    expect(text()).toContain(st('diagnostics.summaryOk'))
+  })
+
+  it('渲染环境卡只在技术详情里、只有一张；内置包版本清单不在这一页', async () => {
+    await mount()
+    // 按元素数，不按字符串出现次数——「渲染环境」四个字也出现在别的句子里
+    expect(document.querySelectorAll('[data-engine-env-card]')).toHaveLength(0)
+    await act(async () => byName(st('techDetails'))!.click())
+    expect(document.querySelectorAll('[data-engine-env-card]')).toHaveLength(1)
+    expect(text()).toContain(PYTHON_PATH)
+    expect(text()).not.toContain('2.1.0') // numpy 版本归包管理页
+  })
+})
+
+describe('复制诊断', () => {
+  it('先预览再复制：文本来自后端摘要，预览里有脱敏提示', async () => {
+    summaryMock.mockResolvedValue({ text: 'tavotto.version: 0.12.0\npaths.data_dir: ~/Library/…\n', report: {} })
+    const write = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: write } })
+    await mount()
+    expect(document.querySelector('[data-diagnostics-preview]')).toBeNull()
+    await act(async () => byName(st('diagnostics.copyReport'))!.click())
+    await act(async () => {})
+    expect(summaryMock).toHaveBeenCalled()
+    const preview = document.querySelector('[data-diagnostics-preview]')!
+    expect(preview.textContent).toContain(st('diagnostics.previewNote'))
+    expect(preview.textContent).toContain('tavotto.version: 0.12.0')
+    expect(write).not.toHaveBeenCalled() // 预览阶段一个字节都没进剪贴板
+    await act(async () => byName(st('diagnostics.copyReport'))!.click())
+    expect(write).toHaveBeenCalledWith('tavotto.version: 0.12.0\npaths.data_dir: ~/Library/…\n')
+  })
+
+  it('摘要拿不到时说清失败，不给一个空剪贴板', async () => {
+    summaryMock.mockRejectedValue(new Error('500'))
+    await mount()
+    await act(async () => byName(st('diagnostics.copyReport'))!.click())
+    await act(async () => {})
+    expect(text()).toContain(st('diagnostics.prepareFailed'))
+    expect(document.querySelector('[data-diagnostics-preview]')).toBeNull()
+  })
+
+  it('导出诊断包的按钮还在', async () => {
+    await mount()
+    expect(byName(st('about.exportBundle'))).toBeTruthy()
+  })
+})
+
+describe('异常项给下一步（审计 T47）', () => {
+  it('项目目录不可写：说清接下来做什么，不只是把路径摆出来', async () => {
+    await mount(CHECKS)
+    const line = [...document.querySelectorAll('[data-next-step]')].map((e) => e.textContent)
+    expect(line.join('\n')).toContain(st('diagnostics.nextStep.project_writable'))
+  })
+
+  it('说不出真实动作的那几条不硬编一句（registry_conflicts 没有登记）', async () => {
+    await mount([{ id: 'registry_conflicts', ok: false, label: '注册表 stem 归属', detail: '2 个冲突' }])
+    expect(document.querySelectorAll('[data-next-step]')).toHaveLength(0)
+    expect(text()).toContain('2 个冲突') // 原因照旧说
+  })
+
+  it('正常项不带下一步', async () => {
+    // **挑一条登记过下一步的检查，让它是好的**：拿 worker_python 那种本来就
+    // 没登记的来量，「没有下一步」在任何实现下都成立（判据恒真）
+    await mount([{ id: 'project_writable', ok: true, label: '项目目录可写', detail: '/tmp/figs' }])
+    await act(async () => byName(st('diagnostics.okDetails'))!.click())
+    expect(text()).toContain(st('about.check.project_writable'))
+    expect(document.querySelectorAll('[data-next-step]')).toHaveLength(0)
+  })
+
+  it('渲染引擎那条只在恢复卡片真的在这一屏上时才指着它说', async () => {
+    // env.ok = true（默认 mount 给的就是好的）→ 卡片在「技术详情」里，首屏没有
+    await mount([{ id: 'matplotlib', ok: false, label: 'matplotlib', detail: '无法导入' }])
+    expect(document.querySelectorAll('[data-next-step]')).toHaveLength(0)
+
+    // env 坏了 → 卡片常驻首屏，这时才说得出「下面那张卡片」。
+    // **在挂载之后改 store**：`mount()` 自己会把 env 摆成好的那一份
+    await act(async () => {
+      useEnvStore.setState({ env: { ...useEnvStore.getState().env!, ok: false } as never })
+    })
+    expect(document.querySelectorAll('[data-engine-env-card]').length).toBeGreaterThan(0)
+    expect(text()).toContain(st('diagnostics.nextStep.engine'))
+  })
+})

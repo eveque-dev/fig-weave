@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""从 `packaging/runtime-lock.json` 取科学栈的精确版本，输出成 pip 能吃的形式。
+
+**为什么实验室 CI 不能直接 `pip install matplotlib`**：视觉基线是像素级的，
+matplotlib 换一个小版本就可能改掉抗锯齿、字体度量或默认样式，于是整片 corpus
+在一次与产品毫无关系的依赖升级里同时变红。那种误报会直接摧毁这条门禁的可信度。
+
+用锁文件而不是另写一份版本号，理由和 CLAUDE.md 里那条一样：**版本锁是唯一
+输入**。桌面版用户拿到的内置 runtime 就是这些版本，CI 的渲染环境与之一致，
+基线才真正代表「用户会看到的那张图」。
+
+只取渲染相关的那几个包——CI 环境不需要复刻整个闭包（那是内置 runtime 的活），
+但凡影响像素的都必须钉住。
+
+用法：
+    python scripts/ci/runtime_pins.py                 # matplotlib==3.11.1 numpy==2.5.2 …
+    python scripts/ci/runtime_pins.py --format lines  # 每行一个
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+# Windows 上 stdout 一旦不是真控制台（被 CI 捕获 / 管道 / 重定向）就退回系统区域
+# 编码（cp1252/cp936），第一句中文或 ✓ 的输出就 UnicodeEncodeError——脚本明明
+# 做完了却以非零退出，而父进程只看得见「它挂了」。写法与 build_frontend.py 同源。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
+REPO = Path(__file__).resolve().parents[2]
+LOCK = REPO / "packaging" / "runtime-lock.json"
+
+# 影响渲染像素的包。fonttools 与 pillow 看着不起眼，但前者决定字形度量、
+# 后者决定 PNG 编码，两者都能让「同一张图」在像素上对不上。
+RENDER_CRITICAL = (
+    "matplotlib",
+    "numpy",
+    "pillow",
+    "contourpy",
+    "fonttools",
+    "kiwisolver",
+    "cycler",
+    "pyparsing",
+)
+
+#: CompatBench 的语料另外用到的科学栈。**刻意不并进 RENDER_CRITICAL**：
+#: 那一组的判据是「影响像素」，视觉回归的环境按它装；pandas / scipy / seaborn
+#: 不影响像素，却是 `sci_pandas_*` / `sci_scipy_fit` / `sci_sns_*` 跑得起来的
+#: 前提。混成一组的话，改动其中一个的理由会被另一个的判据挡住。
+#:
+#: 不装它们的后果是**门禁永久红**而不是「少跑几条」：那四条 pandas/scipy 的
+#: case 在清单里是 full_support，execute 失败 → classify 记成新的
+#: product_bug → release 档一个 product_bug 都不接受。
+CORPUS_EXTRA = ("pandas", "scipy", "seaborn")
+
+
+def _packages(target: dict) -> dict[str, str]:
+    """锁文件里一个 target 的 包名 → 版本。两种形状都认。"""
+    raw = target.get("packages") or target.get("closure") or {}
+    if isinstance(raw, dict):
+        return {str(k).lower(): str(v) for k, v in raw.items()}
+    out: dict[str, str] = {}
+    for item in raw:
+        if isinstance(item, dict) and item.get("name"):
+            out[str(item["name"]).lower()] = str(item.get("version", ""))
+    return out
+
+
+def pins(lock_path: Path = LOCK, include_corpus: bool = False) -> list[str]:
+    """返回 ["matplotlib==3.11.1", ...]。
+
+    取任意一个 target 即可：CLAUDE.md 明确记着**三个目标的闭包刻意逐字相同**
+    （同版本的 matplotlib/numpy 才能让同一个脚本在两个平台画出同一张图，
+    `test_all_targets_pin_the_same_versions` 看护这一点）。
+    """
+    data = json.loads(lock_path.read_text(encoding="utf-8"))
+    targets = data.get("targets") or {}
+    if not targets:
+        raise SystemExit(f"{lock_path} 里没有 targets——锁文件格式变了？")
+    pkgs = _packages(next(iter(targets.values())))
+    out = []
+    wanted = RENDER_CRITICAL + (CORPUS_EXTRA if include_corpus else ())
+    for name in wanted:
+        ver = pkgs.get(name)
+        if ver:
+            out.append(f"{name}=={ver}")
+        elif include_corpus and name in CORPUS_EXTRA:
+            raise SystemExit(
+                f"锁文件里没有 {name}——CompatBench 的语料要用它，"
+                f"缺了会让 sci_* 那几条 case 变成假的 product_bug"
+            )
+    if not any(p.startswith("matplotlib==") for p in out):
+        raise SystemExit("锁文件里没有 matplotlib——视觉基线将失去版本保证，拒绝继续")
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="输出与内置 runtime 一致的科学栈版本")
+    ap.add_argument("--format", choices=["args", "lines"], default="args")
+    ap.add_argument(
+        "--include-corpus",
+        action="store_true",
+        help="连 CompatBench 语料要用的 pandas / scipy / seaborn 一起吐",
+    )
+    args = ap.parse_args(argv)
+    got = pins(include_corpus=args.include_corpus)
+    print("\n".join(got) if args.format == "lines" else " ".join(got))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

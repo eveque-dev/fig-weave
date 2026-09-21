@@ -1,0 +1,203 @@
+---
+name: Tavotto
+description: matplotlib 科研图的可视化编辑器——Paper × Instrument，紧凑的桌面工具
+colors:
+  bg: "#f7f6f3"
+  canvas: "#eaeae6"
+  surface: "#ffffff"
+  surface-2: "#f7f7f4"
+  field: "#f1f0ec"
+  field-hover: "#edece8"
+  border-control: "#8a8a82"
+  ink: "#1b1b18"
+  ink-2: "#5c5c55"
+  ink-3: "#6b6b64"
+  ink-faint: "#a3a39a"
+  accent: "#2868b7"
+  accent-subtle: "#e9f0f9"
+  danger: "#c4442a"
+  danger-subtle: "#fdf3f1"
+  warn: "#8a5a00"
+  warn-subtle: "#f7efe0"
+  ok: "#2b7649"
+  ok-subtle: "#e6f3ea"
+  sel: "#2f6fed"
+typography:
+  title:
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', 'Microsoft YaHei', system-ui, sans-serif"
+    fontSize: "15px"
+    fontWeight: 500
+    lineHeight: "20px"
+  section:
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', 'Microsoft YaHei', system-ui, sans-serif"
+    fontSize: "12px"
+    fontWeight: 500
+    lineHeight: "16px"
+  body:
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', 'Microsoft YaHei', system-ui, sans-serif"
+    fontSize: "12px"
+    fontWeight: 400
+    lineHeight: "16px"
+  control:
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', 'Microsoft YaHei', system-ui, sans-serif"
+    fontSize: "12px"
+    fontWeight: 400
+    lineHeight: "16px"
+  caption:
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', 'Microsoft YaHei', system-ui, sans-serif"
+    fontSize: "11px"
+    fontWeight: 400
+    lineHeight: 1.5
+  meta:
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', 'Microsoft YaHei', system-ui, sans-serif"
+    fontSize: "11px"
+    fontWeight: 400
+    lineHeight: "15px"
+  number:
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', 'Microsoft YaHei', system-ui, sans-serif"
+    fontSize: "12px"
+    fontWeight: 400
+    lineHeight: "16px"
+  mono:
+    fontFamily: "ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace"
+rounded:
+  xs: "3px"
+  sm: "6px"
+  md: "10px"
+  lg: "14px"
+spacing:
+  control: "28px"
+  setting-row: "48px"
+components:
+  button-primary:
+    backgroundColor: "{colors.ink}"
+    textColor: "#ffffff"
+    rounded: "{rounded.sm}"
+    height: "{spacing.control}"
+  button-secondary:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.sm}"
+    height: "{spacing.control}"
+  button-ghost:
+    textColor: "{colors.ink}"
+    rounded: "{rounded.sm}"
+    height: "{spacing.control}"
+  button-danger:
+    textColor: "{colors.danger}"
+    rounded: "{rounded.sm}"
+    height: "{spacing.control}"
+  icon-button:
+    rounded: "{rounded.sm}"
+    size: "{spacing.control}"
+  input:
+    backgroundColor: "{colors.field}"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.sm}"
+    height: "{spacing.control}"
+  badge:
+    rounded: "9999px"
+    height: "16px"
+  menu:
+    backgroundColor: "{colors.surface}"
+    rounded: "{rounded.md}"
+  dialog:
+    backgroundColor: "{colors.surface}"
+    rounded: "{rounded.lg}"
+---
+
+# Design System: Tavotto
+
+> **这是一份索引，不是第二份宪法。** 规矩的正文只有一处：`docs/ux/DESIGN_CONSTITUTION.md`；
+> 值只有一处：`web/src/index.css` 的 `@theme`；门禁在 `web/src/components/ui/foundation.test.ts`
+> 与 `iconography.test.tsx`。上面的 frontmatter 是给 impeccable / Stitch 这类工具读的
+> 机器层，由 `web/src/designMd.test.ts` 与 `index.css` 逐条对拍——改值先改 index.css，
+> 这里跟着改，同一次提交。下面每一节只说一两句话并指向宪法的章节，不复制。
+
+## Overview
+
+**Creative North Star: "Paper × Instrument"**
+
+一件用于科研图制作与论文排版的精密仪器：微微的纸张感（暖灰白底 `#f7f6f3`，不黄不米）、
+工程工具的精确（28px 控件、单位排成竖线的数字框、毫米制）、桌面软件的成熟。极简但不空洞，
+克制但有设计——精致来自比例、对齐、间距、字体层级、图标与状态，**不来自装饰**。
+
+**Key Characteristics:**
+- 一套字体（系统 sans）、五档字号（11 / 12 / 13 / 14 / 15）、两档字重（400 / 500；只有页签 / 分段的选中态 600）
+- 持久表面没有投影；分层靠极轻的明度差与 ink 半透明的 hairline（边框 / hover / selected 都是 ink 的 5%～18% 叠加）
+- 蓝色只做小面积：焦点环、链接、AI、画布选择框；主按钮是近黑
+- 密度是「紧凑工具」那一档：控件一律 28px
+- 动效只是点缀：opacity + ≤4px 位移 + scale 0.97~1，关掉不损失信息；回弹只有 `--ease-spring` 一条曲线（峰值 5%，只给落位收尾）
+
+## Colors
+
+暖灰白纸面 + 近黑墨 + 一枚小面积品牌蓝；语义色（danger / warn / ok）只表达语义，各带一档 subtle 底。
+表在 **宪法第一节**（工具类名 ↔ 值 ↔ 用途）。
+
+### Primary
+- **Ink（近黑）** (`#1b1b18`)：主文字、主按钮填色、选中态的字重。不是纯黑。
+- **Tavotto Blue（品牌蓝）** (`#2868b7`)：焦点环、链接、AI 入口、画布选择框——小面积。
+
+### Neutral
+- **Paper（纸面）** (`#f7f6f3`) 应用底 · **Canvas（画布灰）** (`#eaeae6`) · **Surface（白）** (`#ffffff`) 面板 / 浮层 / 卡 · **Surface-2** (`#f7f7f4`) 只读值与徽章底 · **Field** (`#f1f0ec`，hover `#edece8`) 所有可编辑框的底（比面板深一级、无边；参考 Codex） · **Selected**（ink 10% 叠加：hover 5% < active 8% < selected 10%）
+- **Ink-2 / Ink-3 / Ink-faint** (`#5c5c55` / `#6b6b64` / `#a3a39a`)：次级、元数据、禁用。Ink-2 在所有底色上 ≥4.5:1；**Ink-3 只在白 / Surface-2 / Paper 上达标**（5.37 / 5.00 / 4.78），在 Canvas 画布灰上只有 4.45:1——画布底色上直接写字用 Ink-2（`index.css` 里 `--color-ink-3` 的注释是这条的权威）；faint 不用于要读的字
+- **Border / Border-strong**（ink 12% / 18% 叠加）：hairline 只给区域边界、次级按钮 · **可编辑框静态没有边**：Field 底就是「框」，聚焦 / 打开才是不透明 accent 边——有框 = 能改，3:1 由聚焦态承担（2026-09-15，宪法第二十二节） · **Border-control** (`#8a8a82`)：未选中复选框 / 单选、关态开关轨道，边界就是全部识别信息，≥3:1
+
+### Named Rules
+**The Small Blue Rule.** 蓝色不做任何大块背景、不做按钮填色；主按钮是近黑 `bg-ink`。
+**The Hairline Rule.** surface 之间靠极轻的明度差与 hairline 分层，不靠框。
+
+## Typography
+
+**Body Font:** 系统 sans（SF Pro Text / PingFang SC / Microsoft YaHei，`--font-sans`）
+**Mono Font:** `ui-monospace`（只给代码、路径、脚本名与取值代号，`--font-mono`；数值、快捷键、kbd 都是系统字体 + tabular-nums）
+**Document Font:** Times New Roman / Songti SC（`--font-doc`）——只给画布里的文字对象，模拟论文排版，与 UI 字体严格分离。
+
+**Character:** 一套字体、四档字号、两档字重；层级由六个**角色**决定，不由页面自己挑组合。
+
+### Hierarchy
+六个角色 `type-title / type-section / type-body / type-control / type-caption / type-meta`，
+值与用途见 **宪法第六节**；`text-[Npx]` 不许出现，`type-title` 15px / 500，`type-section` 12px / 500 / ink，不大写不加字距；600 只给页签 / 分段的选中态。
+
+## Layout
+
+密度：**宪法第三节**。控件一律 28px（`h-7`），行内 gap 按 4 / 8 走，分区之间靠 `Section` 的固定留白；
+设置页一行 48px（`SettingRow`）。标签在左、控件在右的紧凑行，控件从同一条竖线起排（`ui/Field.Row`）。
+少用容器：**宪法第八节**——留白、对齐、字体层级、hairline 优先，卡片只给真的是一张卡的东西。
+
+## Elevation & Depth
+
+**The Flat-By-Default Rule.** 持久表面不用投影——**只有「真的是一张卡」的东西例外**（素材卡 / 会话卡 / 任务行 / 诊断与修复卡）：`--shadow-card`（1px 环 4% + 0 2px 8px 4%，取 Codex 浅色抬升的前两层，比 shadow-pop 低一档；2026-09-15 学 Beautiful UI，宪法第二十二节）；分区、列表行、输入框、分段控件仍是平的。改图助手的输入框是浮在对话流上的玻璃（`--color-glass` field 90% + 16px 背景模糊 + `--shadow-composer`，参考 Codex）。浮层是「1px 半透明环 + 一层大模糊」，不画实色边：
+`--shadow-pop: 0 0 0 1px rgba(27, 27, 24, 0.08), 0 8px 24px rgba(27, 27, 24, 0.08)`（菜单 / popover / 浮条），对话框与命令面板用更深一档的 `--shadow-dialog`；Tooltip 是 ink 底白字，不带投影。
+
+## Shapes
+
+四档圆角 + full，Tailwind 自带的 xl / 2xl 已清空：xs 3（16px 高以下的小片、分段 thumb）、sm 6（控件）、
+md 10（卡片与浮层）、lg 14（对话框、命令面板）、full（圆点、开关、徽章）。浮层比控件大 4～8。**宪法第二节**。
+
+## Components
+
+全部原语在 `web/src/components/ui/`，形态与状态在 **宪法第五节**：Button 四档、IconButton、
+TextInput / NumberField（框内单位）、Select（全仓唯一的下拉）、Checkbox、Toggle（名字必填）、
+Badge、Tabs（选中 600 + 2px 下划线）、Segmented（灰容器 + 白色浮起的 thumb，选中 600）、listRowClass / TreeRow、SearchInput、Section / Disclosure。
+四态：hover（surface-hover 5%）< active（surface-active 8%）< selected（selected 10% + 字重 / 对勾）；
+disabled 统一 `opacity-35~40 + cursor-not-allowed`。图标只有自绘的一套（`web/src/components/ui/icons/`，ADR 0052；说明书 `docs/ux/ICONOGRAPHY.md`）。
+
+动效：**宪法第七节**。时长只来自 token（fast 120 / base 180 / slow 240 / exit 90），
+进场 `--ease-pop`、退场 `--ease-exit`、落位收尾 `--ease-spring`、其余 `--ease-standard`；没写时长的
+`transition-*` 默认就是 fast + standard（`--default-transition-*`）；`prefers-reduced-motion` 是硬约束。
+改图助手对话区（流式逐词淡入 / 亮带状态 / 发送 ↔ 中止同钮 / 贴底跟随）见 **宪法第十八节**。
+通知轨的计时会让路（hover / focus / 页面不可见时不走表）、同一位置换文字原位换（`ui/SwapText`）见 **宪法第二十三节**。
+
+## Do's and Don'ts
+
+### Do:
+- **Do** 改值先改 `index.css`，改规矩先改宪法，同一次提交；这里只是镜像。
+- **Do** 用角色（`type-*`）定字体层级，用 token 定时长，用 `IconButton` 的 `label` 同时给可达名与气泡。
+- **Do** 让品牌名只来自 `web/src/lib/brand.ts`。
+
+### Don't:
+- **Don't** 给蓝色大块背景或按钮填色。
+- **Don't** 给持久表面加投影，或用第二种投影。
+- **Don't** 写 `text-[Npx]`、`rounded-xl`、第二套下拉、第二种开关。
+- **Don't** 在注释里写完整的 Tailwind 类名（扫描器会把它编进产物 CSS）。

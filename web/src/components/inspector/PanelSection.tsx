@@ -1,0 +1,790 @@
+import { useEffect, useMemo, useState } from 'react'
+import { useInspectorPrefs } from '@/store/inspectorPrefs'
+import { useTranslation } from 'react-i18next'
+import {
+  Crop,
+  FlipHorizontal2,
+  FlipVertical2,
+  Link2,
+  Maximize2,
+  Minimize2,
+  Pencil,
+  Ratio,
+  Replace,
+  RotateCcw,
+  Scaling,
+  Unlink2,
+} from '@/components/ui/icons'
+import { ICON_SIZE } from '@/components/ui/Icon'
+import { usePanelRender, useRenderStore } from '@/store/renderStore'
+import { msg, t as translate, type UiMessage } from '@/i18n'
+import { formatQuantity } from '@/i18n/format'
+import { BASE_FONT_PT, effectiveDpi, effectivePt, formatCm, formatMm, round1 } from '@/lib/units'
+import { cn } from '@/lib/utils'
+import type { PanelInfo } from '@/lib/api'
+import {
+  beginCrop,
+  enterElementEdit,
+  fillPanels,
+  finishCrop,
+  fitPanels,
+  replacePanelAsset,
+  resetPanelCrop,
+  restorePanelAspect,
+  restorePanelNativeSize,
+  rotatePanels,
+  setPanelAspectLocked,
+  setPanelOpacity,
+  updateObjects,
+} from '@/store/actions'
+import { reasonText, statusLabel } from '@/lib/readinessText'
+import { folderLabel, useAssetStore } from '@/store/assetStore'
+import { useProjectReadinessStore } from '@/store/projectReadinessStore'
+import { isBusyPhase, useScriptRunStore } from '@/store/scriptRunStore'
+import { useUiStore } from '@/store/uiStore'
+import { overrideCounts } from '@/lib/overrideCounts'
+import type { PanelObject, PanelRotation } from '@/types/document'
+import {
+  panelAspectLocked,
+  panelFullSize,
+  panelRotation,
+} from '@/types/document'
+import { Button, IconButton } from '../ui/Button'
+import { Dialog } from '../ui/Dialog'
+import { Disclosure, Reveal, Row, Section } from '../ui/Field'
+import { NumberField, TextInput } from '../ui/Input'
+import { Tip } from '../ui/Tooltip'
+import { ArrangeSection } from './ArrangeSection'
+import { GroupToggle } from './GroupToggle'
+import { INSPECTOR_LABEL_W } from './layout'
+import { OriginalFileActions } from './OriginalFileActions'
+import { GeometryGrid, GeometrySpacer, MmField } from './MmField'
+import { shared } from './common'
+
+/** 本文件的文案：inspector:panel.*，历史标签 inspector:history.* */
+const pn = (key: string, values?: Record<string, unknown>) =>
+  translate(`panel.${key}`, { ns: 'inspector', ...(values ?? {}) })
+const hist = (key: string): UiMessage => msg(`history.${key}`, undefined, 'inspector')
+
+/** 多选时取值不一致返回 undefined —— 面板版，省去每处的类型断言 */
+function sharedPanel<T>(objs: PanelObject[], pick: (o: PanelObject) => T): T | undefined {
+  return shared(objs, (o) => pick(o as PanelObject))
+}
+
+export function PanelSection({ objs }: { objs: PanelObject[] }) {
+  const one = objs.length === 1 ? objs[0] : null
+  if (!objs.length) return null
+
+  return (
+    <>
+      {/* 头部之下先是进图内编辑的紧凑入口（参数化面板的核心动作），然后
+          变换 → 内容适配 → 排列 → 更多 → 源文件（2026-09-13 审计 B09 的固定顺序） */}
+      {one?.script && <ElementEditEntry panel={one} />}
+      {one && <PanelCapabilityNote panel={one} />}
+      <GeometrySection objs={objs} />
+      <ImageOpsSection objs={objs} />
+      {/* 单选的排列（对齐到画布 + 层级）就在这里；多选的排列由属性页统一摆在最后 */}
+      {one && <ArrangeSection count={1} />}
+      {/* 唯一的「更多」——旋转 / 翻转 / 不透明度 / 替换素材 */}
+      <PanelMoreSection objs={objs} />
+      {/* 源文件与高级——写回 / 历史 / 质量诊断，默认折叠 */}
+      <SourceSection panel={one ?? undefined} objs={objs} />
+    </>
+  )
+}
+
+/**
+ * 「这张图为什么没有图内编辑」——**非阻塞**的一句话 + 一个入口。
+ *
+ * 不是错误、不是空状态：`layout_only` 的图照旧能缩放、裁剪、对齐、标注和导出，
+ * 把它画成故障只会让用户去找一个并不存在的问题。所以它是一条平铺的说明，
+ * 用中性底色，不带警告图标。
+ *
+ * 出现条件与画布上那个入口**共用同一份事实**（`PanelInfo.capability`）：
+ * 状态是 editable 时什么都不显示，`capability` 缺席时也什么都不显示
+ * （「这一轮还不知道」不是一种状态）。
+ */
+export function PanelCapabilityNote({ panel }: { panel: PanelObject }) {
+  useTranslation('inspector')
+  const cap = useAssetStore((s) => s.byId[panel.fileId]?.capability)
+  if (panel.script || !cap || cap.status === 'editable') return null
+  return (
+    /* surface-2 底的一条，不画边（第八节 / 第五节：`Notice` 已删）；入口是 ghost
+       （打磨 E10——此前 border + 底 + 整行 secondary 三重强调） */
+    <div className="mx-3 mb-1.5 rounded-md bg-surface-2 px-2 py-1.5">
+      <p className="text-xs font-medium text-ink">{statusLabel(cap.status)}</p>
+      <p className="mt-0.5 text-xs leading-relaxed text-ink-2">{reasonText(cap)}</p>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="-ml-2 mt-0.5"
+        onClick={() => useProjectReadinessStore.getState().focusPanel(panel.fileId, 'panel')}
+      >
+        {translate('readiness.openCenter', { ns: 'workspace' })}
+      </Button>
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*  位置与尺寸（高频，默认展开）                                                 */
+/* -------------------------------------------------------------------------- */
+
+function GeometrySection({ objs }: { objs: PanelObject[] }) {
+  useTranslation('inspector')
+  const ids = objs.map((o) => o.id)
+  const one = objs.length === 1 ? objs[0] : null
+  const locked = objs.every(panelAspectLocked)
+  // 原始大小是尺寸的锚点：W/H 是当前值，缩放 % 一律相对它，不相对上一次
+  const native = sharedPanel(objs, (o) => `${formatMm(o.nativeW)} × ${formatMm(o.nativeH)}`)
+  const scale = sharedPanel(objs, (o) => Math.round((panelFullSize(o).w / o.nativeW) * 100))
+
+  const setEach = (label: UiMessage, fn: (o: PanelObject) => void) =>
+    updateObjects(ids, label, (o) => {
+      if (o.type === 'panel') fn(o)
+    })
+
+  /** 多个不同值时按整体偏移，保持相对位置 */
+  const setAxis = (axis: 'x' | 'y', v: number) => {
+    const label = hist(axis === 'x' ? 'setX' : 'setY')
+    if (sharedPanel(objs, (o) => o[axis]) === undefined && objs.length > 1) {
+      const min = Math.min(...objs.map((o) => o[axis]))
+      setEach(label, (o) => {
+        o[axis] += v - min
+      })
+    } else {
+      setEach(label, (o) => {
+        o[axis] = v
+      })
+    }
+  }
+
+  return (
+    <Section title={pn('geometry')}>
+      {/* X / Y 与 W / H 各占一列、单位坐在框里，中间一格只放宽高比锁
+          （第一行占位）——两行的数字和单位各排成一条竖线；列宽 minmax(0,1fr)，
+          窄栏里一起收窄而不是溢出（Session 2） */}
+      <GeometryGrid>
+        <MmField
+          label="X"
+          historyLabel={hist('setX')}
+          value={sharedPanel(objs, (o) => o.x)}
+          onChange={(v) => setAxis('x', v)}
+        />
+        <GeometrySpacer />
+        <MmField
+          label="Y"
+          historyLabel={hist('setY')}
+          value={sharedPanel(objs, (o) => o.y)}
+          onChange={(v) => setAxis('y', v)}
+        />
+        <MmField
+          label="W"
+          historyLabel={hist('setWidth')}
+          min={1}
+          value={sharedPanel(objs, (o) => o.w)}
+          onChange={(v) =>
+            setEach(hist('setWidth'), (o) => {
+              const k = v / o.w
+              o.w = v
+              if (panelAspectLocked(o)) o.h *= k
+            })
+          }
+        />
+        {/* 锁是个小 ghost 图标钮：名字是动作，气泡讲当前状态；锁上时轻 tint */}
+        <IconButton
+          label={pn('lockAspect')}
+          tip={pn(locked ? 'aspectLocked' : 'aspectUnlocked')}
+          iconSize="sm"
+          active={locked}
+          aria-pressed={locked}
+          onClick={() => setPanelAspectLocked(ids, !locked)}
+        >
+          {locked ? <Link2 size={ICON_SIZE.sm} /> : <Unlink2 size={ICON_SIZE.sm} />}
+        </IconButton>
+        <MmField
+          label="H"
+          historyLabel={hist('setHeight')}
+          min={1}
+          value={sharedPanel(objs, (o) => o.h)}
+          onChange={(v) =>
+            setEach(hist('setHeight'), (o) => {
+              const k = v / o.h
+              o.h = v
+              if (panelAspectLocked(o)) o.w *= k
+            })
+          }
+        />
+      </GeometryGrid>
+
+      <Row className="mt-1.5" label={pn('scale')} labelWidth={INSPECTOR_LABEL_W}>
+        <NumberField
+          value={scale ?? 100}
+          mixed={scale === undefined}
+          step={1}
+          min={5}
+          max={500}
+          precision={0}
+          unit="%"
+          ariaLabel={pn('scale')}
+          title={pn('scaleTitle')}
+          onChange={(v) =>
+            updateObjects(ids, hist('setPanelScale'), (o) => {
+              if (o.type !== 'panel') return
+              // 裁剪后仍以未裁剪的整图为缩放基准；包围盒等比缩放
+              const k = (o.nativeW * (v / 100)) / panelFullSize(o).w
+              o.w *= k
+              o.h *= k
+            })
+          }
+        />
+        <Tip
+          label={
+            one
+              ? pn('nativeTip', { w: formatCm(one.nativeW), h: formatCm(one.nativeH) })
+              : pn('nativeTipMulti')
+          }
+          side="left"
+        >
+          {/* 原始尺寸是元数据：靠右、meta 字色，不与数字框争视线 */}
+          <span className="type-meta ml-auto min-w-0 shrink truncate tabular-nums">
+            {native ? pn('native', { size: native }) : pn('nativeMixed')}
+          </span>
+        </Tip>
+      </Row>
+
+      {/*
+        「原始比例 / 原始尺寸」改的就是上面那两个数，所以它们跟着 W/H 与缩放走
+        （审计 T26 验收：不混淆裁剪、原图尺寸和画布缩放）。两颗都是次级操作：
+        ghost 文字键、不撑满、同高同图标档——不是两个 CTA。
+      */}
+      <Row className="mt-1.5" label={pn('restore')} labelWidth={INSPECTOR_LABEL_W}>
+        <Tip label={pn('aspectTip')}>
+          <Button variant="ghost" size="sm" className="-ml-2" onClick={() => restorePanelAspect(ids)}>
+            <Ratio size={ICON_SIZE.sm} className="text-ink-3" />
+            {pn('aspect')}
+          </Button>
+        </Tip>
+        <Tip label={pn('nativeSizeTip')}>
+          <Button variant="ghost" size="sm" onClick={() => restorePanelNativeSize(ids)}>
+            <Scaling size={ICON_SIZE.sm} className="text-ink-3" />
+            {pn('nativeSize')}
+          </Button>
+        </Tip>
+      </Row>
+    </Section>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*  外观（折叠）：旋转 / 翻转 / 不透明度                                          */
+/* -------------------------------------------------------------------------- */
+
+function PanelMoreSection({ objs }: { objs: PanelObject[] }) {
+  useTranslation('inspector')
+  const open = useInspectorPrefs((s) => s.moreOpen['panel'] ?? false)
+  const setOpen = useInspectorPrefs((s) => s.setMoreOpen)
+  const one = objs.length === 1 ? objs[0] : null
+  const [replacing, setReplacing] = useState(false)
+  const ids = objs.map((o) => o.id)
+  const rot = sharedPanel(objs, panelRotation)
+  const opacity = sharedPanel(objs, (o) => Math.round((o.opacity ?? 1) * 100))
+  const translucent = objs.some((o) => (o.opacity ?? 1) < 1)
+  const flipped = objs.some((o) => o.flipH || o.flipV)
+
+  const setEach = (label: UiMessage, fn: (o: PanelObject) => void) =>
+    updateObjects(ids, label, (o) => {
+      if (o.type === 'panel') fn(o)
+    })
+
+  const summaryBits = [
+    rot ? `${rot}°` : null,
+    flipped ? pn('flipped') : null,
+    opacity !== undefined && opacity < 100 ? `${opacity}%` : null,
+  ].filter(Boolean)
+
+  return (
+    /* 组内的「更多」是文字链接（打磨 O3 / L4）：此前对象页这一处是 `Disclosure`
+       （带 chevron），元素页同一个词是文字链接——同一个词两种字形 */
+    <Section>
+      <GroupToggle
+        open={open}
+        onToggle={() => setOpen('panel', !open)}
+        summary={summaryBits.length ? summaryBits.join(' · ') : undefined}
+      >
+        {translate('element.more', { ns: 'inspector' })}
+      </GroupToggle>
+      <Reveal open={open}>
+      <div className="mt-1.5 flex flex-col gap-1.5">
+        {/* 只有一个数字框（2026-09-11 用户反馈）：面板只能转 0 / 90 / 180 / 270，
+            步进 90、写回前吸附到这四档 */}
+        <Row label={translate('transform.rotation', { ns: 'inspector' })} labelWidth={INSPECTOR_LABEL_W}>
+          <NumberField
+            value={rot ?? 0}
+            mixed={rot === undefined}
+            min={-360}
+            max={360}
+            step={90}
+            precision={0}
+            unit="°"
+            ariaLabel={translate('transform.rotation', { ns: 'inspector' })}
+            title={pn('rotationTip')}
+            onChange={(v) => {
+              const snapped = ((Math.round(v / 90) * 90) % 360 + 360) % 360
+              rotatePanels(ids, snapped as PanelRotation)
+            }}
+          />
+        </Row>
+
+        <Row label={pn('flip')} labelWidth={INSPECTOR_LABEL_W}>
+          {/* 两颗同高同档的开关键（secondary + active），不撑满整行 */}
+          <div className="flex min-w-0 gap-1">
+            <Button
+              variant="secondary"
+              size="sm"
+              active={sharedPanel(objs, (o) => o.flipH === true) === true}
+              onClick={() =>
+                setEach(hist('flipH'), (o) => {
+                  o.flipH = o.flipH ? undefined : true
+                })
+              }
+            >
+              <FlipHorizontal2 size={ICON_SIZE.sm} />
+              {pn('flipHorizontal')}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              active={sharedPanel(objs, (o) => o.flipV === true) === true}
+              onClick={() =>
+                setEach(hist('flipV'), (o) => {
+                  o.flipV = o.flipV ? undefined : true
+                })
+              }
+            >
+              <FlipVertical2 size={ICON_SIZE.sm} />
+              {pn('flipVertical')}
+            </Button>
+          </div>
+        </Row>
+
+        {/* 只有数字框，不再配滑杆（2026-09-11 用户反馈） */}
+        <Row label={pn('opacity')} labelWidth={INSPECTOR_LABEL_W}>
+          <NumberField
+            ariaLabel={pn('opacity')}
+            value={opacity ?? 100}
+            mixed={opacity === undefined}
+            min={0}
+            max={100}
+            step={1}
+            precision={0}
+            unit="%"
+            onChange={(v) => setPanelOpacity(ids, v / 100)}
+          />
+        </Row>
+
+        {/* 说明只讲导出后果：翻转 / 半透明面板在 PDF 里按位图嵌入，矢量文字不再可选中 */}
+        {(flipped || translucent) && (
+          <p className="text-xs leading-relaxed text-ink-3">
+            {pn(flipped && translucent ? 'bitmapBoth' : flipped ? 'bitmapFlip' : 'bitmapOpacity')}
+          </p>
+        )}
+
+        {/* 替换素材是设置行里的一个动作，不是整行 CTA */}
+        <Row label={pn('replace')} labelWidth={INSPECTOR_LABEL_W}>
+          <Tip label={pn('replaceTip')}>
+            <Button variant="secondary" size="sm" disabled={!one} onClick={() => setReplacing(true)}>
+              <Replace size={ICON_SIZE.sm} className="text-ink-3" />
+              {pn('replaceAction')}
+            </Button>
+          </Tip>
+        </Row>
+        {one && (
+          <ReplaceAssetDialog panel={one} open={replacing} onOpenChange={setReplacing} />
+        )}
+      </div>
+      </Reveal>
+    </Section>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*  图片（折叠）：裁剪 / 适配 / 替换素材                                          */
+/* -------------------------------------------------------------------------- */
+
+function ImageOpsSection({ objs }: { objs: PanelObject[] }) {
+  useTranslation('inspector')
+  const ids = objs.map((o) => o.id)
+  const cropTargetId = useUiStore((s) => s.cropTargetId)
+  const one = objs.length === 1 ? objs[0] : null
+  const cropped = objs.some((o) => o.crop)
+  const cropping = !!one && cropTargetId === one.id
+
+  return (
+    /*
+      「图片适配」只管一件事：这张图怎么摆进它的框里——取景（裁剪）、整图放进去
+      （完整放入）、把框填满（填满框）。改框本身大小的两颗（原始比例 / 原始尺寸）
+      已经跟着 W/H 搬到位置与尺寸那一组（审计 T26）。
+    */
+    <Section title={pn('image')}>
+      {/* 裁剪是进出的模式，完整放入 / 填满框是两个一次性的摆法命令——不是三颗同权重的
+          大钮排一行（2026-09-15 打磨批次 C，L3）：模式一行、命令一行，标签列与位置组对齐 */}
+      <Row label={pn('cropRow')} labelWidth={INSPECTOR_LABEL_W}>
+        <Tip label={pn('cropTip')}>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={!one}
+            active={cropping}
+            data-crop-toggle
+            onClick={() => {
+              if (!one) return
+              if (cropping) finishCrop()
+              else beginCrop(one.id)
+            }}
+          >
+            <Crop size={ICON_SIZE.sm} className={cropping ? undefined : 'text-ink-3'} />
+            {pn(cropping ? 'cropDone' : 'crop')}
+          </Button>
+        </Tip>
+      </Row>
+      <Row className="mt-1.5" label={pn('fitRow')} labelWidth={INSPECTOR_LABEL_W}>
+        <Tip label={pn('fitTip')}>
+          <Button variant="secondary" size="sm" onClick={() => fitPanels(ids)}>
+            <Minimize2 size={ICON_SIZE.sm} className="text-ink-3" />
+            {pn('fit')}
+          </Button>
+        </Tip>
+        <Tip label={pn('fillTip')}>
+          <Button variant="secondary" size="sm" onClick={() => fillPanels(ids)}>
+            <Maximize2 size={ICON_SIZE.sm} className="text-ink-3" />
+            {pn('fill')}
+          </Button>
+        </Tip>
+      </Row>
+      {cropped && (
+        <div className="mt-1 flex justify-end">
+          <Tip label={pn('resetCropTip')}>
+            <Button variant="ghost" size="sm" onClick={() => resetPanelCrop(ids)}>
+              <RotateCcw size={ICON_SIZE.sm} className="text-ink-3" />
+              {pn('resetCrop')}
+            </Button>
+          </Tip>
+        </div>
+      )}
+    </Section>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*  诊断（折叠，摘要常显）：等效字号 / 等效 DPI                                   */
+/* -------------------------------------------------------------------------- */
+
+interface Quality {
+  id: string
+  label: string
+  value: string
+  hint: string
+  bad: boolean
+}
+
+function qualityOf(o: PanelObject): Quality {
+  const fullW = panelFullSize(o).w
+  if (o.fileKind === 'pdf') {
+    const pt = effectivePt(fullW, o.nativeW)
+    const bad = pt < 6
+    return {
+      id: o.id,
+      bad,
+      label: pn('effectivePt'),
+      value: formatQuantity(round1(pt), 'pt'),
+      hint: pn(bad ? 'ptHintBad' : 'ptHint', {
+        base: BASE_FONT_PT,
+        scale: Math.round((fullW / o.nativeW) * 100),
+      }),
+    }
+  }
+  const dpi = effectiveDpi(o.pxW ?? 0, fullW)
+  const bad = dpi > 0 && dpi < 300
+  return {
+    id: o.id,
+    bad,
+    label: pn('effectiveDpi'),
+    value: dpi ? `${dpi} dpi` : pn('unknown'),
+    hint: pn(bad ? 'dpiHintBad' : 'dpiHint'),
+  }
+}
+
+function PanelQuality({ objs }: { objs: PanelObject[] }) {
+  useTranslation('inspector')
+  const items = objs.slice(0, 4).map(qualityOf)
+  if (!items.length) return null
+
+  return (
+    /* 只读值不套容器（第八节）、状态区不是卡片（十三节）：普通的一行——标签列 +
+       type-number 的值，`bad` 只换字色，不铺 surface-2 / danger-subtle（打磨 O1） */
+    <div className="mt-4 flex flex-col gap-1.5">
+      <p className="-mb-0.5 flex h-4 items-center type-section">{pn('diagnostics')}</p>
+      {items.map((q) => (
+        <Tip key={q.id} label={q.hint} side="left">
+          <div>
+            <Row label={q.label} labelWidth={INSPECTOR_LABEL_W}>
+              <span className={cn('type-number', q.bad ? 'text-danger' : 'text-ink')}>
+                {q.value}
+              </span>
+            </Row>
+          </div>
+        </Tip>
+      ))}
+      {objs.length > 4 && (
+        <p className="text-xs text-ink-3">{pn('morePanels', { count: objs.length - 4 })}</p>
+      )}
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*  替换素材                                                                   */
+/* -------------------------------------------------------------------------- */
+
+function ReplaceAssetDialog({
+  panel,
+  open,
+  onOpenChange,
+}: {
+  panel: PanelObject
+  open: boolean
+  onOpenChange: (v: boolean) => void
+}) {
+  useTranslation('inspector')
+  const panels = useAssetStore((s) => s.panels)
+  const loaded = useAssetStore((s) => s.loaded)
+  const loading = useAssetStore((s) => s.loading)
+  const [q, setQ] = useState('')
+
+  useEffect(() => {
+    if (open && !loaded && !loading) void useAssetStore.getState().load()
+  }, [open, loaded, loading])
+
+  const list = useMemo(() => {
+    const k = q.trim().toLowerCase()
+    return panels.filter((p) => !k || (p.name + p.id).toLowerCase().includes(k))
+  }, [panels, q])
+
+  const pick = async (info: PanelInfo) => {
+    if (await replacePanelAsset(panel.id, info)) onOpenChange(false)
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={pn('replaceTitle')}
+      description={pn('replaceDescription')}
+      size="md"
+    >
+      <TextInput
+        autoFocus
+        value={q}
+        placeholder={pn('searchAssets')}
+        onChange={(e) => setQ(e.target.value)}
+        onKeyDown={(e) => e.stopPropagation()}
+      />
+      <div className="mt-2 max-h-[46vh] overflow-y-auto">
+        {loading && !panels.length && (
+          <p className="py-4 text-center text-xs text-ink-3">{pn('loading')}</p>
+        )}
+        {!loading && !list.length && (
+          <p className="py-4 text-center text-xs text-ink-3">{pn('noAssetMatch')}</p>
+        )}
+        <ul>
+          {list.map((info) => (
+            <li key={info.id}>
+              <button
+                type="button"
+                disabled={info.id === panel.fileId}
+                onClick={() => void pick(info)}
+                className={cn(
+                  'flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left',
+                  'hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent',
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate text-xs text-ink" title={info.id}>
+                  {info.name}
+                </span>
+                <span className="shrink-0 text-xs text-ink-3">{folderLabel(info.folder)}</span>
+                <span className="shrink-0 text-xs tabular-nums text-ink-3">
+                  {translate('measure.cmSize', {
+                    w: formatCm(info.native_w_mm),
+                    h: formatCm(info.native_h_mm),
+                  })}
+                </span>
+                {info.id === panel.fileId && (
+                  <span className="shrink-0 text-xs text-ink-3">{pn('currentAsset')}</span>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </Dialog>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*  图内编辑入口（核心动作） + 源文件（折叠，涉及磁盘写入）                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 可参数化面板：进入图内编辑的入口 + 引擎状态。
+ *
+ * 它是头部的延伸，不是一个分组：此前这里是「图内元素」小标题 + 一颗撑满整栏的
+ * 「编辑图内元素」——标题与按钮说的是同一件事（2026-09-13 审计 B09）。现在只有
+ * 那颗按钮，按内容取宽，「n 项已修改」徽标跟在旁边。
+ */
+function ElementEditEntry({ panel }: { panel: PanelObject }) {
+  useTranslation('inspector')
+  const render = usePanelRender(panel)
+  const editing = useUiStore((s) => s.elementPanelId === panel.id)
+  // 冷启动是文件级事实（SSE 写在 building 表里），渲染中是本变体的状态
+  const buildingFile = useRenderStore((s) => s.building[panel.fileId])
+  const building = render?.status === 'rendering' || !!buildingFile
+  const cold = !!buildingFile?.cold
+  // 「整张图改了几项」与两颗恢复按钮上的数字是同一件事（审计 T32）：
+  // 各自 `panel.overrides.length` 一遍就是同一条判据的两份实现
+  const overrides = overrideCounts(panel.overrides, null).figure
+
+  return (
+    <Section>
+      <div className="flex items-center gap-1.5">
+        {/*
+          进图内编辑是导航动作，**不能**绑渲染状态：进去本来就不依赖上一次渲染
+          完成，而 renderStore 的 busy 一旦因为某次 fetch 没 settle 卡住，
+          status 会永远停在 rendering，按钮就被永久 disable，用户连退路都没有。
+          构建进度改用下面那行非阻塞提示表达。
+        */}
+        <Button
+          variant="secondary"
+          size="sm"
+          className="min-w-0 shrink"
+          active={editing}
+          onClick={() => {
+            if (editing) {
+              useUiStore.getState().setElementPanel(null)
+              return
+            }
+            enterElementEdit(panel.id)
+            // 这颗按钮随属性页切换整个被卸载，焦点会摔到 body——键盘用户
+            // 失去落点（WebKit 里顺序导航就此失灵，issue #37 实测）。把焦点
+            // 交给编辑态里语义对应的「返回画布」按钮（上下文栏，唯一的退出入口）。
+            requestAnimationFrame(() => {
+              document.querySelector<HTMLElement>('[data-exit-element-edit]')?.focus()
+            })
+          }}
+        >
+          <Pencil size={ICON_SIZE.sm} />
+          {pn(editing ? 'exitElementEdit' : 'editElements')}
+        </Button>
+        {overrides > 0 && (
+          /* 「22」孤零零挂在按钮旁会被读成元素数（审计 T07）：徽标自己说清是
+             修改数，与右栏头部的「N 项已修改」同一句话；完整说明在 tooltip。
+             它是状态不是动作：meta 字色、无底无框，与旁边那颗按钮一眼分得开 */
+          <Tip label={pn('overrideCount', { count: overrides })}>
+            <span data-override-badge className="type-meta flex h-7 shrink-0 items-center tabular-nums">
+              {translate('element.modifiedCount', { ns: 'inspector', count: overrides })}
+            </span>
+          </Tip>
+        )}
+      </div>
+
+      {!editing && building && (
+        <p className="mt-1.5 flex items-center gap-1.5 text-xs text-ink-2">
+          <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-ink-faint" />
+          {pn(cold ? 'coldBuilding' : 'building')}
+        </p>
+      )}
+
+      {render?.stale && (
+        <p className="mt-1.5 text-xs text-danger">{pn('staleScript')}</p>
+      )}
+    </Section>
+  )
+}
+
+/**
+ * 源文件组：唯一会触碰磁盘上原始文件的入口。
+ * 写回不要求正处于图内编辑：退出编辑后选中面板，同样能把修改同步回原图。
+ */
+export function SourceSection({
+  panel,
+  objs,
+}: {
+  panel?: PanelObject
+  objs: PanelObject[]
+}) {
+  useTranslation('inspector')
+  const open = useInspectorPrefs((s) => s.advancedOpen['panel'] ?? false)
+  const setOpen = useInspectorPrefs((s) => s.setAdvancedOpen)
+  const overrides = panel?.overrides.length ?? 0
+  const runtime = panel?.fileKind === 'runtime'
+  if (!panel?.script && !objs.length) return null
+  return (
+    <Disclosure
+      title={pn('sourceAdvanced')}
+      open={open}
+      onToggle={() => setOpen('panel', !open)}
+    >
+      {panel?.script && runtime && <RuntimeSourceArea panel={panel} />}
+      {panel?.script && !runtime && (
+        <>
+          {/* 两页同一份动作行（打磨 O2） */}
+          <OriginalFileActions panel={panel} />
+          {overrides > 0 && (
+            <p className="mt-1.5 text-xs text-ink-3">
+              {pn('overrideCount', { count: overrides })}
+            </p>
+          )}
+          {/* 「写回会覆盖原件、留有备份」这句删了（打磨 L7）：写回确认框里已经讲全
+              （`UpdateSourceButton` 的 WriteBackDialog），这里是常驻说明 */}
+        </>
+      )}
+      <PanelQuality objs={objs} />
+    </Disclosure>
+  )
+}
+
+/**
+ * runtime 面板（ADR 0013）的「源文件」区：**不是隐藏写回按钮就完事**——
+ * 用户来这里就是找写回的，必须解释为什么没有（没有原始图文件），并给出
+ * 它真正支持的动作（重新运行）。写回的硬拒绝在后端
+ * （runtime_asset_has_no_original_artifact），这里的缺席只是礼貌；
+ * 「写回成功」在这条路径上结构性不可能出现。
+ */
+function RuntimeSourceArea({ panel }: { panel: PanelObject }) {
+  useTranslation('inspector')
+  const script = panel.source?.script ?? panel.script ?? ''
+  const run = useScriptRunStore((s) => (script ? s.byScript[script] : undefined))
+  const busy = !!run && isBusyPhase(run.phase)
+  return (
+    <div className="flex flex-col gap-1.5">
+      <p className="rounded-sm border border-border bg-surface-2 p-2 text-xs leading-relaxed text-ink-2">
+        {translate('assets.runtimeNoFile', { ns: 'workspace' })}
+      </p>
+      <div className="flex items-center gap-1.5">
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-3" title={script}>
+          {script}
+        </span>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="shrink-0"
+          disabled={!script || busy}
+          onClick={() => void useScriptRunStore.getState().run(script)}
+        >
+          <RotateCcw size={ICON_SIZE.sm} className={cn(busy && 'animate-spin')} />
+          {translate(`scripts.${busy ? 'running' : 'rerun'}`, { ns: 'workspace' })}
+        </Button>
+      </div>
+    </div>
+  )
+}

@@ -1,0 +1,325 @@
+import { useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
+import { t as translate } from '@/i18n'
+import { formatDateTime } from '@/i18n/format'
+import type { UpdateStatus } from '@/lib/api'
+import { cn } from '@/lib/utils'
+import { useUpdateStore } from '@/store/updateStore'
+import { Button } from '../ui/Button'
+import { Toggle } from '../ui/Toggle'
+import {
+  DiagnosticDisclosure,
+  DiagnosticItem,
+  InlineWarning,
+  SettingRow,
+  SettingSection,
+  settingRowLabelId,
+} from './SettingRow'
+
+const st = (key: string, values?: Record<string, unknown>) =>
+  translate(`settings.${key}`, { ns: 'dialogs', ...(values ?? {}) })
+
+/**
+ * 「最新」这句话的作用域（审计 T48），**时刻与结论是同一句**（全面打磨 D35）。
+ *
+ * 界面上绝不能出现无条件的「已是最新版本」：那是**上一次检查的回答**，不是
+ * 对发布状态的实时核验。两条不能合并的事实——
+ *   * 从没查过（离线启动、`TAVOTTO_NO_UPDATE_CHECK`、后端 24h 节流下缓存也空）
+ *     → 「不知道是不是最新」，不是「是最新」；
+ *   * 查过了没有新版 → 只能说到那一刻为止（时刻本身就是这个边界）。
+ * 都由**真实存在的时间戳**决定走哪一句：拿不到时间戳就说不知道，不补一个「刚刚」。
+ *
+ * 此前时刻在行的 `status` 上、结论在下面另起一段 `type-caption`，同一件事说两遍，
+ * 中间还隔着错误条与「有新版本」那一段。现在它就是那一行的现状。
+ */
+function LastCheckStatus({
+  checkedAtMs,
+  settled,
+}: {
+  checkedAtMs: number | null | undefined
+  /** 查过了、没有新版、也没有错误——只有这一种情况才轮得到「没有新版本」这句结论 */
+  settled: boolean
+}) {
+  const unknown = !checkedAtMs
+  return (
+    <span
+      // 结构性标记：判据认它，不去匹配那几句话的散文。用文案当判据的话，
+      // 「不含另一句」在时间参数不同的时候是恒真的
+      data-update-verdict={unknown ? 'unknown' : settled ? 'checked' : 'pending'}
+    >
+      {unknown
+        ? st('update.lastCheckedUnknown')
+        : settled
+          ? st('update.lastCheckedNoUpdate', { time: formatDateTime(checkedAtMs) })
+          : st('update.lastChecked', { time: formatDateTime(checkedAtMs) })}
+    </span>
+  )
+}
+
+/**
+ * 检查更新。保留：当前版本、自动检查开关、检查按钮、当前状态。
+ * 安装方式、签名校验说明、升级命令进「技术详情」；**错误照旧常驻**。
+ */
+export function UpdateSettings() {
+  useTranslation('dialogs')
+  const {
+    status,
+    checking,
+    applying,
+    restartRequired,
+    applyLog,
+    applyFailed,
+    checkError,
+    check,
+    apply,
+    setAutoCheck,
+  } = useUpdateStore()
+  useEffect(() => {
+    if (!status) void check(false)
+  }, [status, check])
+
+  // 桌面模式：Python updater 整个停用（升级归 Tauri 层）
+  if (status?.desktop) return <DesktopUpdateSettings status={status} />
+
+  return (
+    <SettingSection>
+      <SettingRow label={st('update.currentVersion')}>
+        <span className="font-mono text-sm text-ink">{status?.current ?? '…'}</span>
+      </SettingRow>
+      {/* 标签自己就是那句说明（「每天自动检查」），不在下面再复述一遍（全面打磨 D35）；
+          开关的名字用渲染那行可见文字的同一份，不另写一句同义的 */}
+      <SettingRow label={st('update.autoCheck')} controlId="setting-update-auto">
+        <Toggle
+          id="setting-update-auto"
+          aria-labelledby={settingRowLabelId('setting-update-auto')}
+          checked={status?.auto_check ?? true}
+          onChange={(v) => void setAutoCheck(v)}
+        />
+      </SettingRow>
+
+      <SettingRow
+        label={st('update.check')}
+        status={
+          <LastCheckStatus
+            checkedAtMs={status?.checked_at_ms}
+            settled={Boolean(status && !status.error && !status.update_available && !checkError)}
+          />
+        }
+      >
+        <Button variant="secondary" size="sm" onClick={() => void check(true)} disabled={checking}>
+          {st(checking ? 'update.checking' : 'update.checkNow')}
+        </Button>
+      </SettingRow>
+
+      {status?.error && (
+        <InlineWarning tone="danger">
+          {/* code 有本地文案时按界面语言渲染；error 中文原文只作回退（issue #30） */}
+          {status.code === 'update_check_failed'
+            ? translate('update.checkFailed', {
+                ns: 'errors',
+                error: String(status.params?.error ?? ''),
+              })
+            : status.error}
+        </InlineWarning>
+      )}
+      {checkError && <InlineWarning tone="danger">{checkError}</InlineWarning>}
+
+      {status?.update_available && (
+        /* 「有新版本」是这一页此刻最重要的事，但它是一段内容不是一张卡（第八节）：
+           小标题一档的「有新版本」+ 版本号 + 发行说明 + 唯一的主动作，不套框 */
+        <div data-update-available className="flex flex-col gap-2 border-t border-border pt-3">
+          <p className="text-sm text-ink">
+            <span className="font-medium">{st('update.available')}</span>{' '}
+            <span className="font-mono">{status.latest}</span>
+            <span className="type-meta ml-2">{st('update.currentIs', { version: status.current })}</span>
+          </p>
+          {status.notes && (
+            <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-ink-2">
+              {status.notes}
+            </pre>
+          )}
+          {restartRequired ? (
+            <p className="text-xs text-ink-2">
+              {st('update.restartBefore')}
+              <strong className="font-medium text-ink">{st('update.restartStrong')}</strong>
+              {st('update.restartAfter')}
+            </p>
+          ) : status.can_self_update ? (
+            <div className="flex items-center gap-2">
+              <Button variant="primary" onClick={() => void apply()} disabled={applying}>
+                {st(applying ? 'update.upgrading' : 'update.downloadAndUpgrade')}
+              </Button>
+              <a
+                href={status.html_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-accent hover:underline"
+              >
+                {st('update.releaseNotes')}
+              </a>
+            </div>
+          ) : (
+            <p className="text-xs text-ink-2">
+              {st('update.sourceUpgrade')}{' '}
+              <code className="font-mono">{status.upgrade_command}</code>
+            </p>
+          )}
+          {/* 失败必须看得出是失败：同一片灰色日志既当成功回执又当错误，
+              用户读不出装没装上，也就不知道该不该再点一次那个按钮 */}
+          {applyFailed && <InlineWarning tone="danger">{st('update.applyFailedRetry')}</InlineWarning>}
+          {applyLog && (
+            <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-sm bg-surface-2 p-1.5 font-mono text-xs text-ink-3">
+              {applyLog}
+            </pre>
+          )}
+        </div>
+      )}
+
+      <DiagnosticDisclosure title={st('techDetails')}>
+        <DiagnosticItem
+          name={st('update.installMethod')}
+          value={
+            status?.method === 'pipx'
+              ? 'pipx'
+              : status?.method === 'source'
+                ? st('update.methodSource')
+                : 'pip'
+          }
+        />
+        <p className="type-caption">{st('update.channelNote')}</p>
+      </DiagnosticDisclosure>
+    </SettingSection>
+  )
+}
+
+/**
+ * 桌面版的更新器（Tauri）。**整个过程留在软件里**：检查 → 下载（带进度）→
+ * 安装 → 重启，用户不用去 Releases 页面手动下载覆盖安装。
+ *
+ * 三条纪律与 pip 那条一致：
+ *   * 不静默——每一步都要用户按一下；
+ *   * 装完不等于生效，重启才算换版本；
+ *   * 失败要说人话并留退路（更新器连不上时仍给 Releases 链接）。
+ *
+ * 安装包的签名由壳里的公钥校验，校验不过当场失败——这里不做「忽略签名」的口子。
+ */
+function DesktopUpdateSettings({ status }: { status: UpdateStatus }) {
+  useTranslation('dialogs')
+  const {
+    desktopPhase,
+    desktopUpdate,
+    desktopProgress,
+    desktopError,
+    desktopChecked,
+    desktopCheckedAtMs,
+    checkDesktop,
+    installDesktop,
+    relaunch,
+  } = useUpdateStore()
+  useEffect(() => {
+    if (!desktopChecked) void checkDesktop()
+  }, [desktopChecked, checkDesktop])
+
+  const busy = desktopPhase !== 'idle'
+  const pct = desktopProgress === null ? null : Math.round(desktopProgress * 100)
+
+  return (
+    <SettingSection>
+      <SettingRow label={st('update.currentVersion')}>
+        <span className="font-mono text-sm text-ink">{status.current}</span>
+      </SettingRow>
+
+      <SettingRow
+        label={st('update.check')}
+        status={
+          <LastCheckStatus
+            checkedAtMs={desktopCheckedAtMs}
+            settled={
+              desktopChecked && !desktopUpdate && !desktopError && desktopPhase === 'idle'
+            }
+          />
+        }
+      >
+        <Button variant="secondary" size="sm" onClick={() => void checkDesktop()} disabled={busy}>
+          {st(desktopPhase === 'checking' ? 'update.checking' : 'update.checkNow')}
+        </Button>
+      </SettingRow>
+
+      {desktopError && (
+        <div className="flex flex-col gap-1">
+          <InlineWarning tone="danger">{desktopError}</InlineWarning>
+          <a
+            href={status.releases_url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs text-accent hover:underline"
+          >
+            {st('update.manualDownload')}
+          </a>
+        </div>
+      )}
+
+      {desktopUpdate && (
+        <div data-update-available className="flex flex-col gap-2 border-t border-border pt-3">
+          <p className="text-sm text-ink">
+            <span className="font-medium">{st('update.available')}</span>{' '}
+            <span className="font-mono">{desktopUpdate.version}</span>
+            <span className="type-meta ml-2">{st('update.currentIs', { version: status.current })}</span>
+          </p>
+          {desktopUpdate.notes && (
+            <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-ink-2">
+              {desktopUpdate.notes}
+            </pre>
+          )}
+
+          {desktopPhase === 'installed' ? (
+            <div className="flex items-center gap-2">
+              <Button variant="primary" onClick={() => void relaunch()}>
+                {st('update.relaunch')}
+              </Button>
+              <span className="text-xs text-ink-2">{st('update.installedHint')}</span>
+            </div>
+          ) : desktopPhase === 'downloading' ? (
+            <div className="flex flex-col gap-1">
+              {/* 拿不到 Content-Length 就走不确定态，不假装卡在某个百分比 */}
+              <div
+                role="progressbar"
+                aria-label={st('update.downloadProgressAria')}
+                aria-valuenow={pct ?? undefined}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                className="h-1 overflow-hidden rounded-full bg-surface-2"
+              >
+                <div
+                  className={cn('h-full bg-ink', pct === null && 'w-1/3 animate-pulse')}
+                  style={pct === null ? undefined : { width: `${pct}%` }}
+                />
+              </div>
+              <span className="text-xs text-ink-3">
+                {pct === null ? st('update.downloading') : st('update.downloadingPct', { pct })}
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Button variant="primary" onClick={() => void installDesktop()}>
+                {st('update.downloadAndInstall')}
+              </Button>
+              <a
+                href={status.releases_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-accent hover:underline"
+              >
+                {st('update.releaseNotes')}
+              </a>
+            </div>
+          )}
+        </div>
+      )}
+
+      <DiagnosticDisclosure title={st('techDetails')}>
+        <p className="type-caption">{st('update.signatureNote')}</p>
+      </DiagnosticDisclosure>
+    </SettingSection>
+  )
+}

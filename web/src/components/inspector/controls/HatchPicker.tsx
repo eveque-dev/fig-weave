@@ -1,0 +1,164 @@
+import { useId, useState } from 'react'
+import { t as translate } from '@/i18n'
+import { Popover } from '../../ui/Popover'
+import { OptionGrid, type GridOption } from './OptionGrid'
+import { PickerTrigger } from './PickerTrigger'
+
+/** 多选取值不一致时触发按钮上的占位文案（函数：常量会把语言定死在模块求值那一刻） */
+
+
+/**
+ * Hatch（花纹）选择器：真实纹理缩略图。写入值仍是 Matplotlib 原始 hatch
+ * 串（"/"、"xx"、"++" …），"" = 不用花纹。认不出的花纹显示原始串，
+ * 选它 = 保持原样。
+ */
+
+/** 单个花纹字符 → SVG pattern 里的线条（8×8 tile 的视觉近似） */
+function hatchLines(ch: string): React.ReactNode[] {
+  const s = { stroke: 'currentColor', strokeWidth: 0.9, fill: 'none' } as const
+  switch (ch) {
+    case '/':
+      return [<path key="a" d="M-2 10 10 -2 M-2 2 2 -2 M6 10 10 6" {...s} />]
+    case '\\':
+      return [<path key="a" d="M-2 -2 10 10 M6 -2 10 2 M-2 6 2 10" {...s} />]
+    case '|':
+      return [<path key="a" d="M4 0 4 8" {...s} />]
+    case '-':
+      return [<path key="a" d="M0 4 8 4" {...s} />]
+    case '+':
+      return [<path key="a" d="M4 0 4 8 M0 4 8 4" {...s} />]
+    case 'x':
+      return [<path key="a" d="M-2 10 10 -2 M-2 -2 10 10" {...s} />]
+    case 'o':
+      return [<circle key="a" cx="4" cy="4" r="2.2" {...s} />]
+    case 'O':
+      return [<circle key="a" cx="4" cy="4" r="3.2" {...s} />]
+    case '.':
+      return [<circle key="a" cx="4" cy="4" r="0.9" fill="currentColor" />]
+    case '*':
+      return [
+        <path key="a" d="M4 1.2 4 6.8 M1.6 2.6 6.4 5.4 M6.4 2.6 1.6 5.4" {...s} />,
+      ]
+    default:
+      return []
+  }
+}
+
+function HatchPreview({ code }: { code: string }) {
+  const pid = useId()
+  if (!code) {
+    return <span aria-hidden className="font-mono text-xs">—</span>
+  }
+  const chars = [...new Set(code.split(''))]
+  const lines = chars.flatMap((c, i) =>
+    hatchLines(c).map((n, j) => <g key={`${i}-${j}`}>{n}</g>),
+  )
+  if (!lines.length) {
+    return <span aria-hidden className="max-w-10 truncate font-mono text-xs">{code}</span>
+  }
+  // 重复字符（"//"、"xx"）= 更密：tile 从 8 缩到 5
+  const tile = code.length > 1 ? 5 : 8
+  return (
+    <svg width="26" height="16" aria-hidden className="shrink-0">
+      <defs>
+        <pattern id={pid} width={tile} height={tile} patternUnits="userSpaceOnUse"
+          patternTransform={`scale(${tile / 8})`}>
+          {lines}
+        </pattern>
+      </defs>
+      {/* 只填花纹本身，不描外框：外框会和选项格 / 触发器自己的边框叠成双框 */}
+      <rect x="0" y="0" width="26" height="16" fill={`url(#${pid})`} />
+    </svg>
+  )
+}
+
+/**
+ * matplotlib 的 hatch 代码 → 名字的 i18n 尾段。
+ *
+ * 键是**引擎 `HATCHES` 里那 16 个代码**（`engine/overrides.HATCHES`），
+ * 值是人看得懂的名字：审计 T21 的验收要求「所有纹理选项有可理解的名称，
+ * 图形与底层图案一一对应」，而以前界面上写的是「花纹 //」——那是把实现值
+ * 换了个前缀又端出来。
+ *
+ * 表里没有的代码（脚本自己拼的 `'/o'` 这类）回退成「纹理 <代码>」：hatch
+ * 是开集，认不出的原样显示比显示空白诚实，选它 = 保持原样。
+ */
+const HATCH_NAMES: Record<string, string> = {
+  '': 'none',
+  '/': 'forward',
+  '\\': 'back',
+  '|': 'vertical',
+  '-': 'horizontal',
+  '+': 'cross',
+  x: 'diagonal',
+  o: 'circles',
+  O: 'largeCircles',
+  '.': 'dots',
+  '*': 'stars',
+  '//': 'forwardDense',
+  '\\\\': 'backDense',
+  xx: 'diagonalDense',
+  '..': 'dotsDense',
+  '++': 'crossDense',
+}
+
+const hatchLabel = (code: string): string => {
+  const key = HATCH_NAMES[code]
+  return key
+    ? translate(`control.hatch.${key}`, { ns: 'inspector' })
+    : translate('control.hatchPattern', { ns: 'inspector', value: code })
+}
+
+export function HatchPicker({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+}: {
+  /**
+   * 当前值。**多选取值不一致时传 null**——那时一个格子都不该被标成选中，
+   * 也不该把「空」当成一个自定义值塞进选项表。
+   */
+  value: string | null
+  options: string[]
+  onChange: (v: string) => void
+  ariaLabel: string
+}) {
+  const [open, setOpen] = useState(false)
+  const all = value && !options.includes(value) ? [value, ...options] : options
+  const grid: GridOption[] = all.map((o) => ({
+    value: o,
+    label: hatchLabel(o),
+    preview: <HatchPreview code={o} />,
+    code: o || '""',
+  }))
+
+  return (
+    <Popover
+      // 弹层宽 = 触发器宽（打磨 E11）：上下相邻的「线型」「标记」此前一个 216、
+      // 一个 228，两种宽度挨在一起；Select 的弹层一直是跟着触发器的
+      width="trigger"
+      align="start"
+      open={open}
+      onOpenChange={setOpen}
+      trigger={
+        <PickerTrigger
+          ariaLabel={ariaLabel}
+          mixed={value === null}
+          preview={value !== null && <HatchPreview code={value} />}
+        >
+          {value !== null && hatchLabel(value)}
+        </PickerTrigger>
+      }
+    >
+      <OptionGrid
+        value={value}
+        options={grid}
+        onChange={onChange}
+        onPick={() => setOpen(false)}
+        columns={4}
+        ariaLabel={ariaLabel}
+      />
+    </Popover>
+  )
+}

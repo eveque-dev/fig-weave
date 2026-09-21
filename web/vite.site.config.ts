@@ -1,0 +1,10 @@
+import { defineConfig, mergeConfig } from 'vite'
+import { fileURLToPath, URL } from 'node:url'
+import playground from './vite.playground.config.ts'
+
+export default mergeConfig(playground, defineConfig({
+  build: {
+    outDir: 'dist-site',
+    rollupOptions: { input: fileURLToPath(new URL('./site.html', import.meta.url)) },
+  },
+}))

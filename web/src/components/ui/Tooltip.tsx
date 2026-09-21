@@ -1,0 +1,48 @@
+import * as RT from '@radix-ui/react-tooltip'
+import type { ReactElement, ReactNode } from 'react'
+import { cn } from '@/lib/utils'
+
+export const TooltipProvider = ({ children }: { children: ReactNode }) => (
+  <RT.Provider delayDuration={420} skipDelayDuration={280}>
+    {children}
+  </RT.Provider>
+)
+
+interface TipProps {
+  label: ReactNode
+  shortcut?: string
+  side?: 'top' | 'bottom' | 'left' | 'right'
+  children: ReactElement
+}
+
+export function Tip({ label, shortcut, side = 'bottom', children }: TipProps) {
+  return (
+    <RT.Root>
+      <RT.Trigger asChild>{children}</RT.Trigger>
+      <RT.Portal>
+        <RT.Content
+          side={side}
+          sideOffset={6}
+          className={cn(
+            // pointer-events-none：气泡只是说明，不是控件。聚焦触发的气泡会停在
+            // 触发器下方、盖住下一排按钮（弹层自动聚焦第一个分段项时实测撞见），
+            // 不让它吃点击。Radix 的定位外壳也得一起放行：index.css 里那条
+            // `[data-radix-popper-content-wrapper]:has([role='tooltip'])`
+            'pointer-events-none z-50 flex items-center gap-2 rounded-sm bg-ink',
+            'px-2 py-1 text-sm text-surface',
+            'origin-[var(--radix-tooltip-content-transform-origin)]',
+            'data-[state=delayed-open]:animate-pop-in',
+            // instant-open = 连续划过同组按钮时的即时切换：再播一次进场会闪，只淡入
+            'data-[state=instant-open]:animate-fade-in',
+            'data-[state=closed]:animate-fade-out',
+          )}
+        >
+          <span>{label}</span>
+          {shortcut && (
+            <span className="text-xs tabular-nums text-surface/60">{shortcut}</span>
+          )}
+        </RT.Content>
+      </RT.Portal>
+    </RT.Root>
+  )
+}

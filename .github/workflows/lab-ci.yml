@@ -1,0 +1,249 @@
+name: Lab Qualification
+
+# 实验室 Linux runner 上的**发行资格验证**。它不是「把 PR 的测试再跑一遍」——
+# ci.yml 已经把跨平台正确性看住了。这里做的是临时 runner 很难可靠完成的那些：
+# 长时 soak、N-1 → N 真升级、golden 视觉回归、固定机器上的性能回归、
+# 泄漏检测、以及候选包的 exact-artifact 验收。
+#
+# ────────────────────────────── 安全模型 ──────────────────────────────
+# Tavotto 是**公开仓库**，而 self-hosted runner 是一台长期存在、能读写自己
+# 磁盘的真机。所以这里有一条不可协商的边界：
+#
+#     **绝不接受 pull_request 触发。**
+#
+# 公开 PR 里的代码是不可信输入；让它在长期 runner 上执行，等于把这台机器
+# 交给任何一个能开 PR 的人。「fork 默认拿不到 secrets」不构成安全依据——
+# 攻击者要的是这台机器本身，不是仓库的 secret。
+#
+# 可信来源只有三种，全部只有维护者能触发：
+#     push 到 main   —— 代码已经过 review 并合入
+#     schedule       —— 跑的是 main 的当前状态
+#     workflow_dispatch —— 见下面的 trust-check：任意 ref **必须**先在
+#                          GitHub 托管机上验明正身并解析成精确 SHA
+#
+# release.yml 的发行档走同一套步骤定义（由 `dispatch_lab` 派发 ci-infra，
+# mode=release），发行链因此不需要在这里重复一遍。
+#
+# ─────────────────────────── runner 标签与分组 ───────────────────────────
+# **2026-09-16 起，docs/ci/self-hosted-runner.md §1 的「更安全的备用形态」成为
+# 现行形态（F 组，docs/implementation/ci-foundation/ADMIN_HANDOFF_RUNNER_POOL.md）：**
+# 实验室 runner 注册在**私有仓库** `Tavotto/ci-infra` 上，公开仓库里没有任何
+# runner——PR 里写什么 `runs-on` 都只会永远排队。所以本文件不再自己 `uses`
+# 资格验证的 reusable，而是在 `trust-check` 之后由托管机 **派发**
+# （`gh workflow run lab-qualification.yml -R Tavotto/ci-infra`）；ci-infra 那边的
+# workflow 再 `uses: Tavotto/Tavotto/.github/workflows/_lab-qualification.yml@main`
+# ——步骤定义仍只有本仓库那一份。派发**不等结果**：lab-ci 是合并后的深度观察，
+# 不是合并资格；结论由 ci-infra 以 commit status `lab/<mode>` 写回这个 SHA。
+# 派发用的是公开仓库 secret `TAVOTTO_CI_INFRA_TOKEN`（fine-grained PAT，只对
+# ci-infra 的 `actions: write`），不是 GITHUB_TOKEN；secret 为空时**必须红**——
+# 「lab 没人跑」不许静默。
+# release.yml 同样改成派发（`dispatch_lab`，PR B / F.2），公开仓库里不再有直接
+# `uses` reusable 的 job；发布链因此切成两段，第二段 `release-publish.yml` 由 ci-infra
+# 在 lab 绿后派发。
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # UTC 19:00 = 北京时间次日 03:00。刻意错开 nightly.yml 的 18:00，
+    # 两条链路都会拉满机器，撞一起只会让两边的数字都不可信。
+    - cron: "0 19 * * *"
+    # 周日 UTC 20:00：weekly deep（mutation 等重活）
+    - cron: "0 20 * * 0"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "深度档位"
+        required: true
+        default: nightly
+        type: choice
+        options: [main, nightly, release, weekly]
+      ref:
+        description: "要验的 ref（默认 main）。必须是 main 的祖先或已有 tag"
+        required: false
+        default: ""
+      baseline_tag:
+        description: "升级测试的 N-1 tag（留空自动选最近的正式 release）"
+        required: false
+        default: ""
+
+# 只读。这套 job 只是测试——它不建 Release、不发 PyPI、不推代码。
+# 长期 runner 拿到写权限，就等于把仓库写权限也放到了那台机器上。
+permissions:
+  contents: read
+
+# **这里刻意没有 workflow 级 concurrency。**
+# 独占槽由 `_lab-qualification.yml` 的 `qualify` job 自己持有——那是资格
+# 验证的唯一定义；本文件只派发，派发本身几秒钟就结束，没有什么可排队的。
+#
+# 从前这里也有一个同名的 `lab-qualification` 组。资格验证抽成可复用
+# workflow 之后，**同一个 run 里 workflow 级与 job 级申请了同一个组**：
+# run 在等一个自己已经持有的槽，job 永远调度不出去——表现是 8 秒内失败、
+# 没有 runner、一个步骤都没有，而日志里什么都没有。
+# （2026-08-23 #66 合并后第一次真跑就撞上了。）
+
+env:
+  # 顶层统一确定性环境。刻意**不**在这里固定中文 locale——
+  # 中文相关的覆盖由 corpus 里的 c03_cjk 与升级测试的中文路径承担，
+  # 把全局 locale 设成 zh 反而会让别的 case 的输出漂移。
+  TZ: UTC
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+  PYTHONHASHSEED: "0"
+  MPLBACKEND: Agg
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  # ────────────────────────────────────────────────────────────────
+  # 信任校验：跑在 **GitHub 托管机** 上，绝不在 self-hosted 上做。
+  # 它的产出是一个**精确 SHA**，后面的 job 只认这个 SHA。
+  # 为什么不能把 branch name 一路传下去：分支在校验之后仍可能移动，
+  # self-hosted 那边再解析一次，拿到的可能已经是另一个 commit 了。
+  # ────────────────────────────────────────────────────────────────
+  trust-check:
+    timeout-minutes: 60  # 上限是防挂死、不是性能预算：把损失从「无限」变成「有界」
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      mode: ${{ steps.resolve.outputs.mode }}
+      baseline_tag: ${{ steps.resolve.outputs.baseline_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # 需要完整历史才能判断 ancestor 关系
+
+      - name: 解析并校验目标 commit
+        id: resolve
+        env:
+          IN_REF: ${{ inputs.ref }}
+          IN_MODE: ${{ inputs.mode }}
+          IN_BASELINE: ${{ inputs.baseline_tag }}
+          EVENT: ${{ github.event_name }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          set -euo pipefail
+
+          # 1) 档位：push→main，两条 cron 分别对应 nightly / weekly
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            MODE="$IN_MODE"
+          elif [ "$EVENT" = "push" ]; then
+            MODE="main"
+          elif [ "$CRON" = "0 20 * * 0" ]; then
+            MODE="weekly"
+          else
+            MODE="nightly"
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "baseline_tag=$IN_BASELINE" >> "$GITHUB_OUTPUT"
+
+          # 2) 目标 ref → 精确 SHA
+          REF="${IN_REF:-}"
+          if [ -z "$REF" ]; then
+            REF="${GITHUB_SHA}"
+          fi
+          if ! SHA="$(git rev-parse --verify "${REF}^{commit}" 2>/dev/null)"; then
+            echo "::error::解析不出 commit：$REF"; exit 1
+          fi
+          echo "目标 ref: $REF → $SHA"
+
+          # 3) 可信判定。两条各自充分：
+          #    a. 是 origin/main 的祖先 —— 已经过 review 合入
+          #    b. 是某个已有 tag 指向的 commit —— 已发行代码
+          git fetch --quiet origin main
+          TRUSTED=no
+          if git merge-base --is-ancestor "$SHA" origin/main; then
+            TRUSTED=yes; WHY="是 origin/main 的祖先"
+          else
+            for T in $(git tag --points-at "$SHA"); do
+              TRUSTED=yes; WHY="由 tag $T 指向"; break
+            done
+          fi
+          if [ "$TRUSTED" != "yes" ]; then
+            echo "::error::拒绝在 self-hosted runner 上执行 $SHA："
+            echo "::error::它既不是 origin/main 的祖先，也没有任何 tag 指向它。"
+            echo "::error::长期 runner 只执行已经过 review 或已发行的代码。"
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "✅ 可信：$WHY"
+          {
+            echo "## Lab Qualification"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 档位 | \`$MODE\` |"
+            echo "| Commit | \`$SHA\` |"
+            echo "| 信任依据 | $WHY |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────────────
+  # 派发到私有仓库 ci-infra（托管机）
+  # ────────────────────────────────────────────────────────────────
+  # **步骤定义仍在 `_lab-qualification.yml`——唯一一份**，只是执行它的 runner
+  # 现在挂在 ci-infra 上（F 组）。本 job 只做一件事：把 trust-check 验过的
+  # 精确 SHA 与档位交给 ci-infra 的 `lab-qualification.yml`。它**不等结果**，
+  # 也没有任何「secret 缺失就跳过」的路径——那是本仓库明令禁止的空门禁形状：
+  # 读的人会以为 lab 在跑，而它根本没被派出去。
+  #
+  # 从前这里直接 `uses` reusable；再往前与 release.yml 当时的 `lab_release_gate`
+  # 是两份手抄的 shell（#61 修一个 bug 要同时改两处）。定义只有一份这条
+  # 纪律没变，变的只是「谁的 runner 执行它」。
+  dispatch:
+    needs: trust-check
+    timeout-minutes: 10  # 一次 API 调用加一次列表查询；到 10 分钟只可能是 gh 挂了
+    runs-on: ubuntu-latest
+    env:
+      # fine-grained PAT，只对 Tavotto/ci-infra 有 `actions: write`。不是 GITHUB_TOKEN：
+      # 本 workflow 的 GITHUB_TOKEN 只有 contents: read，也不该拿到跨仓库的派发权。
+      GH_TOKEN: ${{ secrets.TAVOTTO_CI_INFRA_TOKEN }}
+      # 三个值全部来自 trust-check 的输出——派发方的信任判断在派发方自己手里
+      # （tests/test_release_workflow_contract.py::test_every_caller_gates_the_sha_through_a_trust_job）。
+      LAB_MODE: ${{ needs.trust-check.outputs.mode }}
+      LAB_SHA: ${{ needs.trust-check.outputs.sha }}
+      LAB_BASELINE_TAG: ${{ needs.trust-check.outputs.baseline_tag }}
+    steps:
+      - name: 派发 lab-qualification 到 Tavotto/ci-infra
+        run: |
+          set -euo pipefail
+          # **secret 为空必须红。** 仓库里没配这个 secret 时表达式求值成空串，
+          # gh 会退回匿名请求然后报一个与「没配 secret」毫不相干的 401/404；
+          # 在这里把成因说清楚。
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::secret TAVOTTO_CI_INFRA_TOKEN 为空——lab 没人跑。"
+            echo "::error::派发到 Tavotto/ci-infra 需要一枚对该仓库 actions: write 的 fine-grained PAT；"
+            echo "::error::见 docs/ci/self-hosted-runner.md §1「更安全的备用形态」。本 job 不许静默跳过。"
+            exit 1
+          fi
+          [ -n "$LAB_SHA" ] || { echo "::error::trust-check 没有给出 SHA"; exit 1; }
+          [ -n "$LAB_MODE" ] || { echo "::error::trust-check 没有给出档位"; exit 1; }
+          gh workflow run lab-qualification.yml -R Tavotto/ci-infra -r main \
+            -f mode="$LAB_MODE" \
+            -f sha="$LAB_SHA" \
+            -f baseline_tag="$LAB_BASELINE_TAG" \
+            -f use_prebuilt_dist=false
+          echo "已派发：mode=$LAB_MODE sha=$LAB_SHA baseline_tag=${LAB_BASELINE_TAG:-<自动>}"
+
+      - name: 记下 ci-infra 那边的 run
+        # 只是给读 summary 的人一个入口，**不是判据**：`gh workflow run` 不返回
+        # run id，这里取的是 ci-infra 该 workflow **最新的一条**——多半就是刚派发的
+        # 那个，但并发派发时可能是别人的；结论以 commit status `lab/<mode>` 为准。
+        # 这一步查不到也不红：派发成功与否已由上一步的退出码判过。
+        run: |
+          set -euo pipefail
+          LATEST="$(gh run list -R Tavotto/ci-infra --workflow lab-qualification.yml \
+                      --limit 1 --json url,databaseId \
+                      --jq '.[0] // empty | "\(.url)（run \(.databaseId)）"' || true)"
+          {
+            echo "## 派发到 Tavotto/ci-infra"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 档位 | \`$LAB_MODE\` |"
+            echo "| Commit | \`$LAB_SHA\` |"
+            if [ -n "$LATEST" ]; then
+              echo "| ci-infra 最新 run（近似：刚派发的那个还没排进列表时会是上一条） | $LATEST |"
+            else
+              echo "| ci-infra 最新 run | 还没排进列表——到 ci-infra 的 Actions 页按 SHA 找 |"
+            fi
+            echo "| 结论去哪看 | 本 SHA 的 commit status \`lab/$LAB_MODE\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

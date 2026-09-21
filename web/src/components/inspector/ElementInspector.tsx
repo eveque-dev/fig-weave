@@ -1,0 +1,2882 @@
+import { Fragment, useCallback, useRef, useState, type ReactNode } from 'react'
+import { useTranslation } from 'react-i18next'
+import {
+  AlignCenterHorizontal,
+  AlignCenterVertical,
+  AlignEndHorizontal,
+  AlignEndVertical,
+  AlignHorizontalDistributeCenter,
+  AlignStartHorizontal,
+  AlignStartVertical,
+  AlignVerticalDistributeCenter,
+  ChevronRight,
+  Link2,
+  MoveDown,
+  MoveHorizontal,
+  MoveUp,
+  MoveVertical,
+  RotateCcw,
+} from '@/components/ui/icons'
+import { ICON_SIZE } from '@/components/ui/Icon'
+import type { AlignMode } from '@/lib/geometry'
+import { formatMessage, msg, t as translate, type UiMessage } from '@/i18n'
+import { ENVIRONMENT_CODES } from '@/lib/api'
+import type { EditableField, Manifest, ManifestElement, MarkerShape } from '@/lib/api'
+import { requestRender } from '@/store/renderScheduler'
+import { useQuickEdit } from '@/canvas/quickEditStore'
+import { formatNumberList, parseNumberList } from '@/lib/numberList'
+import { cn } from '@/lib/utils'
+import {
+  centerInFigure,
+  fracToMm,
+  mmToFrac,
+  round4,
+  scaleGroupAbout,
+  type Rect4,
+} from '@/lib/axesLayout'
+import {
+  alignEntries,
+  annotationAlignEntries,
+  GEOMETRY_WRITE_PROPS,
+  geomTarget,
+  groupOf,
+  groupPatches,
+  type Group,
+  isAnnotationEntry,
+  type MixedEntry,
+  positionOf,
+  type AlignEntry,
+} from '@/lib/elementGeom'
+import {
+  applyTickSidePlan,
+  clearOverride,
+  clearOverrides,
+  detachLegendEntry,
+  disableTextEffect,
+  setLegendPlacement,
+  setOverride,
+  setOverrides,
+  unhideElement,
+} from '@/store/actions'
+import { readAxesTickModel, type SidePlan } from '@/lib/tickSides'
+import { useDocumentStore } from '@/store/documentStore'
+import { previewStyle } from '@/store/svgPreviewStore'
+import { canPreviewStyle } from '@/lib/svgStyle'
+import { useSelectionStore } from '@/store/selectionStore'
+import { useExactPanelManifest, usePanelRender } from '@/store/renderStore'
+import { useUiStore } from '@/store/uiStore'
+import { DependencyRepairCard } from '@/components/DependencyRepairCard'
+import { WorkdirSuggestion } from '@/components/WorkdirRow'
+import { WORKDIR_CODES } from '@/lib/api'
+import {
+  EngineEnvironmentCard,
+  MissingDependencyCard,
+} from '@/components/EngineEnvironmentCard'
+import type { PanelObject } from '@/types/document'
+import {
+  engineLabel,
+  groupLabel,
+  groupRank,
+  optionLabel,
+  propLabel,
+  roleName,
+  unsupportedOf,
+} from './roles/registry'
+import { Button } from '../ui/Button'
+import { GroupHead } from './GroupHead'
+import { GroupToggle } from './GroupToggle'
+import { INSPECTOR_LABEL_W } from './layout'
+import { OriginalFileActions } from './OriginalFileActions'
+import { Disclosure, Grid2, Reveal, Row, Section } from '../ui/Field'
+import { ColorField, NumberField, TextArea, TextInput } from '../ui/Input'
+import { Select } from '../ui/Select'
+import { Toggle } from '../ui/Toggle'
+import { Tip } from '../ui/Tooltip'
+import { useFieldGesture } from './elementWrite'
+import {
+  absentAppearance,
+  controlKindOf,
+  fieldHintKey,
+  isPercentField,
+  pairedProp,
+  presentFields,
+  primaryGroupHeads,
+} from './presentation/registry'
+import type { PresentedField } from './presentation/types'
+import { ArrowStylePicker } from './controls/ArrowPickers'
+import { ColormapPicker } from './controls/ColormapPicker'
+import { colormapAliasGids } from '@/lib/colormapAlias'
+import { withMachineFamilies } from '@/lib/typography'
+import { ColorbarExtendPicker, ColorbarOrientationPicker } from './controls/ColorbarPickers'
+import { ProjectionPicker } from './controls/ProjectionPicker'
+import { ViewAngleDiagram } from './controls/ViewAngleDiagram'
+import { EffectToggle } from './controls/EffectToggle'
+import { HatchPicker } from './controls/HatchPicker'
+import { LegendBindingControl } from './controls/LegendBindingControl'
+import { LegendPositionPicker } from './controls/LegendPositionPicker'
+import { LineStylePicker } from './controls/LineStylePicker'
+import { MarkerPicker } from './controls/MarkerPicker'
+import {
+  TICK_SPINE_PROPS,
+  TickAndSpineDiagram,
+  type TickSpineAdapter,
+} from './controls/TickAndSpineDiagram'
+import { TICK_CARD_PROPS, TickTaskCard } from './controls/TickTaskCard'
+import { AspectControl } from './controls/AspectControl'
+import {
+  ErrorBarDiagram,
+  isErrorBarSegment,
+  type ErrorBarSegment,
+} from './controls/ErrorBarDiagram'
+import { PercentField } from './controls/PercentField'
+import { SPINE_FRAME_PROPS, SpineFrameCard } from './controls/SpineFrameCard'
+import {
+  axisTickState,
+  tickElementOf,
+  tickHostOf,
+  useTickAxisAdapter,
+  type TickAxis,
+} from './tickAdapter'
+import { useElementWriter } from './elementWrite'
+import { TypographyControls } from './controls/TypographyControls'
+import { isTextLikeSelection } from './textStyleModel'
+import { FIGURE_TEXT_BATCH_PROPS, useFigureTypography } from './typographyAdapter'
+import { fontStackOf } from './controls/fontStack'
+import { alignSelectedPanelElements } from '@/store/alignAction'
+import { useInspectorPrefs } from '@/store/inspectorPrefs'
+import { TextActionRow } from './TextActions'
+import { hasTextStyleBar, TextStyleBar, TEXT_BAR_PROPS } from './TextStyleBar'
+import { LEGEND_CARD_PROPS, LegendCard } from './LegendCard'
+import { LEGEND_SPACING_PROPS, LegendSpacingCard } from './controls/LegendSpacingCard'
+import { ColorScaleLink } from './ColorScaleLink'
+import { ResetChip } from './controls/textRows'
+import {
+  LEGEND_ANCHOR_PROP,
+  LEGEND_PLACEMENT_PROPS,
+  legendAnchorRange,
+  legendEntryElements,
+  legendPlacementOf,
+  toLegendAnchor,
+  type LegendAnchor,
+} from '@/lib/legendModel'
+import { mergeUnsupported, UnsupportedProps } from './UnsupportedProps'
+
+/** 本文件的文案都在 inspector:element.* 下 */
+const el = (key: string, values?: Record<string, unknown>) =>
+  translate(`element.${key}`, { ns: 'inspector', ...(values ?? {}) })
+const elMsg = (key: string, values?: Record<string, unknown>) =>
+  msg(`element.${key}`, values, 'inspector')
+
+/**
+ * 图内元素编辑器。**能力**完全由 manifest.editable 决定；**版面**由展示注册表
+ * 决定（presentation/registry）：primary 永远展开，「更多」是唯一的中频折叠区
+ * （展开状态按角色持久化），「源文件与高级」收纳写回/历史/诊断与低频字段。
+ */
+export function ElementInspector({ panel }: { panel: PanelObject }) {
+  useTranslation('inspector')
+  const render = usePanelRender(panel)
+  const selectedGids = useUiStore((s) => s.selectedGids)
+  // 显示用：列元素、认 role、画角标。可能来自上一版（画布也正显示那一版）
+  const manifest = render?.manifest
+  /**
+   * 几何权威：只有它能喂给对齐、成组缩放、孤儿判定这些**写几何**的地方。
+   * null = 这一版还没画出来（改完字号的那 600ms、脚本刚变过），此时那些
+   * 入口一律置灰并说明原因，绝不拿上一版的墨迹框硬算（issue #131）。
+   */
+  const exactManifest = useExactPanelManifest(panel)
+  const selected = manifest
+    ? selectedGids
+        .map((g) => manifest.elements.find((e) => e.gid === g))
+        .filter((e): e is ManifestElement => !!e)
+    : []
+  const picked = selected.at(-1) ?? manifest?.elements.find((e) => e.gid === 'figure') ?? null
+  // 色条轴本身没什么可调的，用户想改的是色条：直接换成它的色条元素
+  const element =
+    picked?.is_colorbar && picked.colorbar_gid
+      ? (manifest?.elements.find((e) => e.gid === picked.colorbar_gid) ?? picked)
+      : picked
+  // shift 加选进来的画布标注（文字/箭头/形状）：与图内元素混排对齐
+  const selIds = useSelectionStore((s) => s.ids)
+  const docObjects = useDocumentStore((s) => s.doc.objects)
+  const annotations = docObjects.filter(
+    (o) => selIds.includes(o.id) && (o.type === 'text' || o.type === 'arrow' || o.type === 'shape'),
+  )
+  const annEntries = annotationAlignEntries(panel, annotations)
+  /**
+   * 权威没就位时选区还在（selectedGids 不清空），但算不出条目。工具条仍要
+   * 出现——凭空消失会让用户以为「多选对齐这个功能没了」——只是整排置灰并
+   * 说明正在同步。条数按选中的可对齐元素数估，只用于标题文案。
+   */
+  const syncing =
+    !exactManifest && (selected.length > 1 || (selected.length >= 1 && annEntries.length >= 1))
+  /**
+   * 单选一个**有几何可改**的元素（子图 / 位图代理）时，权威缺席同样不能放行：
+   * `AxesSizeMm` 与 editable 里的 `position` 都会拿 manifest 的初值起算，
+   * 那份要是上一版的，改尺寸/居中/填数就是把旧几何写成新的。
+   * 这条与多选那条分开写：多选走对齐工具条，单选走普通表单，两边的收法不同。
+   */
+  const singleGeomSyncing = !exactManifest && !!picked?.resizable
+  // 多选 → 出对齐工具条，替代单元素表单。位图会归并到宿主子图，
+  // 归并后只剩一个几何目标时就没什么可对齐的，仍走单元素表单。
+  // 画布标注加进来后与元素同框排版（元素写 override，标注改画布位置）。
+  const entries =
+    exactManifest && selected.length
+      ? alignEntries(panel, exactManifest, selectedGids)
+      : []
+  const mixed: MixedEntry[] = [...entries, ...annEntries]
+  const alignGroup = mixed.length > 1 ? mixed : null
+  /**
+   * 混排选区里有画布标注时，**两种批量样式都不给**。
+   *
+   * 两个批量写入器都只写 manifest override（`setOverrides`），标注是文档对象、
+   * 走 `updateObjects`——混排时点一次加粗只会改到选中的一部分，而对齐区
+   * 明明写着「已选 3 个元素」。这种「改了一半、还不说」正是 web/AGENTS.md
+   * 混排对齐那条要求「同一次 commit」的理由（#142 评审 P2）。
+   *
+   * 跨 writer 的原子写入是延后项（见 docs/ux/UX_CONSISTENCY_PASS.md §8），
+   * 在它做出来之前，**宁可不给这个入口**：对齐照旧可用，样式回到单选去改。
+   *
+   * 判据放在两处的共同上游：`batch`（同角色公共字段）与 `styleBatch`
+   * （跨角色文字样式）是同一个形状的两个消费点，只修一个等于没修。
+   */
+  const mixedWithAnnotations = annotations.length > 0
+  // 多选同一种角色 → 批量改公共属性（文字全部调字号、曲线全部换色…）
+  const batch =
+    !mixedWithAnnotations &&
+    selected.length > 1 &&
+    selected.every((e) => e.role === selected[0].role)
+      ? selected
+      : null
+  /**
+   * 跨角色的**文字样式**批量。与 `batch`（同角色公共字段）和 `alignGroup`
+   * （几何对齐）是三个独立概念，可以同时成立：
+   *
+   *   * 图标题 + X/Y 轴标题 → styleBatch 有、batch 没有（角色不同）；
+   *   * 两个轴标题          → 两个都有（样式行在上，其余公共字段在下）；
+   *   * 两条曲线            → 只有 batch。
+   *
+   * 「已经进入对齐模式」**不再是**「不能改公共样式」的理由——旧代码里
+   * alignGroup 一出现就把整个属性区换掉，多选三条文字后连字号都改不了。
+   */
+  const styleBatch =
+    !mixedWithAnnotations && isTextLikeSelection(selected) ? selected : null
+
+  // 展示分桶：文字工具条覆盖的属性、刻度任务卡吃掉的字段都让出来
+  // （同一属性不出两套控件）。刻度组页上被卡承接的是方向 / 次刻度 / 长宽——
+  // 主刻度模式、间距、格式、次刻度定位仍留在通用列表与「更多」里，
+  // 逐字段「恢复到脚本」一条都没少（卡里的每一行自己带 ResetChip）。
+  // 刻度组页只有在卡**真的接管了这个元素**时才让出字段。X / Y / Z 三条轴
+  // 同一套页（`TickPage`），Z 由 `has()` 自然少掉 3D 没有的字段；gid 不成
+  // `<axes>.<xyz>ticks` 形状的刻度元素（引擎将来的新形态）退回通用列表
+  // ——字段必须留在界面上，能力凭空消失是最坏的那种（#142 评审 P1）
+  const tickCardCoversSelf = element?.role === 'ticks' && !!tickHostOf(element.gid)
+  // 图例卡只在图例**有项**时出现；没有项的图例（脚本只放了标题）字号照旧
+  // 留在通用列表里——能力凭空消失是最坏的那种冗余的反面
+  const legendCardCoversSelf =
+    element?.role === 'legend' && !!manifest && legendEntryElements(manifest, element.gid).length > 0
+  // 子图页：四边状态图、范围 / 坐标变换卡、边框卡各承接一组字段——
+  // 同一属性不出两套控件；没被任何卡点名的照旧走通用列表与「更多」
+  const consumedBySideDiagram = new Set<string>(
+    element?.role === 'axes'
+      ? [...TICK_SPINE_PROPS, ...AXES_RANGE_CARD_PROPS, ...SPINE_FRAME_PROPS]
+      : tickCardCoversSelf
+        ? TICK_CARD_PROPS
+        : element?.role === 'legend'
+          ? // 排版详情那张卡承接五条间距（审计 T17），与有没有条目无关；
+            // 字号 / 条目顺序只有图例卡在场时才让出来；锚点由位置控件的
+            // 外侧带承接——`loc` 不在场时**不让**，否则能力会连同控件一起消失
+            [
+              ...LEGEND_SPACING_PROPS,
+              ...(legendCardCoversSelf ? LEGEND_CARD_PROPS : []),
+              ...(element.editable.some((f) => f.prop === 'loc') ? [LEGEND_ANCHOR_PROP] : []),
+            ]
+          : [],
+  )
+  const buckets =
+    element && element.editable.length
+      ? presentFields(
+          element.role,
+          element.editable.filter(
+            (f) =>
+              (!hasTextStyleBar(element) || !TEXT_BAR_PROPS.has(f.prop)) &&
+              !consumedBySideDiagram.has(f.prop) &&
+              // 几何字段的初值来自 manifest：权威缺席时连控件都不给，否则
+              // 用户看到的是上一版的数字，填一下就把旧几何写成这一版的
+              (!!exactManifest || !GEOMETRY_WRITE_PROPS.has(f.prop)),
+          ),
+          {
+            isOverridden: (prop) =>
+              panel.overrides.some((o) => o.gid === element.gid && o.prop === prop),
+            read: (prop) => {
+              const f = element.editable.find((x) => x.prop === prop)
+              return f ? currentValue(panel, element.gid, f) : undefined
+            },
+          },
+        )
+      : null
+
+  // 四边状态图的宿主：axes 是自己；ticks 挂在宿主子图上（字段在那边）
+  const sideHost =
+    manifest && element
+      ? element.role === 'axes'
+        ? element
+        : element.role === 'ticks'
+          ? (() => {
+              const m = element.gid.match(/^(.*)\.[xyz]ticks$/)
+              return m ? manifest.elements.find((e) => e.gid === m[1]) : undefined
+            })()
+          : undefined
+      : undefined
+
+  return (
+    <>
+      {/* 缺渲染环境不是「出错」而是缺件，给能点的出口；脚本真报错才显示 traceback */}
+      {render?.code === 'missing_dependency' ? (
+        <Section>
+          {/* 后端给了修复建议就先给「安装并继续」这条路（ADR 0019）；
+              没给（老服务端 / 没打开项目）时退回原来的换环境引导 */}
+          {render.dependencyRepair ? (
+            <DependencyRepairCard
+              offer={render.dependencyRepair}
+              module={render.module}
+              script={render.dependencyRepair.script}
+            />
+          ) : (
+            <MissingDependencyCard module={render.module} projectEnv={render.projectEnv ?? undefined} />
+          )}
+        </Section>
+      ) : ENVIRONMENT_CODES.includes(render?.code as (typeof ENVIRONMENT_CODES)[number]) ? (
+        <Section>
+          <EngineEnvironmentCard compact />
+        </Section>
+      ) : (
+        render?.error && (
+          <ErrorBlock
+            error={render.error}
+            traceback={render.traceback}
+            code={render.code}
+            onRetry={() => requestRender(panel, true)}
+          />
+        )
+      )}
+      {/* 引擎的 warnings（「应用失败 gid.prop: …」）不再在属性页顶上整段列出
+          （2026-09-11 用户反馈）：与某个字段对得上的那条仍在那个字段下面说，
+          孤儿 override 的清理入口单独保留。 */}
+      <OrphanOverrides panel={panel} manifest={exactManifest} />
+
+      {/* 三层顺序：公共文字样式 → 其余公共属性 → 对齐与排列。
+          三者互相独立，谁在谁不在只看选择本身，不再互斥。
+          `syncing`（#137：几何同步在途）与 `alignGroup` 同档——它只决定对齐区
+          在不在、以及单元素表单让不让位，**不影响样式批量**：等一次几何写回
+          落地的时候，用户照样该能改字号。 */}
+      {styleBatch && <TextStyleBatchSection panel={panel} elements={styleBatch} />}
+      {batch && <BatchSection panel={panel} elements={batch} skip={styleBatch ? TEXT_BAR_PROPS : undefined} />}
+      {(alignGroup || syncing) && (
+        <AlignSection panel={panel} items={alignGroup ?? []} syncing={syncing} />
+      )}
+      {alignGroup || syncing || batch || styleBatch ? null : (
+      <Section>
+        {manifest && element && <RelatedRow manifest={manifest} element={element} />}
+        {/* 色条与它上色的图像共用一份色阶（审计 T22 / T23）：关系说出口，
+            并给一个「选中对方」的入口。没有对家时组件自己不渲染 */}
+        {manifest && element && <ColorScaleLink manifest={manifest} element={element} />}
+        {!manifest ? (
+          <p className="text-xs text-ink-3">
+            {el(render?.status === 'rendering' ? 'building' : 'waiting')}
+          </p>
+        ) : !element?.editable.length || !buckets ? (
+          <>
+            <p className="text-xs text-ink-3">{el('clickToEdit')}</p>
+            {/* 一条能改的都没有、但有说得出原因的不可改项时，原因仍然要出现
+                ——否则这个元素在界面上就只剩一句「点一下开始编辑」 */}
+            {element && <UnsupportedProps elements={[element]} />}
+          </>
+        ) : tickCardCoversSelf && sideHost && element ? (
+          /* 刻度组页：「刻度 / 文字」两段（审计 T13），X / Y / Z 同一套 */
+          <TickPage
+            panel={panel}
+            manifest={manifest}
+            host={sideHost}
+            element={element}
+            warnings={render?.warnings ?? []}
+            buckets={buckets}
+          />
+        ) : element?.role === 'errorbar' ? (
+          /* 误差棒：端帽长度 / 端帽线宽配一张示意图（审计 T20） */
+          <ErrorBarPage
+            panel={panel}
+            element={element}
+            warnings={render?.warnings ?? []}
+            buckets={buckets}
+          />
+        ) : (
+          <FieldList
+            panel={panel}
+            element={element}
+            warnings={render?.warnings ?? []}
+            buckets={buckets}
+            primaryExtra={
+              element?.role === 'axes' && sideHost ? (
+                /* 子图页四段：几何（子图尺寸 / 居中）→ 范围与坐标变换 → 刻度与网格 → 边框
+                   （审计 T12：范围、比例、边框三类任务互不混杂；2026-09-13 审计 B53：
+                   改尺寸是最常用的几何操作，放首屏，不再排在整页刻度设置之后） */
+                <div className="flex flex-col gap-4">
+                  {exactManifest && (
+                    <AxesSizeMm
+                      panel={panel}
+                      element={geomTarget(exactManifest, element)}
+                      sizeMm={exactManifest.size_mm}
+                      proxied={!!element.geom_gid}
+                      group={groupOf(alignEntries(panel, exactManifest, [element.gid]), 1)}
+                      first
+                    />
+                  )}
+                  <AxesRangeCard panel={panel} element={element} warnings={render?.warnings ?? []} />
+                  <div className="flex flex-col gap-1.5">
+                    <GroupHead>{el('groupTicksGrid')}</GroupHead>
+                    <TickControl panel={panel} manifest={manifest} host={sideHost} element={element} />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <GroupHead>{el('groupFrame')}</GroupHead>
+                    <SpineFrameCard panel={panel} element={element} labelWidth={LABEL_W} />
+                  </div>
+                </div>
+              ) : sideHost && element ? (
+                <TickControl
+                  panel={panel}
+                  manifest={manifest}
+                  host={sideHost}
+                  element={element}
+                />
+              ) : element?.role === 'axes3d' ? (
+                /* 角度改在数值框里；这个静态示意只是旁注（审计 T24：
+                   「不增加装饰性三维动画」），随数值重画、没有动画 */
+                <ViewAngleRow panel={panel} element={element} />
+              ) : element?.role === 'legend' ? (
+                /* 图例页：条目列表（有项时）+ 排版详情（审计 T17：五条间距
+                   标签独占一行、不截断，默认折叠，改过自动展开） */
+                <>
+                  {legendCardCoversSelf && (
+                    <LegendCard panel={panel} manifest={manifest} legend={element} labelWidth={LABEL_W} />
+                  )}
+                  <LegendSpacingCard panel={panel} element={element} />
+                </>
+              ) : null
+            }
+          />
+        )}
+        {element && <UnsupportedNote role={element.role} />}
+        {/* 改尺寸 / 居中是几何写操作：只认权威那一份（issue #131）。
+            子图自己的那份已经在页首的「几何」段里；这里只剩位图代理那类
+            resizable 元素 */}
+        {element?.resizable && exactManifest && element.role !== 'axes' && (
+          <AxesSizeMm
+            panel={panel}
+            element={geomTarget(exactManifest, element)}
+            sizeMm={exactManifest.size_mm}
+            proxied={!!element.geom_gid}
+            group={groupOf(alignEntries(panel, exactManifest, [element.gid]), 1)}
+          />
+        )}
+        {singleGeomSyncing && (
+          <p className="mt-2 text-xs leading-relaxed text-ink-3">{el('alignSyncing')}</p>
+        )}
+      </Section>
+      )}
+
+      <HiddenElements panel={panel} manifest={manifest} />
+
+      <SourceAdvancedSection
+        panel={panel}
+        element={alignGroup || syncing || batch || styleBatch ? null : element}
+        advanced={
+          alignGroup || syncing || batch || styleBatch ? [] : (buckets?.advanced ?? [])
+        }
+      />
+    </>
+  )
+}
+
+/**
+ * 脚本被改过后，旧基线里指向已消失元素的 override 会一直报「元素不存在」。
+ * 它们既改不到东西也删不掉，只能整条清掉——只认 gid 失效这一种，
+ * 「属性不支持」类警告是另一回事，不在这里处理。
+ */
+function OrphanOverrides({ panel, manifest }: { panel: PanelObject; manifest?: Manifest | null }) {
+  useTranslation('inspector')
+  if (!manifest) return null
+  const orphans = panel.overrides.filter((o) => !manifest.elements.some((e) => e.gid === o.gid))
+  if (!orphans.length) return null
+  const gids = new Set(orphans.map((o) => o.gid))
+  return (
+    <Section>
+      <div className="flex items-center gap-2">
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={() =>
+          clearOverrides(
+            panel.id,
+            elMsg('clearOrphans'),
+            orphans.map((o) => ({ gid: o.gid, prop: o.prop })),
+          )
+        }
+      >
+        {el('clearOrphans')}
+      </Button>
+      <span className="text-xs text-ink-3">
+        {el('orphanCount', { overrides: orphans.length, elements: gids.size })}
+      </span>
+      </div>
+    </Section>
+  )
+}
+
+/**
+ * 有些角色在 SVG 里没有自己的命中区：柱形系列只画出一根根柱子、刻度组根本
+ * 不是图元，点画布永远选不到它们。属性页之间互相跳转是它们唯一的入口。
+ */
+function relatedGids(
+  manifest: Manifest,
+  target: ManifestElement,
+): { gid: string; label: string; hint?: string; text?: string }[] {
+  const find = (gid: string) =>
+    manifest.elements.find((e) => e.gid === gid && e.editable.length > 0)
+  const out: { gid: string; label: string; hint?: string; text?: string }[] = []
+  const push = (e: ManifestElement | undefined, hint?: string, text?: (label: string) => string) => {
+    // label 是引擎发来的散文（`曲线 “电流”`），过 engineLabel 换成当前语言
+    if (e) out.push({ gid: e.gid, label: engineLabel(e.label), hint, text: text?.(engineLabel(e.label)) })
+  }
+
+  // 「所属系列」「所属子图」「所属图例」这种往上一级的路都在身份头的面包屑里，而且面包屑
+  // 每一级都能点（2026-09-14 审计 A4）——这里不再重复写一行；只留往下 / 往旁边走的入口
+  // 单个刻度文字 → 整条轴的刻度（审计 B51）：这一页改的只是这一个刻度的文字，
+  // 字号 / 朝向 / 间距那些整条轴的事在刻度组页；入口就写成「编辑整条 X 轴刻度」
+  if (target.role === 'ticklabel') {
+    const m = target.gid.match(/^(.*)\.([xyz])ticklabels_\d+$/)
+    if (m) push(find(`${m[1]}.${m[2]}ticks`), undefined, (label) => el('relatedTicksAll', { label }))
+  }
+  if (target.role === 'axes' || target.role === 'axes3d') {
+    push(find(`${target.gid}.xticks`))
+    push(find(`${target.gid}.yticks`))
+    push(find(`${target.gid}.zticks`))
+  }
+  return out
+}
+
+function RelatedRow({ manifest, element }: { manifest: Manifest; element: ManifestElement }) {
+  useTranslation('inspector')
+  const items = relatedGids(manifest, element)
+  if (!items.length) return null
+  return (
+    <div className="mb-1.5 -ml-1.5 flex flex-wrap items-center gap-1">
+      {items.map((it) => (
+        <Button
+          key={it.gid}
+          size="sm"
+          className="max-w-full px-1.5 text-ink-2"
+          onClick={() => useUiStore.getState().setSelectedGid(it.gid)}
+        >
+          <span className="truncate">
+            {it.text ?? (it.hint ? el('relatedWithHint', { hint: it.hint, label: it.label }) : it.label)}
+          </span>
+          {/* 「去到」的记号只有一枚：尾随的 chevron-right（此前是回转箭头 CornerUpLeft，
+              同一枚图标既用于上到所属子图、也用于下到 X / Y 刻度） */}
+          <ChevronRight size={ICON_SIZE.xs} className="shrink-0 text-ink-3" aria-hidden />
+        </Button>
+      ))}
+    </div>
+  )
+}
+
+function ErrorBlock({
+  error,
+  traceback,
+  code,
+  onRetry,
+}: {
+  error: UiMessage
+  traceback: string
+  code?: string
+  onRetry?: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Section>
+      <div className="rounded-sm bg-danger-subtle px-2 py-1.5">
+        {/* 描述符在**显示这一刻**才翻，切语言后这条跟着换 */}
+        <p className="text-xs text-danger">{formatMessage(error)}</p>
+        {/* 「脚本跑完没出图」：多半是沙盒 cwd 下相对路径找不到数据，给出口（ADR 0047） */}
+        {code && (WORKDIR_CODES as readonly string[]).includes(code) && <WorkdirSuggestion />}
+        <div className="mt-0.5 flex items-center gap-2">
+          <p className="text-xs text-danger/70">{el('keptPrevious')}</p>
+          {onRetry && (
+            <button
+              onClick={onRetry}
+              className="flex items-center gap-1 text-xs text-danger underline-offset-2 hover:underline"
+            >
+              <RotateCcw size={ICON_SIZE.xs} />
+              {el('retryRender')}
+            </button>
+          )}
+        </div>
+        {traceback && (
+          <>
+            <button
+              onClick={() => setOpen((v) => !v)}
+              className="mt-1 flex items-center gap-0.5 text-xs text-danger/80 hover:text-danger"
+            >
+              <ChevronRight size={ICON_SIZE.xs} className={cn('transition-transform', open && 'rotate-90')} />
+              {el('traceback')}
+            </button>
+            {open && (
+              <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-sm bg-surface p-1.5 font-mono text-xs leading-relaxed text-ink-2">
+                {traceback}
+              </pre>
+            )}
+          </>
+        )}
+      </div>
+    </Section>
+  )
+}
+
+/**
+ * 动态表单：无 group 的字段平铺在前，其余按 group 收进可折叠小节。
+ * 分组和顺序都由 manifest 决定，前端不排字段清单。
+ */
+/** 标签列宽：全检查器同一个数，出处在 `inspector/layout.ts`（打磨 L1） */
+const LABEL_W = INSPECTOR_LABEL_W
+
+/**
+ * 「移除 override」在不同字段上的自然说法；没有专属说法的用通用那条。
+ * 注意查的是**固定的几个 prop**，不是开放集合，所以这里可以放心用 key。
+ */
+/**
+ * pair / rect 的**每一格都要有自己的名字**。
+ *
+ * 两个框都只挂一个「图幅」等于没名字：辅助技术里读出来是"编辑框 80"
+ * "编辑框 57.6"，用户不知道哪个是宽、哪个是高。axe 的 `label` 规则按
+ * **critical** 报——PR #214 新加的问题面板 a11y 用例在 Windows/webkit 上抓到
+ * 的就是这一对（那一次恰好停在快速编辑，右栏摆着「图幅」）。
+ *
+ * 这几格的语义**随属性变**，所以不能用统一的序号名糊过去：
+ * `size_mm` 是宽/高、`xlim`/`ylim` 是最小/最大、`position`（rect）是
+ * x/y/宽/高。表里没有的属性退回带序号的名字——**有个不精确的名字也好过没有
+ * 名字**，而且这种退化是听得见的（读出来就是"第 1 项"），不会假装解决了。
+ */
+const PAIR_AXES: Record<string, readonly string[]> = {
+  size_mm: ['width', 'height'],
+  xlim: ['min', 'max'],
+  ylim: ['min', 'max'],
+}
+const RECT_AXES = ['x', 'y', 'width', 'height'] as const
+/**
+ * 成对数值框里的**可见**短前缀（审计 T11：图幅两个框光靠顺序分不出宽高）。
+ * W / H 与画布页的写法一致，不随语言变；可达名仍是完整的「图幅 宽 (mm)」。
+ * 范围类（min / max）由 AxesRangeCard 承接，这里不给它们发明缩写。
+ */
+const PAIR_PREFIX: Record<string, string> = { width: 'W', height: 'H' }
+
+function axisAriaLabel(
+  field: { prop: string; type: string; unit?: string },
+  label: string,
+  i: number,
+): string {
+  const names = field.type === 'rect' ? RECT_AXES : PAIR_AXES[field.prop]
+  const name = names?.[i]
+  const axis = name ? el(`axis.${name}`) : el('axis.indexed', { n: i + 1 })
+  return field.unit ? `${label} ${axis} (${field.unit})` : `${label} ${axis}`
+}
+
+const RESET_HINT_PROPS = new Set(['vmin', 'vmax', 'size_mm'])
+const resetHint = (prop: string) =>
+  el(`resetHint.${RESET_HINT_PROPS.has(prop) ? prop : 'default'}`)
+
+/** 字段行 + 贴在它下面的引擎警告（单条 patch 失败时） */
+function FieldBlock({
+  panel,
+  element,
+  field,
+  warnings,
+}: {
+  panel: PanelObject
+  element: ManifestElement
+  field: EditableField
+  warnings: string[]
+}) {
+  // 用词边界匹配：gid 里的 "texts_0" 不该被认成 text 字段的报错
+  const propRe = new RegExp(`(^|[^A-Za-z_])${field.prop}([^A-Za-z_0-9]|$)`)
+  const warning = warnings.find((w) => propRe.test(w))
+  return (
+    /* `data-prop` 是**定位服务的落点**（`lib/issueFocus.ts`）：问题面板要把
+       焦点落到出问题的那个字段上，而选择器只能用稳定的机器标识——
+       aria-label 是本地化文案，换个语言就选不中了（focusRescue 同一条理由）。 */
+    <div data-prop={field.prop} data-gid={element.gid}>
+      <FieldRow panel={panel} element={element} field={field} />
+      {warning && (
+        <p className="mt-0.5 pl-20 text-xs leading-relaxed text-danger">{warning}</p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 三维子图的方向示意（审计 T24）：X / Y / Z 在当前视角下指向屏幕的哪里。
+ *
+ * **它不是控件**——没有点击、没有拖动、没有动画，只是角度数值框的旁注，
+ * 与控件列对齐着摆。角度仍在上面三个数值框里改；这里读的是同一份值
+ * （override 优先），所以「角度与示意一致」不需要第二条同步路径。
+ * 引擎没发 `roll`（matplotlib < 3.6）时按 0 画。
+ */
+function ViewAngleRow({ panel, element }: { panel: PanelObject; element: ManifestElement }) {
+  const num = (prop: string) => {
+    const f = element.editable.find((x) => x.prop === prop)
+    return f ? Number(currentValue(panel, element.gid, f) ?? 0) : 0
+  }
+  if (!element.editable.some((x) => x.prop === 'elev' || x.prop === 'azim')) return null
+  return (
+    <div className="flex" style={{ paddingLeft: LABEL_W + 8 }}>
+      <ViewAngleDiagram elev={num('elev')} azim={num('azim')} roll={num('roll')} />
+    </div>
+  )
+}
+
+/**
+ * 并排行的文案：行标题 + 两格的前缀。**每一对在这里点名**（闭集），不按
+ * `pairLabel.${a}_${b}` 动态拼 key——动态拼的键 i18n 门禁看不住，漏一条就是
+ * 界面上一串 `pairLabel.vmin_vmax`。表里没有的对子不并排，各画各的行。
+ */
+interface PairText {
+  /** 显示顺序在这里定（下限在前），不跟着引擎发过来的顺序走 */
+  props: [string, string]
+  label: () => string
+  prefixes: [() => string, () => string]
+}
+
+/** 与 `pairedProp` 无关的查表键：与顺序无关，两条属性名排序后拼起来 */
+const pairKey = (a: string, b: string) => [a, b].sort().join('|')
+
+const PAIR_TEXTS: PairText[] = [
+  {
+    props: ['vmin', 'vmax'],
+    label: () => el('pairColorScale'),
+    prefixes: [() => el('pairMin'), () => el('pairMax')],
+  },
+]
+// 键**由 pairKey 自己生成**：手写字面量键会和它的排序规则悄悄分叉
+// （'vmin|vmax' 排序之后其实是 'vmax|vmin'——第一版就是这么错的，
+// 表查不到于是安静地退回两行，界面上看不出任何异常）
+const PAIR_TEXT: Record<string, PairText> = Object.fromEntries(
+  PAIR_TEXTS.map((t) => [pairKey(t.props[0], t.props[1]), t]),
+)
+
+/**
+ * 两条数值字段并排成一行（审计 T22：色阶上下限并排）。
+ *
+ * 两条仍是**各自的** manifest 字段：各写各的 override、各有各的恢复按钮，
+ * 值也不互相钳制（下限大于上限是 matplotlib 自己的事，界面不替它裁决）。
+ * 这里只管排版：一个行标题 + 两个带前缀的数字框。写入走 `useElementWriter`
+ * ——与刻度卡、边框卡同一份（局部预览 / 事务 / 渲染时机收在一处）。
+ */
+function PairRow({
+  panel,
+  element,
+  a,
+  b,
+}: {
+  panel: PanelObject
+  element: ManifestElement
+  a: EditableField
+  b: EditableField
+}) {
+  const w = useElementWriter(panel, element)
+  const text = PAIR_TEXT[pairKey(a.prop, b.prop)]
+  const overridden = (prop: string) =>
+    panel.overrides.some((o) => o.gid === element.gid && o.prop === prop)
+  const byProp = (prop: string) => (a.prop === prop ? a : b)
+  const cell = (field: EditableField, prefix: string) => {
+    const label = propLabel(field.prop, element.role)
+    return (
+      <div key={field.prop} data-prop={field.prop} className="flex min-w-0 shrink-0 items-center gap-1">
+        <NumberField
+          // 图幅那一对是「393.7」这种五位带小数的数：4ch 只剩「39」（2026-09-11 用户反馈）
+          className="min-w-0 [&_input]:w-[calc(6ch+0.75rem)]"
+          prefix={prefix}
+          ariaLabel={label}
+          value={Number(w.read(field.prop) ?? 0)}
+          min={field.min}
+          max={field.max}
+          step={field.step ?? 1}
+          precision={2}
+          unit={field.unit}
+          onChange={(v) => w.write(field.prop, v)}
+          onScrubStart={() => w.beginGesture()}
+          onScrubEnd={w.endGesture}
+        />
+        {overridden(field.prop) && (
+          <ResetChip label={label} onReset={() => clearOverride(panel.id, element.gid, field.prop)} />
+        )}
+      </div>
+    )
+  }
+  return (
+    <div data-pair-row={`${text.props[0]}|${text.props[1]}`}>
+      <Row
+        label={labeledWithStateNode(text.label(), overridden(a.prop) || overridden(b.prop))}
+        labelWidth={LABEL_W}
+      >
+        {/* 两个数值框靠右贴齐、不再各占半行（2026-09-11 用户反馈：右侧不留空隙） */}
+        <div className="flex w-full min-w-0 items-center justify-end gap-1.5">
+          {cell(byProp(text.props[0]), text.prefixes[0]())}
+          {cell(byProp(text.props[1]), text.prefixes[1]())}
+        </div>
+      </Row>
+    </div>
+  )
+}
+
+/**
+ * 误差棒页：三个几何字段配一张示意图（审计 T20）。
+ *
+ * 高亮跟着**焦点或指针**走，而不是让每一行自己带一张小图——一张图上
+ * 三段的相对关系才说得清「长度」和「线宽」量的是同一根横线的两个方向。
+ * 追踪落在容器上读 `data-prop`：字段行照旧是普通的 FieldRow，示意图不
+ * 接管任何写入，也不承接任何字段（拿掉它，能改的东西一个都不少）。
+ */
+function ErrorBarPage({
+  panel,
+  element,
+  warnings,
+  buckets,
+}: {
+  panel: PanelObject
+  element: ManifestElement
+  warnings: string[]
+  buckets: { primary: PresentedField[]; more: PresentedField[] }
+}) {
+  const [active, setActive] = useState<ErrorBarSegment | null>(null)
+  const segAt = (target: EventTarget | null): ErrorBarSegment | null => {
+    const row = target instanceof Element ? target.closest('[data-prop]') : null
+    const prop = row instanceof HTMLElement ? row.dataset.prop : undefined
+    return isErrorBarSegment(prop) ? prop : null
+  }
+  return (
+    <div
+      onFocusCapture={(e) => setActive(segAt(e.target))}
+      onBlurCapture={() => setActive(null)}
+      onPointerOver={(e) => setActive(segAt(e.target))}
+      onPointerLeave={() => setActive(null)}
+    >
+      <FieldList
+        panel={panel}
+        element={element}
+        warnings={warnings}
+        buckets={buckets}
+        primaryExtra={
+          <div className="flex justify-center" data-errorbar-figure>
+            <ErrorBarDiagram active={active} />
+          </div>
+        }
+      />
+    </div>
+  )
+}
+
+/**
+ * 「图上有、这里改不了」的一条能力提示 + 源对象入口（审计 T19）。
+ *
+ * 与 `UnsupportedProps` 是**同一种说法的两个来源**：那条的理由来自
+ * manifest 的 `unsupported_props`（引擎说「这个属性在这个对象上没意义」），
+ * 这条来自「引擎根本没发这个字段」。两者视觉一致——属性名置灰 + 一句
+ * 理由——因为对用户来说是同一件事：这一项在这儿改不了，去哪儿改。
+ *
+ * **不摆一个点了没反应的控件，也不装作这个属性不存在**（#76 的老教训）。
+ */
+function AbsentAppearanceNote({ element }: { element: ManifestElement }) {
+  const setAdvancedOpen = useInspectorPrefs((s) => s.setAdvancedOpen)
+  // 角色与字段表都从元素本身取：调用点只递元素，递不错
+  const role = element.role
+  const props = absentAppearance(role, element.editable)
+  if (props.length === 0) return null
+  return (
+    <div className="mt-1.5 flex flex-col gap-1.5 border-t border-border pt-1.5">
+      {props.map((prop) => (
+        <div key={prop} data-absent-appearance={prop} className="flex flex-col gap-0.5">
+          <span aria-disabled className="text-xs text-ink-faint">
+            {propLabel(prop, role)}
+          </span>
+          <p className="text-xs leading-relaxed text-ink-3">{el('absentAppearance')}</p>
+        </div>
+      ))}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="-ml-2"
+        onClick={() => {
+          setAdvancedOpen(role, true)
+          // 展开是 store 里的一次状态变化，滚动要等这一帧渲染完
+          requestAnimationFrame(() =>
+            document
+              .querySelector('[data-source-advanced]')
+              ?.scrollIntoView({ block: 'nearest' }),
+          )
+        }}
+      >
+        {el('openSourceAdvanced')}
+      </Button>
+    </div>
+  )
+}
+
+/**
+ * 单元素表单：primary 永远展开；「更多」是唯一的中频折叠区，展开状态按角色
+ * 持久化（换面板不重置），折叠时标题右侧显示里面有几项被改过——
+ * override 不因折叠而不可发现。
+ */
+function FieldList({
+  panel,
+  element,
+  warnings,
+  buckets,
+  primaryExtra,
+}: {
+  panel: PanelObject
+  element: ManifestElement
+  warnings: string[]
+  buckets: { primary: PresentedField[]; more: PresentedField[] }
+  /** 首屏里的复合控件（四边状态图等），排在 primary 行之后、「更多」之前 */
+  primaryExtra?: ReactNode
+}) {
+  // 文字元素的字号/加粗/字形/颜色/背景/描边/排版全部收进工具条，
+  // 平铺列表要把它们让出来——同一个属性出两套控件是最坏的那种冗余
+  const bar = hasTextStyleBar(element)
+  const role = element.role
+  const moreOpen = useInspectorPrefs((s) => s.moreOpen[role] ?? false)
+  const setMoreOpen = useInspectorPrefs((s) => s.setMoreOpen)
+
+  const rows = (fields: PresentedField[], heads?: Map<string, string>) => {
+    // 并排成一行的字段对（模板的 `pairRows`，如色阶下限 / 上限）：**两条都在
+    // 这一桶里**才并排，否则各画各的——条件显示把其中一条收起来时，剩下那条
+    // 不该跟着消失。两条仍是各自的 manifest 字段、各写各的 override。
+    const paired = new Set<string>()
+    return (
+      <div className="flex flex-col gap-1.5">
+        {fields.map(({ field }) => {
+          if (paired.has(field.prop)) return null
+          // 首屏分组小标题（模板的 `primaryGroups`）：只钉在每组第一个在场的字段前
+          const head = heads?.get(field.prop)
+          const mateProp = pairedProp(role, field.prop)
+          const mate = mateProp ? fields.find((p) => p.field.prop === mateProp)?.field : undefined
+          let block: ReactNode
+          if (mate && PAIR_TEXT[pairKey(field.prop, mate.prop)]) {
+            paired.add(mate.prop)
+            block = <PairRow panel={panel} element={element} a={field} b={mate} />
+          } else {
+            block = <FieldBlock panel={panel} element={element} field={field} warnings={warnings} />
+          }
+          return (
+            <Fragment key={field.prop}>
+              {head && <GroupHead>{el(head)}</GroupHead>}
+              {block}
+            </Fragment>
+          )
+        })}
+      </div>
+    )
+  }
+
+  // 「更多」内部不再有第二层折叠；兜底进来的字段按引擎分组给一行小标题
+  const named = buckets.more.filter((pf) => pf.order < 1000)
+  const rest = buckets.more.filter((pf) => pf.order >= 1000)
+  const restGroups: [string | undefined, PresentedField[]][] = []
+  for (const pf of rest) {
+    const last = restGroups.at(-1)
+    if (last && last[0] === pf.field.group) last[1].push(pf)
+    else restGroups.push([pf.field.group, [pf]])
+  }
+
+  const modifiedInMore = buckets.more.filter((pf) =>
+    panel.overrides.some((o) => o.gid === element.gid && o.prop === pf.field.prop),
+  ).length
+
+  // 有文字工具条时，首屏顺序是「内容 → 字体行 → 其余首屏字段（背景等）」：
+  // 工具条承接的字体字段已从列表里滤掉，剩下排在 `text` 之后的按模板顺序跟在工具条后面
+  const headPrimary = bar ? buckets.primary.filter((pf) => pf.field.prop === 'text') : buckets.primary
+  const tailPrimary = bar ? buckets.primary.filter((pf) => pf.field.prop !== 'text') : []
+  const groupHeads = primaryGroupHeads(
+    role,
+    buckets.primary.map((pf) => pf.field.prop),
+  )
+  return (
+    <>
+      {rows(headPrimary, groupHeads)}
+      {bar && (
+        <div className={cn(headPrimary.length > 0 && 'mt-1.5')}>
+          <TextStyleBar panel={panel} element={element} labelWidth={LABEL_W} />
+        </div>
+      )}
+      {tailPrimary.length > 0 && <div className="mt-1.5">{rows(tailPrimary)}</div>}
+      {primaryExtra && <div className="mt-4">{primaryExtra}</div>}
+      {/* guard 挡掉的能力要说得出为什么——否则开关就是「消失了」（#76） */}
+      <UnsupportedProps elements={[element]} />
+      {/* 引擎压根没发的外观属性（柱形的纹理）：同一种说法，另一个来源 */}
+      <AbsentAppearanceNote element={element} />
+      {buckets.more.length > 0 && (
+        <div className="mt-1.5">
+          <GroupToggle
+            open={moreOpen}
+            onToggle={() => setMoreOpen(role, !moreOpen)}
+            summary={
+              modifiedInMore > 0 ? el('modifiedCount', { count: modifiedInMore }) : undefined
+            }
+          >
+            {el('more')}
+          </GroupToggle>
+          <Reveal open={moreOpen}>
+            <div className="mt-1.5 flex flex-col gap-1.5">
+              {rows(named)}
+              {restGroups.map(([group, fields], i) => (
+                <div key={group ?? `flat-${i}`}>
+                  {group && (
+                    <p className="mb-1 mt-1 type-section">
+                      {groupLabel(group)}
+                    </p>
+                  )}
+                  {rows(fields)}
+                </div>
+              ))}
+            </div>
+          </Reveal>
+        </div>
+      )}
+    </>
+  )
+}
+
+/**
+ * 四边刻度/边框状态图的写入接线：axes 页与刻度组页共用。
+ * 字段全部真实存在于宿主 axes 的 manifest 上；写入走 useElementWriter
+ * （一次点击 = 一条历史 + 一次渲染），单项恢复走 clearOverride。
+ */
+/**
+ * 刻度与边框的完整任务入口：**状态图 + X/Y 刻度配置在同一处**。
+ *
+ * 四边点按（刻度线 / 边框）与网格开关照旧写宿主子图的字段；方向 / 次刻度 /
+ * 长度 / 宽度写对应轴的刻度元素（`axes_0.xticks` / `.yticks`）。两组字段
+ * 分属两个 manifest 元素，界面把它们并到一张卡上——用户不需要理解
+ * axes / xticks / yticks 的对象关系才能改一件事。
+ *
+ * 从子图页进来给两个轴（顶部出 X/Y 切换）；从刻度组页进来只给它自己那个轴
+ * （切过去会写到另一个元素，而用户选的是这一个）——**同一个组件、同一套
+ * 视觉语言，不是两套控件**。
+ */
+function TickControl({
+  panel,
+  manifest,
+  host,
+  element,
+}: {
+  panel: PanelObject
+  manifest: Manifest | null | undefined
+  /** 四边开关与网格的宿主（永远是子图） */
+  host: ManifestElement
+  /** 当前选中的元素：子图或某一个刻度组 */
+  element: ManifestElement
+}) {
+  useTranslation('inspector')
+  const w = useElementWriter(panel, host)
+  const xEl = tickElementOf(manifest, host.gid, 'x')
+  const yEl = tickElementOf(manifest, host.gid, 'y')
+  // hook 数量固定：两个轴各调一次，元素不在时 adapter 回 null
+  const xAdapter = useTickAxisAdapter(panel, xEl, 'x')
+  const yAdapter = useTickAxisAdapter(panel, yEl, 'y')
+
+  const selfAxis = element.role === 'ticks' ? (tickHostOf(element.gid)?.axis ?? null) : null
+  const all = [xAdapter, yAdapter].filter((a): a is NonNullable<typeof a> => !!a)
+  /**
+   * 刻度组页只给**它自己那个轴**。
+   *
+   * 3D 图会发 `axes_i.zticks`（`tick_axes` 里 is3d 那一支），而这张卡只有
+   * X / Y 两个适配器——选中 Z 刻度时**一个都不给**，绝不退回 `all`：
+   * 那会摆出一组写到 `xticks` / `yticks` 的控件，用户改的是 Z、动的是 X，
+   * 而 Z 自己的长度 / 宽度 / 次刻度还被 consumed 规则从通用列表里拿掉了
+   * ——改错对象 + 真控件消失，两头都错（#142 评审 P1）。
+   */
+  const axes = selfAxis ? all.filter((a) => a.axis === selfAxis) : all
+
+  // 四边刻度模型：示意图的内 / 外两带、刻度卡的「隐藏」档与「显示边」开关、
+  // 画布上的边框命中区读的都是它，写的都是 applyTickSidePlan（Prompt 16）
+  const model = readAxesTickModel(manifest, panel.overrides, host.gid)
+  const applyPlan = (plan: SidePlan) => applyTickSidePlan(panel.id, plan)
+
+  const diagramProps = TICK_SPINE_PROPS.filter(
+    (p) => w.has(p) && panel.overrides.some((o) => o.gid === host.gid && o.prop === p),
+  )
+  const adapter: TickSpineAdapter = {
+    has: (p) => w.has(p),
+    read: (p) => w.read(p),
+    toggle: (p, next) => w.writeOnce(p, next),
+    labelOf: (p) => propLabel(p, host.role),
+    isOverridden: (p) => panel.overrides.some((o) => o.gid === host.gid && o.prop === p),
+    // 一次恢复示意图承接的全部修改（一条历史）——恢复动作统一，不逐边出 chip
+    resetAll: () =>
+      clearOverrides(
+        panel.id,
+        elMsg('resetDiagram'),
+        diagramProps.map((p) => ({ gid: host.gid, prop: p })),
+      ),
+    axisState: (a) => axisTickState(a === 'x' ? xAdapter : yAdapter),
+    model,
+    applyPlan,
+  }
+  return (
+    <div className="flex flex-col gap-4">
+      <TickAndSpineDiagram adapter={adapter} labelWidth={LABEL_W} />
+      {axes.length > 0 && (
+        <TickTaskCard axes={axes} labelWidth={LABEL_W} model={model} applyPlan={applyPlan} />
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------ 子图：范围与坐标变换 ------------------------ */
+
+const AXES_RANGE_PROPS = ['xlim', 'ylim'] as const
+const AXES_SCALE_PROPS = ['xscale', 'yscale'] as const
+const AXES_INVERT_PROPS = ['invert_x', 'invert_y'] as const
+/** 范围卡承接的字段——子图页的通用列表要把它们让出来 */
+const AXES_RANGE_CARD_PROPS = [
+  ...AXES_RANGE_PROPS,
+  ...AXES_SCALE_PROPS,
+  ...AXES_INVERT_PROPS,
+  'aspect',
+] as const
+
+/**
+ * 子图页的「范围」与「坐标变换」两段（审计 T12）。
+ *
+ * 引擎把 xlim / ylim / xscale / yscale / invert_* / aspect 都发在「数据范围」
+ * 一个组里，平铺进列表后「改数据范围」和「换对数轴、反转、纵横比」混在一起，
+ * 后两者还有一半掉进「更多」。这里按任务分两段：**范围** = X / Y 各一对
+ * 最小 / 最大；**坐标变换** = 缩放、反转、纵横比。控件本身仍是通用的
+ * `FieldBlock`（纵横比的三档控件由展示注册表按 `aspect` 分派，见
+ * `presentation/registry.controlKindOf`），这里只管顺序与分段。
+ *
+ * 反转 X / Y 并成一行两个开关：它们是同一件事的两个方向，各占一行只是把
+ * 首屏拉长。能力仍由 manifest 说了算：字段不在就不画。
+ */
+function AxesRangeCard({
+  panel,
+  element,
+  warnings,
+}: {
+  panel: PanelObject
+  element: ManifestElement
+  warnings: string[]
+}) {
+  useTranslation('inspector')
+  const w = useElementWriter(panel, element)
+  const fieldOf = (p: string) => element.editable.find((f) => f.prop === p)
+  const range = AXES_RANGE_PROPS.map(fieldOf).filter((f): f is EditableField => !!f)
+  const scale = AXES_SCALE_PROPS.map(fieldOf).filter((f): f is EditableField => !!f)
+  const invert = AXES_INVERT_PROPS.filter((p) => !!fieldOf(p))
+  const aspect = fieldOf('aspect')
+  const overridden = (p: string) => panel.overrides.some((o) => o.gid === element.gid && o.prop === p)
+  if (!range.length && !scale.length && !invert.length && !aspect) return null
+  const block = (f: EditableField) => (
+    <FieldBlock key={f.prop} panel={panel} element={element} field={f} warnings={warnings} />
+  )
+  const invertLabel = el('invert')
+  // 范围与坐标变换收成一块（2026-09-12 critique：子图页六块跨两屏）：X / Y 范围、
+  // 缩放、反转、纵横比说的都是「坐标怎么映射」，一个组头就够；顺序不变
+  return (
+    <div className="flex flex-col gap-1.5" data-axes-range-card>
+      <div className="flex flex-col gap-1.5" data-axes-section="range-transform">
+        <GroupHead>{el('groupRangeTransform')}</GroupHead>
+        {range.map(block)}
+        {scale.map(block)}
+          {invert.length > 0 && (
+            <Row
+              label={labeledWithStateNode(invertLabel, invert.some(overridden))}
+              labelWidth={LABEL_W}
+            >
+              <div className="flex items-center gap-3" role="group" aria-label={el('invertAria')}>
+                {invert.map((p) => (
+                  <span
+                    key={p}
+                    data-prop={p}
+                    data-gid={element.gid}
+                    className="flex items-center gap-1.5 text-xs text-ink-2"
+                  >
+                    <Toggle
+                      checked={w.read(p) === true}
+                      onChange={(v) => w.writeOnce(p, v)}
+                      aria-label={propLabel(p, element.role)}
+                    />
+                    {el(p === 'invert_x' ? 'axis.x' : 'axis.y')}
+                    {overridden(p) && (
+                      <Tip label={resetHint(p)} side="left">
+                        <Button
+                          size="icon-sm"
+                          className="shrink-0"
+                          aria-label={el('resetProp', { label: propLabel(p, element.role) })}
+                          onClick={() => clearOverride(panel.id, element.gid, p)}
+                        >
+                          <RotateCcw size={ICON_SIZE.xs} className="text-ink-3" />
+                        </Button>
+                      </Tip>
+                    )}
+                  </span>
+                ))}
+              </div>
+            </Row>
+          )}
+        {aspect && block(aspect)}
+      </div>
+    </div>
+  )
+}
+
+/** 与 FieldRow 的标签同一套「已修改」表达（点 + sr-only 文案） */
+function labeledWithStateNode(label: string, overridden: boolean): ReactNode {
+  return (
+    <span
+      className="flex min-w-0 items-center gap-1"
+      title={overridden ? `${label} · ${el('modified')}` : label}
+    >
+      {overridden && <span aria-hidden className="h-1 w-1 shrink-0 rounded-full bg-ink" />}
+      {/* 折两行而不是截成省略号：省略号遮住的正是用户本来认识的那个词 */}
+      <span className="line-clamp-2 min-w-0 leading-tight break-words">{label}</span>
+      {overridden && <span className="sr-only">{el('modified')}</span>}
+    </span>
+  )
+}
+
+/* ------------------------------ 刻度组页：刻度 / 文字 ---------------------- */
+
+/** 主刻度的位置字段：跟刻度线一起（它们决定短线落在哪） */
+const TICK_PLACEMENT_PROPS = new Set(['major_mode', 'major_step', 'major_values'])
+/** 次刻度的从属字段：跟在次刻度开关后面（开没开由展示注册表的 visibleWhen 决定） */
+const TICK_MINOR_PROPS = new Set(['minor_mode', 'minor_step', 'minor_format'])
+
+/**
+ * 刻度组页（审计 T13 / T25）：**「刻度」（线与位置）与「文字」（标签）两段**。
+ *
+ * 修改前标题叫「Y 刻度文字」，主体却大篇幅在编辑刻度线；状态图、方向分段、
+ * 左右开关与恢复标签把同一组设置说了四遍。现在：
+ *
+ *   刻度 —— 示意图（在哪几条边显示）→ 方向 / 长度 / 宽度 → 主刻度方式（间距 /
+ *           固定值随方式条件出现）→ 次刻度开关（长度 / 宽度 / 方式 / 间距 /
+ *           格式随开关条件出现）
+ *   文字 —— 字号 / 颜色 / 数值格式 / 旋转 / 显示
+ *
+ * X / Y / Z 同一套：Z（3D）没有的字段由 `has()` 自然少掉——判据是 manifest
+ * 发没发这个字段，不是「3D 就隐藏」。字段的可见性（模式从属、已改过的必须
+ * 可见）仍由展示注册表算（`buckets`），这里只决定落在哪一段；两段都没点名的
+ * 字段跟在「文字」后面，绝不丢失。
+ */
+function TickPage({
+  panel,
+  manifest,
+  host,
+  element,
+  warnings,
+  buckets,
+}: {
+  panel: PanelObject
+  manifest: Manifest | null | undefined
+  /** 四边开关与网格的宿主（永远是子图） */
+  host: ManifestElement
+  /** 选中的刻度组 */
+  element: ManifestElement
+  warnings: string[]
+  buckets: { primary: PresentedField[]; more: PresentedField[] }
+}) {
+  useTranslation('inspector')
+  const selfAxis: TickAxis = tickHostOf(element.gid)?.axis ?? 'x'
+  // hook 数量固定：三个轴各调一次，元素不在时 adapter 回 null
+  const xAdapter = useTickAxisAdapter(panel, tickElementOf(manifest, host.gid, 'x'), 'x')
+  const yAdapter = useTickAxisAdapter(panel, tickElementOf(manifest, host.gid, 'y'), 'y')
+  const zAdapter = useTickAxisAdapter(panel, tickElementOf(manifest, host.gid, 'z'), 'z')
+  const self = selfAxis === 'x' ? xAdapter : selfAxis === 'y' ? yAdapter : zAdapter
+
+  const model = readAxesTickModel(manifest, panel.overrides, host.gid)
+  const applyPlan = (plan: SidePlan) => applyTickSidePlan(panel.id, plan)
+
+  // 桶里的字段已经过展示注册表的 visibleWhen（次刻度关着时方式 / 间距 / 格式
+  // 不在桶里；用户改过的仍在）——这里只决定落在哪一段，不再判一遍开关
+  const fields = [...buckets.primary, ...buckets.more].map((pf) => pf.field)
+  const placement = fields.filter((f) => TICK_PLACEMENT_PROPS.has(f.prop))
+  const minor = fields.filter((f) => TICK_MINOR_PROPS.has(f.prop))
+  const labelFields = fields.filter((f) => !TICK_PLACEMENT_PROPS.has(f.prop) && !TICK_MINOR_PROPS.has(f.prop))
+  // 「显示」管着整段：排在段首（二审 A6），关着时下面的行退到禁用那一档而不是消失——
+  // 此前它排在最后，用户从上往下改完字体字号才发现整段是关的
+  const labelSwitch = labelFields.find((f) => f.prop === 'visible')
+  const labels = labelSwitch ? [labelSwitch, ...labelFields.filter((f) => f !== labelSwitch)] : labelFields
+  const labelsOn = labelSwitch ? currentValue(panel, element.gid, labelSwitch) !== false : true
+  const rows = (list: EditableField[]) =>
+    list.length ? (
+      <div className="flex flex-col gap-1.5">
+        {list.map((f) => (
+          <FieldBlock key={f.prop} panel={panel} element={element} field={f} warnings={warnings} />
+        ))}
+      </div>
+    ) : null
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1.5" data-tick-section="marks">
+        <GroupHead>{translate('tick.sectionMarks', { ns: 'inspector' })}</GroupHead>
+        {/* 四边刻度线 / 边框 / 网格的示意图只在子图页（2026-09-14 审计 A5，用户拍板）：同一份
+            状态两处可编辑、示意图占掉刻度页五分之一——这里只留一条去那边的路。
+            -ml-2 与「原始比例」「全部清除」那些 ghost 文字键同一写法：钮内文字与上面的分区头
+            对齐，不比它缩进 8px；顺带把这颗 shrink-0 的钮收回 296 的栏内——按钮字 12 之后
+            英文整句在 320px 的 DejaVu Sans 下是 297.88，超 1.88px（e2e/inspector-overflow 刻度屏） */}
+        <Button
+          size="sm"
+          data-tick-spines-link
+          className="-ml-2 w-fit text-ink-2"
+          onClick={() => useUiStore.getState().setSelectedGid(host.gid)}
+        >
+          {translate('tick.editSpinesOnAxes', { ns: 'inspector' })}
+          <ChevronRight size={ICON_SIZE.xs} className="shrink-0 text-ink-3" aria-hidden />
+        </Button>
+        {self ? (
+          <TickTaskCard
+            axes={[self]}
+            labelWidth={LABEL_W}
+            model={model}
+            applyPlan={applyPlan}
+            placement={rows(placement)}
+            minorExtra={rows(minor)}
+          />
+        ) : (
+          <>
+            {rows(placement)}
+            {rows(minor)}
+          </>
+        )}
+      </div>
+      {labels.length > 0 && (
+        <div className="flex flex-col gap-1.5" data-tick-section="labels">
+          <GroupHead>{translate('tick.sectionLabels', { ns: 'inspector' })}</GroupHead>
+          {labelSwitch ? (
+            <>
+              {rows([labelSwitch])}
+              <div className={cn(!labelsOn && 'opacity-40')} data-tick-labels-body>
+                {rows(labels.slice(1))}
+              </div>
+            </>
+          ) : (
+            rows(labels)
+          )}
+        </div>
+      )}
+      {/* guard 挡掉的能力要说得出为什么——否则开关就是「消失了」（#76） */}
+      <UnsupportedProps elements={[element]} />
+      {/* 引擎压根没发的外观属性（柱形的纹理）：同一种说法，另一个来源 */}
+      <AbsentAppearanceNote element={element} />
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*  多选同类元素：批量改公共属性                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 逐个填才有意义的属性不进批量表单：文字内容、系列名称，以及位置尺寸
+ * （几何走上面的对齐工具条，批量写同一个 bbox 会把元素叠在一起）。
+ */
+const BATCH_SKIP = new Set(['text', 'label', 'position', 'pos_frac', 'size_mm'])
+const BATCH_TYPES = new Set(['number', 'color', 'bool', 'enum'])
+
+/** 选中元素都有、且类型与选项一致的字段——以第一个元素的顺序和分组为准 */
+function commonFields(els: ManifestElement[]): EditableField[] {
+  const [first, ...rest] = els
+  if (!first) return []
+  return first.editable.filter((f) => {
+    if (BATCH_SKIP.has(f.prop) || !BATCH_TYPES.has(f.type)) return false
+    return rest.every((e) => {
+      const g = e.editable.find((x) => x.prop === f.prop)
+      return (
+        !!g &&
+        g.type === f.type &&
+        JSON.stringify(g.options ?? null) === JSON.stringify(f.options ?? null)
+      )
+    })
+  })
+}
+
+/**
+ * 跨角色的公共文字样式。控件与单选**完全相同**（`TypographyControls`）：
+ * 字体是带 Aa 预览的下拉、字号是数字框、B/I 是三态图标按钮、颜色是色块，
+ * 不会因为选中了第二个对象就退化成 `常规 / 加粗` 的通用枚举列表。
+ *
+ * 只显示 manifest 交集里真有的属性；内容（`text`）刻意不给——批量改内容
+ * 等于把三个标题写成同一句话。
+ */
+function TextStyleBatchSection({
+  panel,
+  elements,
+}: {
+  panel: PanelObject
+  elements: ManifestElement[]
+}) {
+  const adapter = useFigureTypography(panel, elements, FIGURE_TEXT_BATCH_PROPS)
+  const roles = [...new Set(elements.map((e) => e.role))]
+  const hasAny = FIGURE_TEXT_BATCH_PROPS.some((p) => adapter.fieldOf(p))
+  return (
+    <Section plainTitle title={el('textBatchTitle', { count: elements.length })}>
+      {!hasAny ? (
+        <p className="text-xs text-ink-3">{el('batchNoCommon')}</p>
+      ) : (
+        <>
+          <p className="mb-1.5 text-xs text-ink-3">
+            {roles.length > 1
+              ? el('textBatchHintMixed', { count: elements.length })
+              : el('batchHint', { count: elements.length })}
+          </p>
+          <TypographyControls adapter={adapter} labelWidth={LABEL_W} />
+        </>
+      )}
+    </Section>
+  )
+}
+
+function BatchSection({
+  panel,
+  elements,
+  skip,
+}: {
+  panel: PanelObject
+  elements: ManifestElement[]
+  /** 已被上面的共享控件承接的属性——同一属性不出两套控件 */
+  skip?: ReadonlySet<string>
+}) {
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
+  const shared = commonFields(elements)
+  // 位置控件的外侧带承接掉锚点（多选路径同样，见 `sharedLegendAnchor`）：
+  // 同一属性不出两套控件，而一个裸的 x/y 数字对说不出它是「图外」
+  const hasLoc = shared.some((f) => f.prop === 'loc')
+  const fields = shared.filter(
+    (f) => !skip?.has(f.prop) && !(hasLoc && f.prop === LEGEND_ANCHOR_PROP),
+  )
+  const flat = fields.filter((f) => !f.group)
+  const groups = new Map<string, EditableField[]>()
+  for (const f of fields) {
+    if (!f.group) continue
+    groups.set(f.group, [...(groups.get(f.group) ?? []), f])
+  }
+  const ordered = [...groups].sort((a, b) => groupRank(a[0]) - groupRank(b[0]))
+
+  // 公共样式已由上面的 TextStyleBatchSection 承接、这里一条不剩时整段不画：
+  // 紧挨着可用的样式控件再来一句「没有公共属性」是自相矛盾的
+  const unsupported = mergeUnsupported(elements)
+  // 多选时单元素表单整个让位给这一段——这里不渲染理由的话，「开关凭空消失」
+  // 会在批量路径上原样复发（#76 的现场就在多宿主色条上，而色条常被多选）
+  if (skip && !fields.length && unsupported.length === 0) return null
+
+  const rows = (list: EditableField[]) => (
+    <div className="flex flex-col gap-1.5">
+      {list.map((f) => (
+        <BatchFieldRow key={f.prop} panel={panel} elements={elements} field={f} />
+      ))}
+    </div>
+  )
+
+  return (
+    <Section
+      plainTitle
+      title={el('batchTitle', { count: elements.length, role: roleName(elements[0].role) })}
+    >
+      {!fields.length ? (
+        <p className="text-xs text-ink-3">{el('batchNoCommon')}</p>
+      ) : (
+        <>
+          <p className="mb-1.5 text-xs text-ink-3">
+            {el('batchHint', { count: elements.length })}
+          </p>
+          {rows(flat)}
+          {ordered.map(([name, list]) => {
+            const open = openGroups[name] ?? false
+            return (
+              <div key={name} className="mt-1.5 border-t border-border pt-1.5">
+                <GroupToggle
+                  open={open}
+                  onToggle={() => setOpenGroups((s) => ({ ...s, [name]: !s[name] }))}
+                >
+                  {groupLabel(name)}
+                </GroupToggle>
+                <Reveal open={open}>
+                  <div className="mt-1.5">{rows(list)}</div>
+                </Reveal>
+              </div>
+            )
+          })}
+        </>
+      )}
+      <UnsupportedProps elements={elements} />
+    </Section>
+  )
+}
+
+/**
+ * 多选时的标记形状事实：**全体一致才给**。
+ *
+ * 两个散点都还是「脚本原始」，图上却一个是圆一个是方——拿第一个的形状去画
+ * 就是替另一个撒谎。取值一致（这一行没显示「多个值」）不等于形状一致，
+ * 那是两个不同的维度。不一致就整个不给，退回只有状态点的样子。
+ *
+ * `which` 选的是哪一份事实：图上此刻那个（`marker_current`），还是 override
+ * 之前那个（`marker_original`，「脚本原始」那一格点下去会回到的形状）。
+ * 两份各自判一致性——「此刻都是菱形」推不出「原来都是圆」，反过来也一样。
+ * 原样那一份还多一种不一致：有的成员改过、有的没改（没改的那些引擎根本不发
+ * 这个字段），那时同样谁的都不画。
+ */
+function sharedMarkerShape(
+  elements: ManifestElement[],
+  prop: string,
+  which: 'marker_current' | 'marker_original' = 'marker_current',
+): MarkerShape | undefined {
+  const facts = elements.map((el) => el.editable.find((f) => f.prop === prop)?.[which])
+  if (!facts.length || facts[0] === undefined) return undefined
+  const head = JSON.stringify(facts[0])
+  return facts.every((f) => JSON.stringify(f) === head) ? facts[0] : undefined
+}
+
+/**
+ * 多选时的色图事实：**全体一致才给**（与 `sharedMarkerShape` 同一条纪律）。
+ * 两张图一张自定义、一张 viridis，拿第一张的色标画渐变条就是替另一张撒谎。
+ */
+function sharedCmapFacts<K extends 'cmap_current' | 'cmap_original'>(
+  elements: ManifestElement[],
+  which: K,
+): EditableField[K] | undefined {
+  const facts = elements.map((el) => el.editable.find((f) => f.prop === 'cmap')?.[which])
+  if (!facts.length || facts[0] === undefined) return undefined
+  const head = JSON.stringify(facts[0])
+  return facts.every((f) => JSON.stringify(f) === head) ? facts[0] : undefined
+}
+
+/**
+ * 多选时的锚点：**全体一致才给**（与 `sharedMarkerShape` 同一条纪律）。
+ *
+ * 两个图例一个在右侧、一个在下方，拿第一个的锚点去画示意图就是替另一个
+ * 撒谎。不一致回 null：一个外侧位都不标选中，示意图只画容器。
+ */
+function sharedLegendAnchor(panel: PanelObject, elements: ManifestElement[]): LegendAnchor | null {
+  const anchors = elements.map((el) => legendPlacementOf(panel, el).anchor)
+  const head = JSON.stringify(anchors[0] ?? null)
+  return anchors.every((a) => JSON.stringify(a ?? null) === head) ? (anchors[0] ?? null) : null
+}
+
+function BatchFieldRow({
+  panel,
+  elements,
+  field,
+}: {
+  panel: PanelObject
+  elements: ManifestElement[]
+  field: EditableField
+}) {
+  const values = elements.map((el) => {
+    const own = el.editable.find((f) => f.prop === field.prop) ?? field
+    return currentValue(panel, el.gid, own)
+  })
+  const first = values[0]
+  const mixed = values.some((v) => JSON.stringify(v) !== JSON.stringify(first))
+  const label = propLabel(field.prop, elements[0].role)
+  const labelNode = (
+    <span className="block truncate" title={label}>
+      {label}
+    </span>
+  )
+  const gesture = useFieldGesture(panel, el('batchEdit', { label }))
+  // 只有色图的「脚本原样」要看别的元素（谁是谁的色条）；显示用，上一版也行
+  const batchManifest = usePanelRender(panel)?.manifest
+  // 多选里每个成员各自判断能不能预览：同时选中曲线和刻度组时，曲线照样
+  // 抢先显示，刻度组安静地等后端——**不能因为有一个不支持就整批放弃**
+  const previewables = elements.filter((el) => canPreviewStyle(el.role, field.prop))
+
+  const write = (v: unknown, immediate = false) => {
+    if (previewables.length && !gesture.isOpen()) gesture.start()
+    let previewed = previewables.length === elements.length
+    for (const el of previewables) {
+      if (!previewStyle(el.gid, el.role, field.prop, v)) previewed = false
+    }
+    // 只要有一个成员没预览成功就照旧走后端：宁可多渲染一次，
+    // 也不能让画布上一部分元素显示新值、另一部分停在旧值
+    setOverrides(
+      panel.id,
+      elMsg('batchEdit', { label }),
+      elements.map((item) => ({ gid: item.gid, prop: field.prop, value: v })),
+      previewed ? 'none' : immediate,
+    )
+    gesture.touch()
+  }
+
+  const writeOnce = (v: unknown) => {
+    write(v, true)
+    gesture.end()
+  }
+  const overridden = elements.filter((el) =>
+    panel.overrides.some((o) => o.gid === el.gid && o.prop === field.prop),
+  )
+
+  const control = () => {
+    switch (field.type) {
+      case 'number':
+        // 透明度的批量行与单元素行同一种百分比控件（判据同源：isPercentField）
+        if (isPercentField(field)) {
+          return (
+            <PercentField
+              value={first}
+              mixed={mixed}
+              min={field.min}
+              max={field.max}
+              step={field.step}
+              ariaLabel={label}
+              onChange={(v) => write(v)}
+              onScrubStart={gesture.start}
+              onScrubEnd={gesture.end}
+            />
+          )
+        }
+        return (
+          <NumberField
+            value={mixed ? 0 : Number(first ?? 0)}
+            mixed={mixed}
+            min={field.min}
+            max={field.max}
+            step={field.step ?? 1}
+            precision={2}
+            unit={field.unit}
+            onChange={(v) => write(v)}
+            onScrubStart={gesture.start}
+            onScrubEnd={gesture.end}
+          />
+        )
+      case 'color':
+        return (
+          <>
+            <ColorField
+              ariaLabel={label}
+              value={mixed ? '#000000' : String(first ?? '#000000')}
+              onChange={(v) => write(v, true)}
+              onGestureEnd={gesture.end}
+            />
+            {mixed && <span className="shrink-0 text-xs text-ink-3">{el('mixedValues')}</span>}
+          </>
+        )
+      case 'bool':
+        return (
+          <>
+            <Toggle aria-label={label} checked={!mixed && !!first} onChange={writeOnce} />
+            {mixed && <span className="shrink-0 text-xs text-ink-3">{el('mixedValues')}</span>}
+          </>
+        )
+      case 'enum': {
+        // **视觉选择器不因为多选而退化**：线型仍是真实线段预览、marker 仍是
+        // 图形网格、图例位置仍是 3×3 网格。同一个属性在单选与多选下是同一种
+        // 视觉语言——这是本轮的核心纪律（docs/ux/UX_CONSISTENCY_PASS.md）。
+        // 取值不一致时传 null：一个格子都不标选中，也不把「空」当自定义值。
+        const v = mixed ? null : String(first ?? '')
+        const opts = field.options ?? []
+        const kind = controlKindOf(elements[0].role, field)
+        const picker = () => {
+          switch (kind) {
+            case 'line-style':
+              return <LineStylePicker value={v} options={opts} onChange={writeOnce} ariaLabel={label} />
+            case 'marker':
+              return (
+                <MarkerPicker
+                  value={v}
+                  options={opts}
+                  current={sharedMarkerShape(elements, field.prop)}
+                  original={sharedMarkerShape(elements, field.prop, 'marker_original')}
+                  onChange={writeOnce}
+                  ariaLabel={label}
+                />
+              )
+            case 'hatch':
+              return <HatchPicker value={v} options={opts} onChange={writeOnce} ariaLabel={label} />
+            case 'colormap':
+              // 事实**全体一致才给**（与 `sharedMarkerShape` 同一条纪律）；
+              // 「脚本原样」清的是每个成员（连同它的色条 / mappable）上的 override
+              return (
+                <ColormapPicker
+                  value={v}
+                  options={opts}
+                  onChange={writeOnce}
+                  ariaLabel={label}
+                  current={sharedCmapFacts(elements, 'cmap_current')}
+                  original={sharedCmapFacts(elements, 'cmap_original')}
+                  onRestore={() =>
+                    clearOverrides(
+                      panel.id,
+                      elMsg('resetProp', { label }),
+                      elements
+                        .flatMap((item) => colormapAliasGids(batchManifest, item))
+                        .map((gid) => ({ gid, prop: field.prop })),
+                    )
+                  }
+                />
+              )
+            case 'legend-position':
+              // **多选也要给外侧带**：能力凭空消失是最坏的那种（#142 评审 P1）。
+              // 锚点取值不一致时传 null——那时一个外侧位都不标选中，示意图
+              // 也只画容器，不画一个猜的方块
+              return (
+                <LegendPositionPicker
+                  value={v}
+                  options={opts}
+                  onChange={writeOnce}
+                  ariaLabel={label}
+                  anchor={sharedLegendAnchor(panel, elements)}
+                  anchorSupported={elements.every((e) =>
+                    e.editable.some((f) => f.prop === LEGEND_ANCHOR_PROP),
+                  )}
+                  anchorRange={legendAnchorRange(elements[0])}
+                  onPlace={(next) => setLegendPlacement(panel.id, elements, next)}
+                />
+              )
+            case 'arrow-style':
+              return <ArrowStylePicker value={v} options={opts} onChange={writeOnce} ariaLabel={label} />
+            case 'font':
+              // 本机字体族接在首选项后面（唯一的并表出处 `withMachineFamilies`）
+              return (
+                <Select
+                  className="min-w-0 flex-1"
+                  value={mixed ? '' : String(first ?? '')}
+                  placeholder={el('mixedValues')}
+                  onChange={(x) => writeOnce(x)}
+                  options={(withMachineFamilies(field, batchManifest?.font_families)?.options ?? opts).map((o) => ({
+                    value: o,
+                    label: (
+                      <span style={{ fontFamily: fontStackOf(o) }}>
+                        {optionLabel('fontfamily', o)}
+                      </span>
+                    ),
+                  }))}
+                  ariaLabel={label}
+                />
+              )
+            default:
+              return (
+                <Select
+                  value={mixed ? '' : String(first ?? '')}
+                  placeholder={el('mixedValues')}
+                  onChange={(x) => writeOnce(x)}
+                  options={opts.map((o) => ({ value: o, label: optionLabel(field.prop, o) }))}
+                  ariaLabel={label}
+                />
+              )
+          }
+        }
+        return (
+          <>
+            {picker()}
+            {mixed && kind !== 'marker' && kind !== 'hatch' && kind !== 'colormap' && (
+              <span className="shrink-0 text-xs text-ink-3">{el('mixedValues')}</span>
+            )}
+          </>
+        )
+      }
+      default:
+        return null
+    }
+  }
+
+  return (
+    <div>
+      <Row label={labelNode} labelWidth={LABEL_W}>
+        {control()}
+      </Row>
+      {overridden.length > 0 && (
+        <button
+          onClick={() =>
+            clearOverrides(
+              panel.id,
+              elMsg('resetProp', { label }),
+              overridden.map((item) => ({ gid: item.gid, prop: field.prop })),
+            )
+          }
+          className="mt-0.5 pl-20 text-xs text-ink-3 hover:text-ink"
+        >
+          {overridden.length === elements.length
+            ? el('backToScript')
+            : el('backToScriptPartial', { count: overridden.length })}
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** 当前值：优先取尚未渲染回来的 override，保证输入即时反馈 */
+function currentValue(panel: PanelObject, gid: string, field: EditableField): unknown {
+  const ov = panel.overrides.find((p) => p.gid === gid && p.prop === field.prop)
+  return ov ? ov.value : field.value
+}
+
+/**
+ * 色条此刻的方向。**多宿主色条不宣称 `orientation`**（引擎的 guard，issue #69
+ * ——反解新矩形时只拿得到第一个宿主，翻转会把排版弄坏），那时从 bbox 反推：
+ * 窄而高 = 竖直。这是观察到的事实，不是猜——它只用来画那几个延伸预览的形状。
+ */
+function colorbarOrientationOf(panel: PanelObject, element: ManifestElement): string {
+  const field = element.editable.find((x) => x.prop === 'orientation')
+  if (field) return String(currentValue(panel, element.gid, field) ?? 'vertical')
+  const box = element.bbox
+  return box && box[2] < box[3] ? 'vertical' : 'horizontal'
+}
+
+/**
+ * 「住在别人里面」的元素的容器名：gid 去掉最后一段就是宿主（`axes_0.legend`
+ * → `axes_0`）。图例的九宫格用它说清参照范围（审计 T17）。宿主不在 manifest
+ * 里（fig.legend、脚本自造）时回 undefined——不写比写一个猜的名字好。
+ */
+function containerLabelOf(
+  manifest: Manifest | null | undefined,
+  element: ManifestElement,
+): string | undefined {
+  const m = element.gid.match(/^(.+)\.[^.]+$/)
+  const host = m ? manifest?.elements.find((e) => e.gid === m[1]) : undefined
+  return host ? engineLabel(host.label) : undefined
+}
+
+function FieldRow({
+  panel,
+  element,
+  field,
+}: {
+  panel: PanelObject
+  element: ManifestElement
+  field: EditableField
+}) {
+  const value = currentValue(panel, element.gid, field)
+  /** 同一个元素上另一条字段此刻的值（override 优先）：色条预览要看色图与方向 */
+  const siblingValue = (prop: string) => {
+    const other = element.editable.find((x) => x.prop === prop)
+    return other ? currentValue(panel, element.gid, other) : undefined
+  }
+  /** 同一个元素上 `cmap` 字段的只读事实：白名单之外的色图，小色条预览靠它上色 */
+  const siblingCmapFacts = () => element.editable.find((x) => x.prop === 'cmap')?.cmap_current
+  // 只有图例项的绑定控件要看别的元素（源对象的名字）；显示用，上一版也行
+  const rowManifest = usePanelRender(panel)?.manifest
+  const gidRef = useRef<string>('')
+  const taRef = useRef<HTMLTextAreaElement | null>(null)
+  const autoFocus = useCallback(
+    (el: HTMLInputElement | HTMLTextAreaElement | null) => {
+      // 只在切到新元素的那一次抢焦点，后续重渲染不打断用户
+      if (!el || gidRef.current === element.gid) return
+      gidRef.current = element.gid
+      // 双击弹出的快捷编辑正开着：焦点属于弹层里的内容框，这里不抢
+      if (useQuickEdit.getState().target) return
+      // 键盘用户正在元素树里漫游（焦点在树行上，漫游即选中）：抢过来会把
+      // 方向键导航当场掐断——走到任何文字元素树就再也走不下去（issue #37）。
+      // 鼠标从画布点选时焦点不在树里，仍保留「选中即可打字」的便利。
+      const ae = document.activeElement
+      if (ae instanceof HTMLElement && ae.closest('[role="tree"]')) return
+      el.focus()
+      el.select()
+    },
+    [element.gid],
+  )
+  const label = propLabel(field.prop, element.role)
+  // enum 的视觉控件按展示注册表分派；剩下的按字段类型走。**这一句必须排在
+  // 「已修改」之前**：图例位置那行是合并控件，它拥有的 prop 不止一条，而
+  // 「已修改」与恢复按钮都要按那一组算。
+  const kind = controlKindOf(element.role, field)
+  /**
+   * 这一行的控件**拥有**哪些 prop。
+   *
+   * 绝大多数字段只拥有它自己。图例位置那行是个合并控件：`LegendPositionPicker`
+   * 一次写下 `loc` + `loc_anchor`，并顺手删掉拖动留下的 `loc_frac`
+   * （`legendPlacementPlan`）。而 `loc_anchor` 正因为被它承接了，通用列表里
+   * **没有第二个入口**能清——只清 `field.prop` 的话，「恢复位置」之后锚框还在，
+   * 图例仍然在图外，用户除非连带重置别的无关 override，否则没有任何办法把这
+   * 一组属性单独还原回脚本原值（本轮评审 P2）。
+   *
+   * 清单只有 `LEGEND_PLACEMENT_PROPS` 那一份，这里**不抄第二份**：一个控件写
+   * 了哪些 prop 与它的重置清哪些 prop 必须是同一句话，分成两份写就会漂。
+   */
+  const ownedProps: readonly string[] =
+    kind === 'legend-position' ? LEGEND_PLACEMENT_PROPS : [field.prop]
+  const overridden = ownedProps.some((prop) =>
+    panel.overrides.some((o) => o.gid === element.gid && o.prop === prop),
+  )
+  /** 恢复到脚本：这个控件拥有的**全部** override 进同一次修改（一条历史、一次渲染） */
+  const resetOwned = () => {
+    if (ownedProps.length === 1) return clearOverride(panel.id, element.gid, field.prop)
+    clearOverrides(
+      panel.id,
+      elMsg('resetProp', { label }),
+      ownedProps.map((prop) => ({ gid: element.gid, prop })),
+    )
+  }
+  // 标签列定宽 + 自身截断：中文标签长短不一，控件列不能被挤或被压。
+  // 已修改的属性带一个状态点（形状而非仅颜色）+ sr-only 文案 + 行尾的恢复按钮，
+  // 三重表达「这个值来自你的修改，不是脚本」。
+  // 单位或语义会被读错的字段带一句短提示（没有问号按钮，见展示注册表）
+  const hintKey = fieldHintKey(field.prop)
+  const hint = hintKey ? el(`hint.${hintKey}`) : undefined
+  const labelBody = (
+    <span
+      className="flex min-w-0 items-center gap-1"
+      title={overridden ? `${label} · ${el('modified')}` : label}
+    >
+      {overridden && (
+        <span aria-hidden className="h-1 w-1 shrink-0 rounded-full bg-ink" />
+      )}
+      {/* 折两行而不是截成省略号：省略号遮住的正是用户本来认识的那个词 */}
+      <span className="line-clamp-2 min-w-0 leading-tight break-words">{label}</span>
+      {overridden && <span className="sr-only">{el('modified')}</span>}
+    </span>
+  )
+  const labelNode = hint ? <Tip label={hint} side="left">{labelBody}</Tip> : labelBody
+  const gesture = useFieldGesture(panel, el('editProp', { label }))
+  const previewable = canPreviewStyle(element.role, field.prop)
+
+  /**
+   * 写一个值。
+   *
+   * 能局部预览的字段：先把新样子贴到 SVG 上（rAF 合并），**这一轮完全不发
+   * 后端**（render:'none'）——文档改动照旧经过 documentStore.commit，历史
+   * 一条不少，只是 matplotlib 等到这一轮结束才跑一次。scrub 没起手（直接
+   * 敲数字回车）时就地开一轮，由安静计时收尾。
+   *
+   * 预览没生效（不在能力表里 / gid 在 SVG 里查不到 / 值类型不对）就原路走
+   * 后端——immediate 参数照旧生效，行为与改动前一字不差。
+   */
+  const write = (v: unknown, immediate = false) => {
+    if (previewable && !gesture.isOpen()) gesture.start()
+    const previewed = previewable && previewStyle(element.gid, element.role, field.prop, v)
+    setOverride(panel.id, element.gid, field.prop, v, previewed ? 'none' : immediate)
+    gesture.touch()
+  }
+
+  /** 一次性的离散动作（开关）：写一次当场收尾，一条历史 + 一次权威渲染 */
+  const writeOnce = (v: unknown) => {
+    write(v, true)
+    gesture.end()
+  }
+
+  const beginTxn = gesture.start
+  // 结束事务 = 这一轮连续调整定稿：把挂起的那次立刻发出去，
+  // 并保证最终那张不是拖动期的降质预览（见 flushRender）
+  const endTxn = gesture.end
+
+  /** 每种控件都套同一个壳：标签列 + 控件 + （已修改时）恢复到脚本 */
+  const wrap = (children: ReactNode, align: 'center' | 'start' = 'center') => (
+    <Row label={labelNode} labelWidth={LABEL_W} align={align}>
+      {children}
+      {overridden && (
+        <Tip label={resetHint(field.prop)} side="left">
+          <Button
+            size="icon-sm"
+            className="shrink-0 self-start"
+            aria-label={el('resetProp', { label })}
+            onClick={resetOwned}
+          >
+            <RotateCcw size={ICON_SIZE.xs} className="text-ink-3" />
+          </Button>
+        </Tip>
+      )}
+    </Row>
+  )
+
+  const enumValue = String(value ?? '')
+  const enumOptions = field.options ?? []
+  switch (kind) {
+    case 'line-style':
+      return wrap(
+        <LineStylePicker
+          value={enumValue}
+          options={enumOptions}
+          onChange={writeOnce}
+          ariaLabel={label}
+        />,
+      )
+    case 'marker':
+      return wrap(
+        <MarkerPicker
+          value={enumValue}
+          options={enumOptions}
+          current={field.marker_current}
+          original={field.marker_original}
+          onChange={writeOnce}
+          ariaLabel={label}
+        />,
+      )
+    case 'hatch':
+      return wrap(
+        <HatchPicker
+          value={enumValue}
+          options={enumOptions}
+          onChange={writeOnce}
+          ariaLabel={label}
+        />,
+      )
+    case 'colormap':
+      // 白名单之外的色图（脚本自定义 / `Blues`）长什么样由引擎的两条事实说
+      // （`cmap_current` / `cmap_original`）；「脚本原样」那一格清的是这份色图
+      // 状态落在哪儿的 override——色条 ↔ mappable 两个 gid 一起清
+      return wrap(
+        <ColormapPicker
+          value={enumValue}
+          options={enumOptions}
+          onChange={writeOnce}
+          ariaLabel={label}
+          current={field.cmap_current}
+          original={field.cmap_original}
+          onRestore={() =>
+            clearOverrides(
+              panel.id,
+              elMsg('resetProp', { label }),
+              colormapAliasGids(rowManifest, element).map((gid) => ({ gid, prop: field.prop })),
+            )
+          }
+        />,
+      )
+    case 'projection':
+      // 透视 / 正交各一个小立方体（审计 T24）；写入值仍是 matplotlib 的 proj_type
+      return wrap(
+        <ProjectionPicker
+          value={enumValue}
+          options={enumOptions}
+          onChange={writeOnce}
+          ariaLabel={label}
+        />,
+      )
+    case 'colorbar-orientation':
+      // 用当前色图画的小色条做选项预览（审计 T23），不是两个文字下拉
+      return wrap(
+        <ColorbarOrientationPicker
+          value={enumValue}
+          options={enumOptions}
+          onChange={writeOnce}
+          ariaLabel={label}
+          cmap={String(siblingValue('cmap') ?? '')}
+          cmapFacts={siblingCmapFacts()}
+        />,
+      )
+    case 'colorbar-extend':
+      return wrap(
+        <ColorbarExtendPicker
+          value={enumValue}
+          options={enumOptions}
+          onChange={writeOnce}
+          ariaLabel={label}
+          cmap={String(siblingValue('cmap') ?? '')}
+          cmapFacts={siblingCmapFacts()}
+          orientation={colorbarOrientationOf(panel, element)}
+        />,
+      )
+    case 'legend-position':
+      // 内 / 外两带是同一个控件：`loc` 与 `loc_anchor` 一次写下（一条撤销、
+      // 一次渲染），锚点那条字段在不在决定外侧带出不出现
+      return wrap(
+        <LegendPositionPicker
+          value={enumValue}
+          options={enumOptions}
+          onChange={writeOnce}
+          ariaLabel={label}
+          containerLabel={containerLabelOf(rowManifest, element)}
+          anchor={toLegendAnchor(siblingValue(LEGEND_ANCHOR_PROP))}
+          anchorSupported={element.editable.some((f) => f.prop === LEGEND_ANCHOR_PROP)}
+          anchorRange={legendAnchorRange(element)}
+          onPlace={(next) => setLegendPlacement(panel.id, [element], next)}
+        />,
+        // 内 / 外两带有五行高，标签垂直居中会掉到控件半腰上
+        'start',
+      )
+    case 'legend-binding':
+      // 「恢复跟随」与「断开」都是一次多条 override 的结构性动作，走 store 的
+      // restoreLegendEntryFollow / detachLegendEntry（各一条历史）：断开要把此刻的
+      // 五条示意线样式一起写进文档，重开后才是同一条示意线（#414）
+      return wrap(
+        <LegendBindingControl
+          panel={panel}
+          manifest={rowManifest}
+          element={element}
+          onSetCustom={() => detachLegendEntry(panel.id, element)}
+        />,
+      )
+    case 'arrow-style':
+      return wrap(
+        <ArrowStylePicker
+          value={enumValue}
+          options={enumOptions}
+          onChange={writeOnce}
+          ariaLabel={label}
+        />,
+      )
+    case 'font':
+      // 本机字体族接在首选项后面（唯一的并表出处 `withMachineFamilies`）
+      return wrap(
+        <Select
+          value={enumValue}
+          onChange={(v) => writeOnce(v)}
+          options={(withMachineFamilies(field, rowManifest?.font_families)?.options ?? enumOptions).map((o) => ({
+            value: o,
+            label: (
+              <span style={{ fontFamily: fontStackOf(o) }}>{optionLabel('fontfamily', o)}</span>
+            ),
+          }))}
+          ariaLabel={label}
+        />,
+      )
+    case 'aspect':
+      // 纵横比：自动 / 等比例 / 自定义比例——绝不落进下面 text 那一支的富文本编辑器。
+      // 自定义档是两行（分段控件 + 数字框），标签对齐第一行，不悬在两行中间
+      return wrap(
+        <AspectControl
+          value={value}
+          label={label}
+          onPick={writeOnce}
+          onRatio={(v) => write(v)}
+          onScrubStart={beginTxn}
+          onScrubEnd={endTxn}
+        />,
+        'start',
+      )
+    case 'effect':
+      // 背景 / 描边：关着只给「＋添加」，开了才铺参数（从属字段由展示注册表
+      // 按开关收放）。关掉连同从属字段的 override 一起清——一条历史、一次渲染
+      return wrap(
+        <EffectToggle
+          on={value === true}
+          label={label}
+          addLabel={translate(
+            field.prop === 'stroke_enabled' ? 'text.addBorder' : 'text.addBackground',
+            { ns: 'inspector' },
+          )}
+          onAdd={() => writeOnce(true)}
+          onOff={() => disableTextEffect(panel.id, element.gid, field.prop)}
+        />,
+      )
+    case 'percent':
+      // 透明度：显示 75%、写回 0.75——换算只在 PercentField 一处
+      return wrap(
+        <PercentField
+          value={value}
+          min={field.min}
+          max={field.max}
+          step={field.step}
+          ariaLabel={label}
+          onChange={(v) => write(v)}
+          onScrubStart={beginTxn}
+          onScrubEnd={endTxn}
+        />,
+      )
+    default:
+      break
+  }
+
+  switch (field.type) {
+    case 'text': {
+      const text = String(value ?? '')
+      return wrap(
+        <>
+          {/* 输入框占满整行，四个动作横排在下方——竖排会把这一行拉得比输入框还高 */}
+          <div className="flex w-full min-w-0 flex-col gap-1">
+            <TextArea
+              // 名字 = 标签列那句可见文字，同一个表达式（axe `label`，见 TextArea 的注释）
+              aria-label={label}
+              // 选中带文字的元素就直接可以打字，不用再点一次输入框
+              ref={(el) => {
+                taRef.current = el
+                autoFocus(el)
+              }}
+              maxRows={4}
+              value={text}
+              onFocus={beginTxn}
+              onBlur={endTxn}
+              onChange={(e) => write(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation()
+                if (e.key === 'Escape') {
+                  e.currentTarget.blur()
+                } else if (e.key === 'Enter') {
+                  // 契约与画布文字一致：Enter 提交，⌥/⌘/Ctrl+Enter 换行
+                  e.preventDefault()
+                  if (e.altKey || e.metaKey || e.ctrlKey) {
+                    const ta = e.currentTarget
+                    const a = ta.selectionStart ?? text.length
+                    const b = ta.selectionEnd ?? text.length
+                    write(text.slice(0, a) + '\n' + text.slice(b))
+                    requestAnimationFrame(() => {
+                      ta.focus()
+                      ta.setSelectionRange(a + 1, a + 1)
+                    })
+                  } else e.currentTarget.blur()
+                }
+              }}
+            />
+            <TextActionRow
+              text={text}
+              taRef={taRef}
+              onChange={(next, immediate) => write(next, immediate)}
+            />
+          </div>
+        </>,
+        // 标签与多行输入框顶对齐（2026-09-11 用户反馈）：居中会让「内容」悬在框的半腰
+        'start',
+      )
+    }
+
+    case 'number':
+      return wrap(
+        <>
+          <NumberField
+            value={Number(value ?? 0)}
+            min={field.min}
+            max={field.max}
+            step={field.step ?? 1}
+            precision={2}
+            unit={field.unit}
+            // 可达名：标签只是**旁边的一段文字**，没有任何东西把它和这个输入框
+            // 连起来——走查的 AX 树里这些框读出来就是「编辑框 1.1」，用户听不出
+            // 改的是线宽还是端帽长度（axe 的 label 规则按 critical 报）。带单位，
+            // 与成对数值框的写法一致（`axisAriaLabel`）。
+            ariaLabel={field.unit ? `${label} (${field.unit})` : label}
+            // 短提示同时挂在输入框上：标签那个气泡只有鼠标够得着，`title`
+            // 是这个控件的**描述**，键盘与读屏都拿得到
+            title={hint}
+            onChange={(v) => write(v)}
+            onScrubStart={beginTxn}
+            onScrubEnd={endTxn}
+          />
+        </>
+      )
+
+    case 'color':
+      return wrap(
+        <>
+          {/* 取色是**连续**动作：系统取色盘拖着走会发一串 change。开一轮事务，
+              每次变化只贴 SVG，blur 或安静一会儿才定稿——否则拖一次颜色就是
+              十几条撤销 + 十几次 matplotlib 渲染 */}
+          <ColorField
+            ariaLabel={label}
+            value={String(value ?? '#000000')}
+            onChange={(v) => write(v, true)}
+            onGestureEnd={gesture.end}
+          />
+        </>
+      )
+
+    case 'bool':
+      return wrap(
+        <>
+          <Toggle aria-label={label} checked={!!value} onChange={writeOnce} />
+        </>
+      )
+
+    case 'enum':
+      return wrap(
+        <>
+          <Select
+            value={String(value ?? '')}
+            onChange={(v) => write(v, true)}
+            options={(field.options ?? []).map((o) => ({
+              value: o,
+              label: optionLabel(field.prop, o),
+            }))}
+            ariaLabel={label}
+          />
+        </>
+      )
+
+    case 'order': {
+      // 图例条目顺序：value = 按显示顺序排的原始序号，options = **原始序**的文字
+      // （options[原始序号] 是那一项的字，重排后不动）
+      const perm = Array.isArray(value)
+        ? (value as number[])
+        : (field.options ?? []).map((_, i) => i)
+      const labels = field.options ?? []
+      const move = (i: number, delta: -1 | 1) => {
+        const j = i + delta
+        if (j < 0 || j >= perm.length) return
+        const next = [...perm]
+        ;[next[i], next[j]] = [next[j], next[i]]
+        write(next, true)
+      }
+      return wrap(
+        <>
+          <ul className="min-w-0 flex-1 rounded-sm border border-border">
+            {perm.map((origIdx, i) => (
+              <li
+                key={`${origIdx}-${i}`}
+                className={cn(
+                  'flex h-7 items-center gap-1 pl-1.5 pr-0.5',
+                  i > 0 && 'border-t border-border',
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate text-xs text-ink">
+                  {labels[origIdx] ?? el('orderEntry', { index: origIdx + 1 })}
+                </span>
+                <Button
+                  size="icon-sm"
+                  disabled={i === 0}
+                  onClick={() => move(i, -1)}
+                  aria-label={el('moveUp')}
+                >
+                  <MoveUp size={ICON_SIZE.xs} />
+                </Button>
+                <Button
+                  size="icon-sm"
+                  disabled={i === perm.length - 1}
+                  onClick={() => move(i, 1)}
+                  aria-label={el('moveDown')}
+                >
+                  <MoveDown size={ICON_SIZE.xs} />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )
+    }
+
+    case 'number_list': {
+      // 一串数（固定刻度位置）。用一个文本框而不是 N 个数字框：刻度个数本来
+      // 就是用户要改的东西，固定成 N 个格子等于不让他增删。分隔符逗号、空格、
+      // 中文逗号都收——用户多半是从别处粘一串数进来的。
+      const arr = Array.isArray(value) ? (value as number[]) : []
+      return wrap(
+        <>
+          <div className="flex w-full min-w-0 flex-col gap-1">
+            <TextInput
+              defaultValue={formatNumberList(arr)}
+              // 受控会在每敲一个字符时把 "1, " 重写成 "1"，逗号根本打不出来。
+              // 因此按「失焦 / 回车提交」处理，key 跟着权威值走以便外部更新时重置
+              key={arr.join(',')}
+              placeholder={el('numberList.placeholder')}
+              aria-label={label}
+              onKeyDown={(e) => {
+                e.stopPropagation()
+                if (e.key === 'Enter') e.currentTarget.blur()
+                else if (e.key === 'Escape') {
+                  e.currentTarget.value = formatNumberList(arr)
+                  e.currentTarget.blur()
+                }
+              }}
+              onBlur={(e) => {
+                const typed = parseNumberList(e.target.value)
+                // **清空 = 把此刻这组刻度定格下来**，而不是提交一个「空」。
+                //
+                // 空列表的含义要到应用那一刻才由引擎解析成具体位置（脚本原样
+                // 的那组），所以清空会让画面当场跳一下——而用户按下删除键时
+                // 想的是「就保持现在这个样子」。定格成真数字则所见即所得，
+                // 而且这组值实打实进了文档，重开、写回、换台机器都一样。
+                // 想让刻度重新跟着脚本走是「自动」档的事，不是清空的事。
+                const next = typed.length ? typed : arr
+                if (next.length !== arr.length || next.some((v, i) => v !== arr[i])) {
+                  write(next, true)
+                  gesture.end()
+                } else if (!typed.length) {
+                  // 没写盘（值没变），得自己把定格下来的那组显示回去——
+                  // 输入框的 key 跟着权威值走，值没变就不会重挂载
+                  e.target.value = formatNumberList(next)
+                }
+              }}
+            />
+            <span className="text-xs text-ink-3">
+              {arr.length
+                ? el('numberList.count', { count: arr.length })
+                : el('numberList.empty')}
+            </span>
+          </div>
+        </>
+      )
+    }
+
+    case 'pair':
+    case 'rect': {
+      const arr = Array.isArray(value) ? (value as number[]) : []
+      const step = field.type === 'rect' ? 0.01 : 1
+      // 一对（图幅 W / H）的单位与单字母标记都进框内，与画布页 / 对象页的 X Y W H 同一种
+      // 写法（第五节：单位漂在框外没有来路；2026-09-15 打磨 L2：单字母前缀不再有框外形态）。
+      // 四格并排的 rect 放不下框内单位，仍写在行尾
+      const pair = field.type === 'pair'
+      return wrap(
+        <>
+          <div className={cn('grid flex-1 gap-1', pair ? 'grid-cols-2' : 'grid-cols-4')}>
+            {arr.map((v, i) => (
+              <NumberField
+                key={i}
+                // 几何网格那一档：框撑满自己的格子（打磨 L3 / E1）——此前框是 6ch 定宽、
+                // 在 117px 的格里左靠，右缘与下一行的下拉对不上（「X 范围」两个框 zh-11）
+                fill
+                ariaLabel={axisAriaLabel(field, label, i)}
+                prefix={pair ? PAIR_PREFIX[PAIR_AXES[field.prop]?.[i] ?? ''] : undefined}
+                prefixInside={pair}
+                unit={pair && field.unit ? field.unit : undefined}
+                value={Number(v)}
+                step={step}
+                precision={pair ? 2 : 3}
+                onChange={(nv) => {
+                  const next = [...arr]
+                  next[i] = nv
+                  write(next)
+                }}
+                onScrubStart={beginTxn}
+                onScrubEnd={endTxn}
+              />
+            ))}
+          </div>
+          {!pair && field.unit && <span className="shrink-0 text-xs text-ink-3">{field.unit}</span>}
+        </>
+      )
+    }
+
+    default:
+      return null
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  子图布局                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 对齐按钮。`tip` 是带条件说明的长提示，`history` 是落进撤销栈的短标签——
+ * 以前是拿 tip 正则掐掉括号来当历史标签的，换了语言那条正则立刻失效。
+ */
+const ALIGN_BUTTONS: {
+  mode: AlignMode
+  icon: typeof AlignStartVertical
+  /** 长提示的 key（在 inspector:element 下）；没有就用 alignMode 的短名 */
+  tipKey?: string
+  min: number
+}[] = [
+  { mode: 'left', icon: AlignStartVertical, min: 2 },
+  { mode: 'hcenter', icon: AlignCenterVertical, min: 2 },
+  { mode: 'right', icon: AlignEndVertical, min: 2 },
+  { mode: 'top', icon: AlignStartHorizontal, min: 2 },
+  { mode: 'vcenter', icon: AlignCenterHorizontal, min: 2 },
+  { mode: 'bottom', icon: AlignEndHorizontal, min: 2 },
+  { mode: 'hdist', icon: AlignHorizontalDistributeCenter, tipKey: 'alignHdist', min: 3 },
+  { mode: 'vdist', icon: AlignVerticalDistributeCenter, tipKey: 'alignVdist', min: 3 },
+  { mode: 'samew', icon: MoveHorizontal, tipKey: 'alignSameW', min: 2 },
+  { mode: 'sameh', icon: MoveVertical, tipKey: 'alignSameH', min: 2 },
+]
+
+/**
+ * 按比例缩放：组与单个子图共用。它是**一次性动作**，不是一个持续存在的
+ * 属性——输入比例、按「应用」，做完回到 100%。做成「输入即生效、之后又跳回
+ * 100%」的旋钮时，用户拿它跟图片对象的绝对缩放（一直显示 91%）对照，
+ * 会以为没生效（审计 T12）；一颗明确的按钮把「缩放一次」说清楚，
+ * 也不用再配一句解释文字。
+ */
+function ScaleField({ panel, group, meta }: { panel: PanelObject; group: Group; meta?: ReactNode }) {
+  const [pct, setPct] = useState(100)
+  const ready = Number.isFinite(pct) && pct !== 100
+  const apply = () => {
+    if (!ready) return
+    setOverrides(
+      panel.id,
+      group.entries.length === 1
+        ? elMsg('scaleAxes')
+        : elMsg('scaleAxesMulti', { count: group.entries.length }),
+      groupPatches(group, scaleGroupAbout(group.box, pct / 100)),
+    )
+    setPct(100)
+  }
+
+  return (
+    <Row label={el('scaleLabel')} labelWidth={LABEL_W}>
+      {/* 单列数值一律 compact 档（4ch + 单位列，打磨 L3）：此前这里定宽 84，同页的
+          「长度」62、「边框线宽」142——一列数字框十二种宽 */}
+      <NumberField
+        ariaLabel={el('scaleLabel')}
+        value={pct}
+        min={10}
+        max={400}
+        step={5}
+        unit="%"
+        title={el('scaleTitle')}
+        onChange={setPct}
+      />
+      <Button size="sm" variant="secondary" disabled={!ready} onClick={apply} data-scale-apply>
+        {el('scaleApply')}
+      </Button>
+      {/* 整图尺寸是元数据，靠右、meta 字色——与对象页「原始 80.0 × 57.6」同一个位置
+          与格式（打磨 E3）；此前它单独占一行、左靠，是第三种行语法 */}
+      {meta}
+    </Row>
+  )
+}
+
+/**
+ * 位置类对齐的基准是**选区边界**（left 取 minL、right 取 maxR……），
+ * 只有等宽 / 等高拿末位元素当参照。UI 上的「基准」角标必须跟着这条走
+ * ——issue #131 之前它无条件挂在最后一项上，读起来就是「左对齐到最后选中
+ * 的那个」，而算法根本不是那么做的。
+ */
+const REF_IS_LAST_SELECTED = (mode: AlignMode) => mode === 'samew' || mode === 'sameh'
+
+/**
+ * 多选时的对齐工具条：几何全部在面板内容的 top-origin 分数框里算，
+ * 子图落成 position、文字/图例落成新锚点，画布标注（shift 加选进来的）
+ * 改画布位置——override 与位移进同一次 commit，一条撤销、一次渲染。
+ *
+ * 按钮**只发意图**：真正的几何在 `alignSelectedPanelElements` 里、于点击那一刻
+ * 从 store 现取（issue #131）。这里的 `items` 只用来决定禁用态与列表文案，
+ * 绝不参与写入——React 上一轮 render 捕获的 bbox/anchor 闭包到点击时可能
+ * 已经过期几百毫秒。
+ */
+function AlignSection({
+  panel,
+  items,
+  syncing = false,
+}: {
+  panel: PanelObject
+  items: MixedEntry[]
+  /** 几何权威还没就位：整排置灰并说明原因，选区照旧留着 */
+  syncing?: boolean
+}) {
+  // 只有子图（含位图代理）能改尺寸，文字/图例/标注进选区就得禁掉等宽等高与成组缩放
+  const allResizable = items.length > 0 && items.every((i) => i.resizable)
+  const elementItems = items.filter((i): i is AlignEntry => !isAnnotationEntry(i))
+  const hasAnnotations = elementItems.length !== items.length
+  const group = hasAnnotations || syncing ? null : groupOf(elementItems)
+  const setStatus = useUiStore((s) => s.setStatus)
+
+  const apply = (mode: AlignMode) => {
+    const res = alignSelectedPanelElements(panel.id, mode)
+    if (res.ok) return
+    // 拒绝必须说得出原因：什么都不发生而界面一声不吭，用户只会再点几下
+    if (res.reason === 'syncing') setStatus(elMsg('alignSyncing'))
+    else if (res.reason === 'noop') setStatus(elMsg('alignNoop'))
+    else if (res.reason === 'invalid') setStatus(elMsg('alignInvalid'), 'error')
+  }
+
+  return (
+    <Section
+      plainTitle
+      title={el(hasAnnotations ? 'alignTitleObjects' : 'alignTitleElements', {
+        count: items.length,
+      })}
+    >
+      <div className="grid grid-cols-6 gap-0.5">
+        {ALIGN_BUTTONS.map(({ mode, icon: Icon, tipKey, min }) => {
+          const sizeOnly = mode === 'samew' || mode === 'sameh'
+          const disabled = syncing || items.length < min || (sizeOnly && !allResizable)
+          const base = tipKey
+            ? el(tipKey)
+            : translate(`alignMode.${mode}`, { ns: 'inspector' })
+          // 提示里说清基准是「选区边界」还是「最后选中」——两者的结果差得很远
+          const tip = syncing
+            ? el('alignSyncingTip', { tip: base })
+            : el(REF_IS_LAST_SELECTED(mode) ? 'alignRefLastTip' : 'alignRefBoundsTip', {
+                tip: base,
+              })
+          return (
+            <Tip
+              key={mode}
+              label={sizeOnly && !allResizable ? el('axesOnlySuffix', { tip }) : tip}
+              side="left"
+            >
+              <Button
+                size="icon"
+                className="w-full"
+                disabled={disabled}
+                onClick={() => apply(mode)}
+                aria-label={base}
+              >
+                <Icon size={ICON_SIZE.md} />
+              </Button>
+            </Tip>
+          )
+        })}
+      </div>
+      {group && <ScaleField panel={panel} group={group} />}
+      <p className="mt-2 text-xs leading-relaxed text-ink-3">
+        {syncing ? (
+          el('alignSyncing')
+        ) : (
+          <>
+            {el('alignHint')}
+            {hasAnnotations && el('alignHintAnnotations')}
+            {group && el('alignHintGroup')}
+          </>
+        )}
+      </p>
+      <ul className="mt-2 flex flex-col gap-0.5">
+        {items.map((it, i) => (
+          <li key={it.key} className="flex items-center gap-1.5 text-xs text-ink-2">
+            <span className="truncate">{engineLabel(it.label)}</span>
+            {/*
+              「基准」只在它**真的是基准**时出现：等宽/等高拿末位当参照，
+              位置类对齐用的是选区边界，末位元素并不特殊。
+            */}
+            {i === items.length - 1 && allResizable && (
+              <span className="ml-auto shrink-0 text-xs tabular-nums text-ink-3">
+                {el('alignBaselineSize')}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </Section>
+  )
+}
+
+/**
+ * 单选子图：用 mm 直接给宽高，并可在整张图里居中。
+ * element 是几何落点——点位图时这里给的已经是它的宿主子图。
+ */
+function AxesSizeMm({
+  panel,
+  element,
+  sizeMm,
+  proxied,
+  group,
+  first = false,
+}: {
+  panel: PanelObject
+  element: ManifestElement
+  sizeMm: [number, number]
+  proxied: boolean
+  group: Group | null
+  /** 作为页首的「几何」段出现：不带上方的 hairline 与间距 */
+  first?: boolean
+}) {
+  const rect = positionOf(panel, element)
+  if (!rect) return null
+  const [figW, figH] = sizeMm
+
+  const write = (next: Rect4, key: string) =>
+    setOverrides(panel.id, elMsg(key), [
+      { gid: element.gid, prop: 'position', value: next.map(round4) },
+    ])
+
+  const figureMeta = (
+    <span className="type-meta ml-auto min-w-0 shrink truncate tabular-nums">
+      {el('figureSize', { w: figW, h: figH })}
+    </span>
+  )
+
+  return (
+    <div className={cn('flex flex-col gap-1.5', !first && 'mt-2 border-t border-border pt-2')} data-axes-size-block>
+      {/* 这一块以前没有组头，一条 hairline 之下突然是 W / H（2026-09-12 critique）；
+          宿主代理的场合组头另有一行（下面），带来源入口 */}
+      {!proxied && <GroupHead>{el('sizeHead')}</GroupHead>}
+      {proxied ? (
+        /* 「位置和大小属于宿主子图」原本是两段常驻说明（审计 T22 点名的
+           三段之二）。现在由**组标题**回答作用对象（「子图尺寸 · 子图 1」）、
+           来源入口回答「是哪一个」，联动的原理进那个按钮的悬停提示——提示挂在
+           按钮上而不是一个 tabIndex=-1 的图标上，键盘也到得了 */
+        <div className="flex min-w-0 items-center gap-1.5">
+          <Link2 size={ICON_SIZE.xs} className="shrink-0 text-ink-3" aria-hidden />
+          <p className="min-w-0 flex-1 truncate type-section">
+            {el('proxiedSizeHead', { label: engineLabel(element.label) })}
+          </p>
+          <Tip label={el('proxiedGeometry', { label: engineLabel(element.label) })}>
+            <Button
+              size="sm"
+              className="shrink-0 text-ink-2"
+              aria-label={el('selectHostAxes', { label: engineLabel(element.label) })}
+              onClick={() => useUiStore.getState().setSelectedGid(element.gid)}
+            >
+              {el('selectHost')}
+              <ChevronRight size={ICON_SIZE.xs} className="shrink-0 text-ink-3" aria-hidden />
+            </Button>
+          </Tip>
+        </div>
+      ) : null}
+      <Grid2>
+        <NumberField
+          fill
+          prefix="W"
+          prefixInside
+          unit="mm"
+          value={fracToMm(rect[2], figW)}
+          step={0.5}
+          min={1}
+          max={figW}
+          onChange={(v) => write([rect[0], rect[1], mmToFrac(v, figW), rect[3]], 'setAxesWidth')}
+        />
+        <NumberField
+          fill
+          prefix="H"
+          prefixInside
+          unit="mm"
+          value={fracToMm(rect[3], figH)}
+          step={0.5}
+          min={1}
+          max={figH}
+          onChange={(v) =>
+            // 高度以顶边为锚点变化，和等高对齐的行为保持一致
+            write(
+              [rect[0], rect[1] + rect[3] - mmToFrac(v, figH), rect[2], mmToFrac(v, figH)],
+              'setAxesHeight',
+            )
+          }
+        />
+      </Grid2>
+      {group && <ScaleField panel={panel} group={group} meta={figureMeta} />}
+      {/* 「居中」是两个一次性命令，不是这一页最重的两颗钮（打磨 E2）：与对象页的
+          「原始比例 / 原始尺寸」同形——标签列 + 两颗 ghost sm，第一颗 -ml-2 让图标
+          压回控件竖线上 */}
+      <Row label={el('centerRow')} labelWidth={LABEL_W}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="-ml-2"
+          aria-label={el('centerH')}
+          onClick={() => write(centerInFigure(rect, 'x'), 'centerAxesH')}
+        >
+          <AlignCenterVertical size={ICON_SIZE.sm} className="text-ink-3" />
+          {el('centerHShort')}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={el('centerV')}
+          onClick={() => write(centerInFigure(rect, 'y'), 'centerAxesV')}
+        >
+          <AlignCenterHorizontal size={ICON_SIZE.sm} className="text-ink-3" />
+          {el('centerVShort')}
+        </Button>
+        {/* 没有成组缩放那一行（子图不可改尺寸）时，整图尺寸落在这一行的行尾——
+            位置换了，格式还是同一个：type-meta、靠右 */}
+        {!group && figureMeta}
+      </Row>
+    </div>
+  )
+}
+
+/**
+ * 第三层「源文件与高级」：一切触碰磁盘原始文件的动作（写回 / 历史 / 同步）、
+ * 低频字段（层级、裸坐标）与 gid 诊断。默认折叠、会话内按角色记忆——高风险
+ * 低频动作不和日常调样式挤在一起。
+ *
+ * 「恢复」（只改这份文档、可撤销）**不在这里**：它是身份头那颗「n 项已修改」徽标
+ * 的菜单（`RestoreMenu`），与会动磁盘的这一组隔着一个折叠区。审计 T32 用两个组标题
+ * 划的那条边界，2026-09-12 critique 发现在中文里看不出来（type-section 没有大写
+ * 可用，「恢复 / 原始文件」两个组头与普通标签几乎无法区分），于是改成两个位置。
+ */
+function SourceAdvancedSection({
+  panel,
+  element,
+  advanced,
+}: {
+  panel: PanelObject
+  element?: ManifestElement | null
+  advanced: PresentedField[]
+}) {
+  useTranslation('inspector')
+  const role = element?.role ?? 'panel'
+  const open = useInspectorPrefs((s) => s.advancedOpen[role] ?? false)
+  const setOpen = useInspectorPrefs((s) => s.setAdvancedOpen)
+  const gid = element?.gid
+
+  return (
+    /* `data-source-advanced` 是能力提示那个按钮的滚动落点——它要把用户
+       送到「在哪儿改」，而不只是把折叠区打开在视口外 */
+    <div data-source-advanced>
+    <Disclosure
+      title={el('sourceAdvanced')}
+      open={open}
+      onToggle={() => setOpen(role, !open)}
+    >
+      <div className="flex flex-col gap-1.5">
+        {advanced.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            {element &&
+              advanced.map(({ field }) => (
+                <FieldRow key={field.prop} panel={panel} element={element} field={field} />
+              ))}
+          </div>
+        )}
+
+        {/* 这一组全部会覆盖用户的原件（写回）或读它的历史；组标题点名「原始文件」 */}
+        <GroupHead>{el('originalFileGroup')}</GroupHead>
+        <OriginalFileActions panel={panel} />
+
+        {gid && <TechDetails gid={gid} />}
+      </div>
+    </Disclosure>
+    </div>
+  )
+}
+
+/** gid 不常驻：收在「技术详情」里，与同组其它折叠行同一副样子（打磨 L4） */
+function TechDetails({ gid }: { gid: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
+      <GroupToggle open={open} onToggle={() => setOpen((v) => !v)} data-tech-details>
+        {el('techDetails')}
+      </GroupToggle>
+      <Reveal open={open}>
+        <p className="break-all font-mono text-xs leading-relaxed text-ink-3">{gid}</p>
+      </Reveal>
+    </div>
+  )
+}
+
+/**
+ * 引擎明确做不到的能力：说清原因，并给一条真能做到的路（改图助手改脚本）。
+ * 不画空白页，也不摆假的 disabled 控件。
+ */
+function UnsupportedNote({ role }: { role: string }) {
+  const info = unsupportedOf(role)
+  if (!info) return null
+  return (
+    /* 说明条是 surface-2 底的一条，不套框（第八节 / 第五节：`Notice` 已删，
+       状态一句话不画边）；入口降成 ghost、不撑满（打磨 E10） */
+    <div className="mt-2 rounded-sm bg-surface-2 px-2 py-1.5">
+      <p className="text-xs leading-relaxed text-ink-2">
+        <b className="font-medium text-ink">{info.title}</b>：{info.reason}
+      </p>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="-ml-2 mt-0.5"
+        onClick={() => useUiStore.getState().setRightTab('assistant')}
+      >
+        {el('useAssistant')}
+      </Button>
+    </div>
+  )
+}
+
+/** 已隐藏元素的恢复入口；一个都没有时整块不显示 */
+function HiddenElements({ panel, manifest }: { panel: PanelObject; manifest?: Manifest | null }) {
+  const [open, setOpen] = useState(false)
+  const hidden = (manifest?.elements ?? []).filter((el) =>
+    panel.overrides.some((p) => p.gid === el.gid && p.prop === 'visible' && p.value === false),
+  )
+  if (!hidden.length) return null
+
+  return (
+    <Section>
+      <GroupToggle open={open} onToggle={() => setOpen((v) => !v)}>
+        {el('hiddenElements', { count: hidden.length })}
+      </GroupToggle>
+      {open && (
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {hidden.map((item) => (
+            <li key={item.gid} className="flex items-center gap-1.5">
+              <span className="min-w-0 flex-1 truncate text-xs text-ink-3" title={item.gid}>
+                {engineLabel(item.label)}
+              </span>
+              <Button
+                size="sm"
+                className="shrink-0 text-ink-2"
+                onClick={() => unhideElement(panel.id, item.gid)}
+              >
+                {el('restore')}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  )
+}

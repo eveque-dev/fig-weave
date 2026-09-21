@@ -1,0 +1,542 @@
+import { useTranslation } from 'react-i18next'
+import {
+  Copy,
+  Eye,
+  EyeOff,
+  Image as ImageIcon,
+  Lock,
+  LockOpen,
+  Ellipsis,
+  MousePointerClick,
+  MoveUpRight,
+  Pin,
+  Square,
+  Trash2,
+  Type as TypeIcon,
+  X,
+} from '@/components/ui/icons'
+import { ICON_SIZE } from '@/components/ui/Icon'
+import { switchKindOf } from '@/lib/shapeSwitch'
+import { drawerMotion, type PresenceState } from '@/lib/motion'
+import { msg, t as translate } from '@/i18n'
+import { listJoin } from '@/i18n/format'
+import { cn, MOD } from '@/lib/utils'
+import { deleteSelected, duplicateSelected, hideElement, updateObjects } from '@/store/actions'
+import { useDocumentStore } from '@/store/documentStore'
+import { usePanelDisplayManifest } from '@/store/renderStore'
+import { RIGHT_MAX, RIGHT_MIN, useUiStore, type RightTab } from '@/store/uiStore'
+import {
+  objectLabel,
+  type ArrowObject,
+  type CanvasObject,
+  type PanelObject,
+  type ShapeObject,
+  type TextObject,
+} from '@/types/document'
+import { useAiStore } from '@/store/aiStore'
+import { assistantTabLabel, AssistantPanel } from '../ai/AiPanel'
+import { Button, IconButton } from '../ui/Button'
+import { EmptyState } from '../ui/EmptyState'
+import { Menu, MenuItem, MenuSeparator } from '../ui/Menu'
+import { Tab, TabList, TabPanel } from '../ui/Tabs'
+import { Tip } from '../ui/Tooltip'
+import { ArrangeSection } from './ArrangeSection'
+import { CanvasPage } from './CanvasPage'
+import { ElementInspector } from './ElementInspector'
+import { displayLabel, identityCrumbs, untruncatedLabel } from './identityCrumbs'
+import { containerGid } from './roles/hierarchy'
+import { KIND_SWITCH_ICON } from './kindSwitchIcons'
+import { ObjectKindSwitch } from './ObjectKindSwitch'
+import { RestoreMenu } from './RestoreMenu'
+import { roleName } from './roles/registry'
+import { roleIcon } from './roles/roleIcons'
+import { PanelSection } from './PanelSection'
+import { ArrowSection, ShapeSection } from './StrokeSection'
+import { TextSection } from './TextSection'
+import { TransformSection } from './TransformSection'
+import { useSelectedObjects } from './common'
+
+/**
+ * 右栏三个模式在同一个 tablist 里：属性（当前选中对象）· 改图助手 · 画布（当前文档）。
+ * ADR 0010 §3 曾把助手移出 tab 行做成头部的独立按钮（2026-09-14 修订）：那一版助手打开时
+ * tablist 里**没有任何选中项**、方向键也到不了助手——三个互斥视图却用了两种控件。
+ * ADR 0010 要的两件事都还在：选中对象一律切回属性页（`autoShowProperties`）、助手会话状态
+ * 在 aiStore 里切走不丢；运行状态点留在助手页签上。
+ */
+const TABS: RightTab[] = ['properties', 'assistant', 'canvas']
+/** 内容区 id（`TabPanel`）：`<id>-tab` 是对应页签的 id */
+const PANEL_ID: Record<RightTab, string> = {
+  properties: 'inspector-panel-properties',
+  assistant: 'inspector-panel-assistant',
+  canvas: 'inspector-panel-canvas',
+}
+
+const tabLabel = (id: RightTab): string =>
+  id === 'assistant' ? assistantTabLabel() : translate(`tab.${id}`, { ns: 'inspector' })
+
+const TYPE_ICON = {
+  panel: ImageIcon,
+  text: TypeIcon,
+  arrow: MoveUpRight,
+  shape: Square,
+} as const
+
+export function Inspector({
+  overlay = false,
+  state = 'open',
+}: {
+  overlay?: boolean
+  /** 开合动效由 App 的 usePresence 驱动：收起时先播完退场再卸载 */
+  state?: PresenceState
+}) {
+  const { t } = useTranslation('inspector')
+  const tab = useUiStore((s) => s.rightTab)
+  const setTab = useUiStore((s) => s.setRightTab)
+  const width = useUiStore((s) => s.rightWidth)
+  const pinned = useUiStore((s) => s.rightPinned)
+  const layout = useUiStore((s) => s.layout)
+  const runningAi = useAiStore((s) => s.sessions.some((x) => x.status === 'running'))
+
+  const motion = drawerMotion({ state, overlay, width, side: 'right' })
+
+  return (
+    <aside
+      {...motion}
+      /* `data-inspector-panel` 是右侧检查器栏的稳定锚点。裸 `aside` 指代不了它
+         ——左抽屉（`data-left-drawer`）、版本面板、快捷任务卡也都是 `aside`
+         （issue #307）。**一个对象只留一个锚点名**：#299 与 #307 曾各给这个
+         元素加过一个（`data-inspector-panel` / `data-inspector`），先到的那个
+         赢；两个都留下的话，下一个人不知道该用哪个，而两个都不会被维护。 */
+      data-inspector-panel
+      aria-label={t('panelLabel')}
+      className={cn(
+        // overflow-hidden 是动效的一部分，见 drawerMotion 的注释
+        'relative shrink-0 overflow-hidden border-l border-border bg-surface',
+        overlay && 'absolute inset-y-0 right-0 z-30 shadow-pop',
+        motion.className,
+      )}
+    >
+      <div className="flex h-full flex-col" style={{ width }}>
+      <div className="flex h-9 shrink-0 items-center gap-3 px-3">
+        <TabList label={t('tabsLabel')} className="min-w-0">
+          {TABS.map((id) => (
+            <Tab
+              key={id}
+              data-inspector-tab={id}
+              panelId={PANEL_ID[id]}
+              active={tab === id}
+              onClick={() => setTab(id)}
+              // 助手页签：可达名带上「有任务在运行」，视觉上是页签右上角的一颗点
+              aria-label={
+                id === 'assistant' && runningAi ? `${assistantTabLabel()} · ${t('aiRunning')}` : undefined
+              }
+              title={id === 'assistant' && runningAi ? t('assistantRunningTip') : undefined}
+              // 页签一律纯文字（打磨 S4）：三家的页签 / 分段项都没有图标，助手的身份
+              // 由页内空态那颗图标说；右上角的运行点已经回答「有没有在跑」
+              className={id === 'assistant' ? 'inline-flex items-center pr-1' : undefined}
+            >
+              {tabLabel(id)}
+              {id === 'assistant' && runningAi && (
+                <span
+                  aria-hidden
+                  className="absolute right-0 top-1.5 h-1.5 w-1.5 rounded-full bg-ink"
+                />
+              )}
+            </Tab>
+          ))}
+        </TabList>
+        {/* 右侧图标钮簇：与下方属性头部一样收成一个 ml-auto 的簇（簇内 4px），不再用 flex-1 撑开 +
+            三段 12px 间距——320px 英文（Linux 的 DejaVu Sans）下页签行本来只剩 1px 余量，页签选中态改
+            600 并按加粗宽度预留之后（打磨批次 A）恰好撑破 4px（e2e/inspector-overflow 量到 214 > 210）。
+            贴右缘的 -mr-1.5 放在簇上而不是关闭钮上：负外边距落在簇内会让簇自己 scrollWidth 多 6px，
+            那把尺子照样红（同上面 header 注释里说的那 4px）。 */}
+        <span className="-mr-1.5 ml-auto flex shrink-0 items-center gap-1">
+          {layout !== 'narrow' ? (
+            /* 只留图钉，不写「常驻 / 自动收起」：即便右栏最窄 320px，两个标签页 +
+               助手入口 + 带词的开关 + 关闭按钮在英文下也排不下（e2e/i18n.spec.ts
+               量横向溢出）。状态靠**图形**说，不靠底色（打磨 S3，用户拍板）：默认就是钉住的，
+               `active` 的 ink 10% 灰块会常驻在每一页右上角——整栏唯一一块常亮的底。现在
+               钉住 = 实心图钉 + ink，未钉 = 线框图钉 + ink-3（图标集的实心孪生，ADR 0052）；
+               aria-pressed 与气泡文案不变。 */
+            <IconButton
+              label={t(pinned ? 'pinnedAria' : 'autoHideAria')}
+              tip={t(pinned ? 'pinnedTip' : 'autoHideTip')}
+              side="bottom"
+              iconSize="sm"
+              aria-pressed={pinned}
+              onClick={() => useUiStore.getState().setRightPinned(!pinned)}
+            >
+              <Pin size={ICON_SIZE.sm} filled={pinned} className={pinned ? 'text-ink' : 'text-ink-3'} />
+            </IconButton>
+          ) : (
+            <Tip label={t('overlayTip')} side="bottom">
+              <span className="text-xs text-ink-3">{t('overlay')}</span>
+            </Tip>
+          )}
+          <IconButton
+            label={t('closePanel')}
+            tip={translate('actions.close')}
+            side="bottom"
+            iconSize="sm"
+            className="text-ink-3 hover:text-ink"
+            onClick={() => useUiStore.getState().toggleRight()}
+          >
+            <X size={ICON_SIZE.sm} />
+          </IconButton>
+        </span>
+      </div>
+
+      {tab === 'assistant' ? (
+        <TabPanel id={PANEL_ID.assistant} className="flex min-h-0 flex-1 flex-col">
+          <AssistantPanel />
+        </TabPanel>
+      ) : tab === 'canvas' ? (
+        <TabPanel id={PANEL_ID.canvas} className="min-h-0 flex-1 overflow-y-auto">
+          <CanvasPage />
+        </TabPanel>
+      ) : (
+        <TabPanel id={PANEL_ID.properties} className="flex min-h-0 flex-1 flex-col">
+          <PropertiesPage />
+        </TabPanel>
+      )}
+      </div>
+      <WidthHandle />
+    </aside>
+  )
+}
+
+function WidthHandle() {
+  const { t } = useTranslation('inspector')
+  // 可聚焦的 separator 在 ARIA 里是个真控件：必须报出当前值与值域，
+  // 否则屏幕阅读器只会念一句「分隔条」，用户不知道自己在调什么、调到了哪
+  const width = useUiStore((s) => s.rightWidth)
+  const start = (e: React.PointerEvent) => {
+    e.preventDefault()
+    const from = useUiStore.getState().rightWidth
+    const x0 = e.clientX
+    const move = (ev: PointerEvent) => useUiStore.getState().setRightWidth(from - (ev.clientX - x0))
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={t('resize', { min: RIGHT_MIN, max: RIGHT_MAX })}
+      aria-valuenow={Math.round(width)}
+      aria-valuemin={RIGHT_MIN}
+      aria-valuemax={RIGHT_MAX}
+      tabIndex={0}
+      onPointerDown={start}
+      onKeyDown={(e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+        e.preventDefault()
+        const ui = useUiStore.getState()
+        ui.setRightWidth(ui.rightWidth + (e.key === 'ArrowLeft' ? 16 : -16))
+      }}
+      // 整条都在抽屉内侧：外层 overflow-hidden（开合动效要用）会把伸到外面的部分剪掉
+      // 蓝色不做任何大块背景（第一节）：hover 只在内侧描一条 1px 的竖线，
+      // 焦点仍用蓝（那是焦点环的语义）。此前是 8px × 全高的 accent/20 蓝带（打磨 S5）
+      className="absolute inset-y-0 left-0 z-20 w-2 cursor-col-resize border-l border-transparent outline-none hover:border-border-strong focus-visible:bg-accent/30"
+    />
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*  属性页                                                                     */
+/* -------------------------------------------------------------------------- */
+
+function PropertiesPage() {
+  const { t } = useTranslation('inspector')
+  const objs = useSelectedObjects()
+  const elementPanelId = useUiStore((s) => s.elementPanelId)
+  const elementPanel = useDocumentStore((s) =>
+    s.doc.objects.find((o) => o.id === elementPanelId && o.type === 'panel'),
+  ) as PanelObject | undefined
+
+  const panels = objs.filter((o): o is PanelObject => o.type === 'panel')
+  const texts = objs.filter((o): o is TextObject => o.type === 'text')
+  const arrows = objs.filter((o): o is ArrowObject => o.type === 'arrow')
+  const shapes = objs.filter((o): o is ShapeObject => o.type === 'shape')
+  const onlyType = (n: number) => n > 0 && objs.length === n
+  // 面板选区的位置与尺寸由 PanelSection 自己出（含宽高比锁），
+  // 这里再来一份 TransformSection 就重复了
+  const panelsOnly = onlyType(panels.length)
+  /**
+   * 文字选区把「内容 + 排版」提到最前，位置与尺寸退成一行折叠摘要（审计 T27）。
+   * 改一段标注最常做的是改字、改字号、改对齐；旧顺序让这三件事排在一整段
+   * 变换之后，每次都得往下找。折叠不减能力，展开还是同一批字段。
+   */
+  const textsOnly = onlyType(texts.length)
+
+  if (elementPanel) {
+    return (
+      <>
+        <IdentityHeader panel={elementPanel} />
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <ElementInspector panel={elementPanel} />
+        </div>
+      </>
+    )
+  }
+
+  if (objs.length === 0) {
+    // 钉住时面板留着；未钉住时选择清空后面板本来就收起了
+    return (
+      <div className="flex min-h-0 flex-1 overflow-y-auto">
+        <EmptyState icon={MousePointerClick} title={t('emptyTitle')} hint={t('emptyHint')} />
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <IdentityHeader objs={objs} />
+      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+        {/* 第一层：位置与尺寸等高频属性（文字除外，见下） */}
+        {!panelsOnly && !textsOnly && <TransformSection objs={objs} />}
+        {/* 第二层：类型专属 */}
+        {onlyType(panels.length) && <PanelSection objs={panels} />}
+        {textsOnly && <TextSection objs={texts} />}
+        {textsOnly && <TransformSection objs={objs} foldKey="text-transform" />}
+        {onlyType(arrows.length) && <ArrowSection objs={arrows} />}
+        {onlyType(shapes.length) && <ShapeSection objs={shapes} />}
+        {/* 第三层：排列（对齐 + 层级）。单选面板的排列由 PanelSection 自己摆在
+            图片适配之后、更多之前（变换 → 内容适配 → 排列 → 源文件，审计 B09） */}
+        {!(panelsOnly && objs.length === 1) && (
+          <ArrangeSection count={objs.length} multi={objs.length > 1} />
+        )}
+      </div>
+    </>
+  )
+}
+
+/**
+ * 唯一的上下文头：现在改的是谁、它处于什么状态、对它还能做什么。
+ * 复制 / 显隐 / 锁定 / 删除收进右侧更多菜单，锁定与隐藏状态本身常驻显示。
+ *
+ * 图内编辑态的头上**没有退出按钮**：返回排版的唯一入口是画布上方上下文栏的
+ * 「返回画布 Esc」（`WorkspaceContextBar`，它还顺手选中该面板）。此前这里另有一颗
+ * ×，与右栏自己的关闭 × 上下叠着，一个退编辑、一个关面板，靠悬停才分得清
+ * （2026-09-13 审计 B45：每个 × 核对动作后只留面板关闭）。
+ */
+function IdentityHeader({ objs = [], panel }: { objs?: CanvasObject[]; panel?: PanelObject }) {
+  const { t } = useTranslation('inspector')
+  const selectedGids = useUiStore((s) => s.selectedGids)
+  const manifest = usePanelDisplayManifest(panel)
+
+  if (panel) {
+    const gid = selectedGids.at(-1)
+    // 在树里点「整张图」与什么都没选是同一个对象：头部只有一种写法（「整张图」徽标 +
+    // 图名），不因为选中方式不同而换一副面孔（2026-09-13 审计 B54 / B56 的连续性）
+    const picked = gid ? manifest?.elements.find((e) => e.gid === gid) : undefined
+    const el = picked?.gid === 'figure' ? undefined : picked
+    // gid 形如 axes_1.images_0：中段就是宿主子图，拼出「面板 / 子图 / 元素」
+    const axesGid = gid?.includes('.') ? gid.split('.')[0] : undefined
+    const axes = axesGid ? manifest?.elements.find((e) => e.gid === axesGid) : undefined
+    // 子图与元素之间那一级（图例 / X 轴刻度 / 柱形系列）：归属进面包屑
+    const has = (g: string) => !!manifest?.elements.some((e) => e.gid === g)
+    const containerOf = gid
+      ? containerGid(gid, has, (g) => {
+          const r = manifest?.elements.find((e) => e.gid === g)?.role
+          return r === 'axes' || r === 'axes3d'
+        })
+      : null
+    const container = containerOf ? manifest?.elements.find((e) => e.gid === containerOf) : undefined
+    // 文字元素的 `text`、系列的 `label`：都是「名字里被引擎截断的那段用户文字」的全文
+    const text = el?.editable.find((f) => f.prop === 'text' || f.prop === 'label')?.value
+    const crumbs = identityCrumbs(
+      panel.name ?? panel.fileId,
+      axes && axes.gid !== gid ? axes.label : undefined,
+      // 标题显示可读文本：mathtext 源码只在下面的「名称」框里（审计 B48）
+      el ? displayLabel(untruncatedLabel(el.label, typeof text === 'string' ? text : undefined)) : undefined,
+      selectedGids.length,
+      container?.label,
+    )
+    // 面包屑里每一级祖先都能点（2026-09-14 审计 A4）：往上走的路就是它本身，
+    // 「所属子图 / 所属系列」那种再写一行的链接删掉。与 identityCrumbs 同一套条件，
+    // 顺序一致：整张图 → 宿主子图 → 容器（图例 / X 轴刻度 / 柱形系列）
+    const crumbTargets = [
+      'figure',
+      axes && axes.gid !== gid ? axes.gid : null,
+      container ? container.gid : null,
+    ].filter((g): g is string => !!g)
+    const hideable =
+      el && el.gid !== 'figure' && el.editable.some((f) => f.prop === 'visible')
+    // 来源状态：选中元素时报它自己被改了几项，没选（整张图）时报面板总数。
+    // 「多少项被 Tavotto 修改、怎么恢复」是右栏头部要直接回答的问题。
+    const modified = el
+      ? panel.overrides.filter((o) => o.gid === el.gid).length
+      : panel.overrides.length
+    const RoleIcon = roleIcon(el?.role ?? 'figure')
+
+    return (
+      <header className="shrink-0 pl-3 pr-2 pb-2">
+        <div className="flex items-center gap-1.5">
+          {/* 图标按角色查树里那张表（roles/roleIcons）：标题是 T、曲线是折线、图例是列表，
+              与左栏元素树同一张脸；以前不管选了什么都是同一个图片图标 */}
+          <RoleIcon size={ICON_SIZE.sm} className="shrink-0 text-ink-3" aria-hidden />
+          {/* 没选元素时标题是面板名：标出「整张图」这一层，免得与画布上的面板混淆（审计 T01） */}
+          {!el && (
+            <span data-object-kind className="shrink-0 rounded-sm bg-surface-active px-1 text-xs text-ink-2">
+              {roleName('figure')}
+            </span>
+          )}
+          {/* 对象名不该比它下面的「位置与尺寸」小一号（打磨 S2）：面板标题 12/500 */}
+          <h2 className="min-w-0 truncate type-section">
+            {crumbs.at(-1) ?? t('elementFallback')}
+          </h2>
+          <span className="ml-auto flex shrink-0 items-center">
+            {hideable && el && (
+              <Tip label={t('hideElementTip')} side="bottom">
+                <Button
+                  size="icon-sm"
+                  onClick={() => {
+                    hideElement(panel.id, el.gid, el.label)
+                    useUiStore.getState().setSelectedGid(null)
+                  }}
+                  aria-label={t('hideElement')}
+                >
+                  <EyeOff size={ICON_SIZE.sm} className="text-ink-3" />
+                </Button>
+              </Tip>
+            )}
+          </span>
+        </div>
+        {(crumbs.length > 1 || modified > 0) && (
+          <p className="mt-0.5 flex items-center gap-1.5 pr-1 text-xs text-ink-3">
+            {crumbs.length > 1 && (
+              <span className="flex min-w-0 items-center gap-1 truncate" title={crumbs.join(' / ')}>
+                {crumbs.slice(0, -1).map((c, i) => (
+                  <span key={`${i}-${c}`} className="flex min-w-0 items-center gap-1">
+                    {i > 0 && <span aria-hidden>/</span>}
+                    <button
+                      type="button"
+                      data-crumb={crumbTargets[i]}
+                      onClick={() => useUiStore.getState().setSelectedGid(crumbTargets[i])}
+                      className="min-w-0 truncate rounded-xs text-ink-3 outline-none hover:text-ink hover:underline underline-offset-2 focus-visible:focus-ring"
+                    >
+                      {c}
+                    </button>
+                  </span>
+                ))}
+              </span>
+            )}
+            {/* 「n 项已修改」徽标本身就是恢复菜单（恢复此元素 / 恢复整张图）：
+                改了几项与怎么撤回是同一个问题的两半，不另起一行 */}
+            <RestoreMenu panel={panel} gid={el?.gid} count={modified} />
+          </p>
+        )}
+      </header>
+    )
+  }
+
+  const one = objs.length === 1 ? objs[0] : null
+  const kinds = [...new Set(objs.map((o) => o.type))]
+  // 标注的图标按**它自己那一种**画，不是所有形状都用一个方块：三角形旁边摆
+  // 一个正方形，图标说的和徽标说的是两件事（与 MarkerPicker 同一条纪律——
+  // 形状是事实，不该拿一个通用图形代替）
+  const oneKind = one ? switchKindOf(one) : null
+  const Icon = one
+    ? oneKind
+      ? KIND_SWITCH_ICON[oneKind]
+      : TYPE_ICON[one.type]
+    : kinds.length === 1
+      ? TYPE_ICON[kinds[0]]
+      : Copy
+  /**
+   * 标题 = **用户内容**。没起过名字的标注，`objectLabel` 的兜底正是类型名，
+   * 而类型徽标已经在说它了——两格并排写着同一个词（「三角形 ⌄ 三角形」）看起来
+   * 像个 bug。这一格没有新话要说时就整个不出现，让徽标独自承担（文字与面板不受
+   * 影响：它们的名字是那句话 / 那个文件名，与类型不是一回事）。
+   */
+  const title = one
+    ? oneKind && !one.name
+      ? null
+      : objectLabel(one)
+    : translate('count.selectedObjects', { count: objs.length })
+  const locked = objs.length > 0 && objs.every((o) => o.locked)
+  const hidden = objs.length > 0 && objs.every((o) => o.hidden)
+  const ids = objs.map((o) => o.id)
+
+  return (
+    <header className="shrink-0 pl-3 pr-2 pb-2">
+      <div className="flex items-center gap-1.5">
+        <Icon size={ICON_SIZE.sm} className="shrink-0 text-ink-3" />
+        {/* 对象类型与名字分开写：名字是用户内容（文件名 / 文字），类型才回答
+            「我在改的是文字、面板还是标注」（审计 T01）。这颗徽标同时是**类型
+            切换**的入口——标注能换成同族的另一种时它就是下拉，换不了时还是那颗
+            静态徽标（cap-shape-switch；判据在 lib/shapeSwitch，这里不判） */}
+        <ObjectKindSwitch objs={objs} />
+        {title != null && (
+          <h2 className="min-w-0 truncate type-section">{title}</h2>
+        )}
+        {locked && <Lock size={ICON_SIZE.xs} className="shrink-0 text-ink-3" aria-label={t('locked')} />}
+        {hidden && <EyeOff size={ICON_SIZE.xs} className="shrink-0 text-ink-3" aria-label={t('hiddenState')} />}
+        {!one && <span className="shrink-0 text-xs text-ink-3">{summarize(objs)}</span>}
+        <Menu
+          width={172}
+          align="end"
+          trigger={
+            <Button size="icon-sm" className="ml-auto" aria-label={t('objectActions')}>
+              <Ellipsis size={ICON_SIZE.sm} className="text-ink-3" />
+            </Button>
+          }
+        >
+          <MenuItem shortcut={`${MOD}D`} onSelect={duplicateSelected}>
+            <span className="flex items-center gap-2">
+              <Copy size={ICON_SIZE.sm} className="text-ink-3" />
+              {translate('actions.copy')}
+            </span>
+          </MenuItem>
+          <MenuItem
+            onSelect={() =>
+              updateObjects(ids, msg(hidden ? 'history.showObject' : 'history.hideObject', undefined, 'workspace'), (o) => {
+                o.hidden = !hidden
+              })
+            }
+          >
+            <span className="flex items-center gap-2">
+              {hidden ? <Eye size={ICON_SIZE.sm} className="text-ink-3" /> : <EyeOff size={ICON_SIZE.sm} className="text-ink-3" />}
+              {t(hidden ? 'show' : 'hide')}
+            </span>
+          </MenuItem>
+          <MenuItem
+            onSelect={() =>
+              updateObjects(ids, msg(locked ? 'history.unlockObject' : 'history.lockObject', undefined, 'workspace'), (o) => {
+                o.locked = !locked
+              })
+            }
+          >
+            <span className="flex items-center gap-2">
+              {locked ? <LockOpen size={ICON_SIZE.sm} className="text-ink-3" /> : <Lock size={ICON_SIZE.sm} className="text-ink-3" />}
+              {t(locked ? 'unlock' : 'lock')}
+            </span>
+          </MenuItem>
+          <MenuSeparator />
+          <MenuItem danger shortcut="⌫" onSelect={deleteSelected}>
+            <span className="flex items-center gap-2">
+              <Trash2 size={ICON_SIZE.sm} />
+              {translate('actions.delete')}
+            </span>
+          </MenuItem>
+        </Menu>
+      </div>
+    </header>
+  )
+}
+
+function summarize(objs: CanvasObject[]): string {
+  const n = (type: CanvasObject['type']) => objs.filter((o) => o.type === type).length
+  const parts: string[] = []
+  if (n('panel')) parts.push(translate('summaryPanels', { ns: 'inspector', count: n('panel') }))
+  if (n('text')) parts.push(translate('summaryTexts', { ns: 'inspector', count: n('text') }))
+  const marks = n('arrow') + n('shape')
+  if (marks) parts.push(translate('summaryMarks', { ns: 'inspector', count: marks }))
+  return listJoin(parts)
+}

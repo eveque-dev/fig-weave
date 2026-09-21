@@ -1,0 +1,49 @@
+{
+ "schema": 3,
+ "project": {
+  "id": "tavotto-tutorial",
+  "name": "Tutorial"
+ },
+ "canvases": [
+  {
+   "id": "c1",
+   "name": "Figure 1",
+   "page": {
+    "w": 150,
+    "h": 84
+   },
+   "objects": [
+    {
+     "id": "p1",
+     "type": "panel",
+     "fileId": "Fig1_kinetics.pdf",
+     "fileKind": "pdf",
+     "nativeW": 65.0,
+     "nativeH": 46.8,
+     "x": 10,
+     "y": 14,
+     "w": 65.0,
+     "h": 46.8,
+     "overrides": []
+    },
+    {
+     "id": "p2",
+     "type": "panel",
+     "fileId": "Fig2_correlation.pdf",
+     "fileKind": "pdf",
+     "nativeW": 65.0,
+     "nativeH": 46.8,
+     "x": 79,
+     "y": 22,
+     "w": 65.0,
+     "h": 46.8,
+     "overrides": []
+    }
+   ],
+   "guides": []
+  }
+ ],
+ "activeCanvasId": "c1",
+ "createdAt": 1756800000000,
+ "updatedAt": 1756800000000
+}

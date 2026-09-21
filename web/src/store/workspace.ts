@@ -1,0 +1,437 @@
+/**
+ * 两条工作流：**快速编辑** 与 **画布排版**（Prompt 09，ADR 0028）。
+ *
+ * ```text
+ * 快速编辑：打开一张图 → 修改 → 按原图规格导出
+ * 画布排版：加入多张图 → 排列 → 按画布规格导出
+ * ```
+ *
+ * ### 一个文档，不是两套应用
+ *
+ * 这里**没有**第二个 documentStore、第二个 override writer、第二套对象模型。
+ * 一张图在文档里只有一个面板对象，两种模式看的是**同一个对象**：
+ *
+ * * 快速编辑 = 把那个对象单独摆出来，按它自己的图幅显示，页面/网格/参考线
+ *   /其它对象全部让开；
+ * * 画布排版 = 它在页面上的落位。
+ *
+ * 因此「加入画布」不会复制出一份失联的图（根本没有复制这一步——对象一直是
+ * 那一个，`fileId`、稳定对象 id、overrides 全程不变），而「从画布进图内编辑
+ * 再返回」也必然保住位置与尺寸：**快速编辑一个字都不写 x/y/w/h**。
+ *
+ * ### 模式是工作区状态，不是文档
+ *
+ * `mode` / `activePanelId` 不进 `.tavotto`、不进撤销历史、不置 dirty
+ * （`UX_CONTRACTS.md` §3 的数据所有权表）。它按 documentId 存本机一档，
+ * 与打开的画布标签同一条纪律：恢复时**先验对象还在不在**，不在就回排版模式
+ * ——指着一个已经被删掉的对象的"快速编辑"是一个打不开的界面。
+ */
+import { create } from 'zustand'
+import { msg } from '@/i18n'
+import { emitActivity } from '@/lib/activity'
+import { rescueFocus } from '@/lib/focusRescue'
+import { addPanel, addRuntimePanel, enterElementEdit } from '@/store/actions'
+import { useAssetStore } from '@/store/assetStore'
+import { activateCanvas } from '@/store/canvasSession'
+import { useDocumentStore } from '@/store/documentStore'
+import { useRuntimeAssetStore } from '@/store/runtimeAssetStore'
+import { useSelectionStore } from '@/store/selectionStore'
+import { useUiStore } from '@/store/uiStore'
+import { useViewportStore } from '@/store/viewportStore'
+import type { CanvasObject, PanelObject } from '@/types/document'
+
+export type WorkspaceMode = 'fast_edit' | 'layout'
+
+const KEY_PREFIX = 'tavotto.workspace.'
+
+interface WorkspaceState {
+  mode: WorkspaceMode
+  /**
+   * 快速编辑正在编辑哪个**面板对象**（画布对象 id，不是素材 id）。
+   *
+   * 不变式：`mode === 'fast_edit'` ⟺ `activePanelId !== null`。同一张素材
+   * 可以在文档里有多个面板实例，"哪一个"必须说得出来——用素材 id 的话，
+   * 用户放了两份的那张图会在两个实例之间随机跳。
+   */
+  activePanelId: string | null
+  /**
+   * 用户要求打开某张图做图内编辑，而**那一刻它还没有源脚本**（关联还在路上）
+   * ——记下这个待办，脚本关系一建立就把那次进入补上（issue #267）。
+   *
+   * 为什么需要它：`openFastEdit` 的"能不能进图内编辑"是一次**一次性判断**，
+   * 判完就没有人再问第二遍。素材→脚本的关联是异步到达的（后端扫描 / 试运行
+   * → `assets.changed` → `panelSourceSync` 原地补 `script`），双击落在关联
+   * 之前时，用户的意图就此丢失且**没有任何恢复路径**——界面停在排版态，
+   * 「编辑图内元素」要他自己再点一次。机器慢一点就必然发生，快一点就永远
+   * 看不到，所以它表现为"偶发"。
+   *
+   * 只补**这一个面板、这一次**：用户如果已经走开（换了面板 / 回了排版），
+   * 补进去就是把界面从他手里抢走。
+   */
+  pendingElementEdit: string | null
+  /**
+   * 「编辑原图」这一次把图**加进了文档**（它此前不在）——记下是哪个面板，
+   * 快速编辑浮动条据此常驻一行说明（UI 审计 T06）。
+   *
+   * 为什么不是一条状态 toast：进快速编辑紧接着就是「渲染完成」那条状态，
+   * 单槽位的 toast 一秒之内就被盖掉（真浏览器实测），用户根本看不见。
+   * 回到画布排版 / 换文档即清；撤销把面板撤掉时快速编辑自己会退出，同一条路。
+   */
+  addedForEdit: string | null
+  /**
+   * 加入那一刻的撤销栈深度：栈还是这个深度时，「撤销」正好撤的就是这一步，通知轨上才给
+   * 「移除」这颗钮；用户在图内又改了别的之后，撤销撤的是别的，钮就收起来（说明句留着）
+   */
+  addedForEditDepth: number
+  /** 进入快速编辑（对象必须已经在激活画布里） */
+  enterFastEdit: (panelId: string) => void
+  /** 设置 / 清除「等源脚本到了再进图内编辑」的待办 */
+  setPendingElementEdit: (panelId: string | null) => void
+  /** 回到画布排版 */
+  exitToLayout: () => void
+  /** 换文档 / 换项目：整个清掉，不留指向旧文档对象的 id */
+  clear: () => void
+}
+
+export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
+  mode: 'layout',
+  activePanelId: null,
+  pendingElementEdit: null,
+  addedForEdit: null,
+  addedForEditDepth: 0,
+  enterFastEdit: (panelId) => {
+    const changed = get().mode !== 'fast_edit' || get().activePanelId !== panelId
+    // 记下排版视口**在这里**，不在 `openFastEdit` 里：问题面板的定位
+    // （`lib/issueFocus.ts`）也是从排版进快速编辑的，它调的是这个 action
+    parkLayoutView()
+    // 换了一张图：上一张的「刚加入」说明不跟过来
+    set({ mode: 'fast_edit', activePanelId: panelId, ...(changed ? { addedForEdit: null } : {}) })
+    if (changed) emitActivity({ kind: 'workspace.mode_changed', mode: 'fast_edit' })
+  },
+  setPendingElementEdit: (panelId) => set({ pendingElementEdit: panelId }),
+  exitToLayout: () => {
+    const changed = get().mode !== 'layout'
+    // 回排版 = 用户改了主意，那个待办跟着作废（迟到的关联不该把他拽回去）
+    set({ mode: 'layout', activePanelId: null, pendingElementEdit: null, addedForEdit: null })
+    if (changed) emitActivity({ kind: 'workspace.mode_changed', mode: 'layout' })
+  },
+  // 换文档 / 换项目的清理**不发信号**：那不是用户在表达「我要回排版」
+  clear: () => {
+    // 第二道保险，**没有用例杀得掉它**：新文档的画布 id 是新生成的，
+    // `takeParkedLayoutView()` 的画布判据已经把跨文档还原挡住了（变异反证过）。
+    // 留着是为了不让模块变量一直挂着上一份文档的状态；别把它当成被看住的保证。
+    parkedLayoutView = null
+    set({ mode: 'layout', activePanelId: null, pendingElementEdit: null, addedForEdit: null })
+  },
+}))
+
+/* -------------------------- 排版视口的寄存处 ------------------------------ */
+
+/**
+ * 进快速编辑那一刻用户在画布排版上看的是哪一片（审计 T01：**切换模式时画布
+ * 不意外移动**）。
+ *
+ * 为什么必须记：快速编辑把那张图单独摆出来、按它自己的图幅框住，这一步一定
+ * 要动视口；回来时如果只会「把那张图挪到视口中央」，用户精心摆好的排版视角
+ * 就被换成了以某一张图为中心的另一片——他没做任何缩放平移，画面却变了。
+ * ADR 0028 的「布局不变靠根本没动过」说的是文档，视口这一侧此前没人管。
+ *
+ * **带上画布 id**：`openFastEdit` 会为了找到那张图切画布（`ensurePanel`），
+ * 换了画布之后记下的那一片属于**上一张画布**，还回去就是把用户送到别处。
+ * 这里的主语是「哪一张画布的、哪一刻的视口」，两者缺一不可。
+ */
+let parkedLayoutView: { canvasId: string; view: ViewTarget } | null = null
+
+interface ViewTarget {
+  zoom: number
+  panX: number
+  panY: number
+}
+
+/** 只在**从排版进入**快速编辑时记一次；已经在快速编辑里换图不覆盖 */
+function parkLayoutView(): void {
+  if (useWorkspaceStore.getState().mode === 'fast_edit') return
+  const { zoom, panX, panY, viewW, viewH } = useViewportStore.getState()
+  if (!viewW || !viewH) return
+  parkedLayoutView = {
+    canvasId: useDocumentStore.getState().activeCanvasId,
+    view: { zoom, panX, panY },
+  }
+}
+
+/** 取出并清空；画布对不上就当没记过 */
+function takeParkedLayoutView(): ViewTarget | null {
+  const parked = parkedLayoutView
+  parkedLayoutView = null
+  if (!parked) return null
+  return parked.canvasId === useDocumentStore.getState().activeCanvasId ? parked.view : null
+}
+
+/** 当前快速编辑的那个面板对象；不在激活画布里就回 null */
+export function activeFigurePanel(): PanelObject | null {
+  const id = useWorkspaceStore.getState().activePanelId
+  if (!id) return null
+  const o = useDocumentStore.getState().doc.objects.find((x) => x.id === id)
+  return o?.type === 'panel' ? o : null
+}
+
+/* ------------------------------ 稳定动作 ---------------------------------- */
+/*
+ * 下面四个是 Prompt 11（定位）、12（导出）、18（QuickEdit）、21（onboarding）
+ * 复用的入口。**它们是这条工作流的唯一出口**——别在界面里重新拼一遍
+ * 「找对象 / 没有就添加 / 切画布 / 选中」，那正是同一件事有两份判据的开头。
+ */
+
+/**
+ * 找文档里代表这张素材的面板：激活画布优先，其次别的画布。
+ *
+ * **这是"文档里有没有这张图"的唯一判据**——交接（`lib/openRequest.ts`）、
+ * 原图规格（`lib/originalSpec.ts`）、这里的三个动作用的都是它。各写一遍的
+ * 后果是"已经在画布上了"这句话在几个入口给出不同答案。
+ */
+export function findFigurePanel(
+  figureId: string,
+): { panel: PanelObject; canvasId: string } | null {
+  const s = useDocumentStore.getState()
+  const here = s.doc.objects.find(
+    (o): o is PanelObject => o.type === 'panel' && o.fileId === figureId,
+  )
+  if (here) return { panel: here, canvasId: s.activeCanvasId }
+  for (const c of s.canvases) {
+    if (c.id === s.activeCanvasId) continue
+    const o = c.objects.find(
+      (x): x is PanelObject => x.type === 'panel' && x.fileId === figureId,
+    )
+    if (o) return { panel: o, canvasId: c.id }
+  }
+  return null
+}
+
+/**
+ * 素材 → 文档里的面板对象：有就用那一个（**绝不重复创建**），
+ * 没有就通过既有的统一 action 添加。runtime 素材走它自己那条添加路径。
+ */
+function ensurePanel(figureId: string): { panel: PanelObject; created: boolean } | null {
+  const found = findFigurePanel(figureId)
+  if (found) {
+    if (found.canvasId !== useDocumentStore.getState().activeCanvasId) {
+      activateCanvas(found.canvasId)
+    }
+    // 切画布会换掉 doc，对象引用要重新取（id 不变）
+    const fresh = useDocumentStore.getState().doc.objects.find((o) => o.id === found.panel.id)
+    return fresh?.type === 'panel' ? { panel: fresh, created: false } : null
+  }
+  const info = useAssetStore.getState().byId[figureId]
+  if (info) return { panel: addPanel(info), created: true }
+  const runtime = (useRuntimeAssetStore.getState().assets ?? []).find((a) => a.id === figureId)
+  if (runtime?.descriptor) return { panel: addRuntimePanel(runtime.descriptor), created: true }
+  return null
+}
+
+export type OpenFastEditOutcome = 'editing' | 'layout_only' | 'missing'
+
+/**
+ * 打开一张图 → 进快速编辑工作区。
+ *
+ * **这是普通打开行为**，不是一个需要先选模式的启动页：素材卡双击、
+ * `tavotto open <stem>` 的交接、接入状态里的「打开」，走的都是它。
+ *
+ * 返回 `'layout_only'` 表示图进来了但进不了图内编辑（没有源脚本）——
+ * 那不是失败，界面照实说明并给出「连接源脚本 / 继续排版」两条路。
+ * 为什么这里用 `panel.script` 判：它就是既有的图内编辑判据
+ * （`ObjectView` 双击、`enterElementEdit`）。**不在这里另起一份判据**
+ * ——状态与措辞归 `lib/readinessText.ts`，两者不是一件事。
+ */
+export function openFastEdit(figureId: string): OpenFastEditOutcome {
+  const got = ensurePanel(figureId)
+  if (!got) {
+    useUiStore
+      .getState()
+      .setStatus(msg('fastEdit.figureMissing', { name: figureId }, 'workspace'), 'error')
+    return 'missing'
+  }
+  const { panel, created } = got
+  useWorkspaceStore.getState().enterFastEdit(panel.id)
+  // 「编辑原图」把还不在文档里的图加了进来——这一步必须说出口（结构上躲不掉：
+  // 快速编辑的对象只能是文档里的面板对象，见文件头；但用户点的是"编辑"，看到
+  // 的却是版本预览多了一个对象、问题面板多了一批问题，UI 审计 T06）。它是一条
+  // 可撤销的历史，撤销即移除。图**已经在文档里**时什么都不说——那一次零文档改动。
+  useWorkspaceStore.setState({
+    addedForEdit: created ? panel.id : null,
+    addedForEditDepth: useDocumentStore.getState().past.length,
+  })
+  // 绘制工具画的是画布标注，快速编辑这一屏上根本没有它们的位置——
+  // 停在「箭头」工具上进来，光标是十字而点下去什么也看不见
+  useUiStore.getState().setTool('select')
+  useSelectionStore.getState().set([panel.id])
+  revealPanel(panel)
+  if (panel.script) {
+    useWorkspaceStore.getState().setPendingElementEdit(null)
+    enterElementEdit(panel.id)
+    emitActivity({ kind: 'figure.opened_fast_edit', outcome: 'editing' })
+    return 'editing'
+  }
+  useUiStore.getState().setElementPanel(null)
+  // **这一刻**没有源脚本，不代表这张图不可编辑：素材→脚本的关联是异步到达的
+  // （后端扫描 / 试运行 → `assets.changed` → `panelSourceSync` 原地补
+  // `script`）。把用户的意图记下来，关联建立时由 `liveSync` 补上那次进入
+  // ——否则这条判断就是一次性的，双击落在关联之前时意图**永久丢失**
+  // （issue #267：机器慢一点就必然发生，快一点就永远看不到）。
+  useWorkspaceStore.getState().setPendingElementEdit(panel.id)
+  emitActivity({ kind: 'figure.opened_fast_edit', outcome: 'layout_only' })
+  return 'layout_only'
+}
+
+export type AddToLayoutOutcome = 'added' | 'focused' | 'missing'
+
+/**
+ * 「添加到画布」。**已经在文档里就只是聚焦它**——重复点不会叠出第二个面板，
+ * 也不会把 overrides 复制到一个新对象上（那份复制品之后就与原件失联了）。
+ */
+export function addFigureToLayout(figureId: string): AddToLayoutOutcome {
+  const got = ensurePanel(figureId)
+  if (!got) {
+    useUiStore
+      .getState()
+      .setStatus(msg('fastEdit.figureMissing', { name: figureId }, 'workspace'), 'error')
+    return 'missing'
+  }
+  focusLayoutPanel(got.panel.id)
+  const name = got.panel.name ?? got.panel.fileId
+  useUiStore
+    .getState()
+    .setStatus(msg(got.created ? 'fastEdit.added' : 'fastEdit.alreadyOnCanvas', { name }, 'workspace'))
+  emitActivity({ kind: 'figure.added_to_layout', outcome: got.created ? 'added' : 'focused' })
+  return got.created ? 'added' : 'focused'
+}
+
+/** 回到画布排版；当前那张图仍然选中，位置与尺寸一个字节没动过 */
+export function returnToLayout(): void {
+  // 本来就在排版上（onboarding 的前置动作会这么调）：那不是一次模式切换，
+  // 不许拿一条陈旧的记录去动用户此刻的视口
+  const wasFastEdit = useWorkspaceStore.getState().mode === 'fast_edit'
+  const panel = activeFigurePanel()
+  useWorkspaceStore.getState().exitToLayout()
+  useUiStore.getState().setElementPanel(null)
+  if (panel) useSelectionStore.getState().set([panel.id])
+  // **先还原用户进来之前看的那一片**（审计 T01）：他没缩放没平移，画面就不该变。
+  // 记录对不上（换过画布 / 会话恢复时本来就在快速编辑里）才现算一个落点。
+  const parked = takeParkedLayoutView()
+  if (!wasFastEdit) {
+    // 一次什么都没切的「切换」：视口一个字不动
+  } else if (parked) {
+    useViewportStore.getState().restoreView(parked)
+  } else if (panel) {
+    revealPanel(panel)
+  } else {
+    const page = useDocumentStore.getState().doc.page
+    useViewportStore.getState().fit(page.w, page.h)
+  }
+  // **焦点救援**：调用方多半是快速编辑浮动条上那个按钮，而这一下正好把它
+  // 整条卸掉。焦点掉回 body 之后 WebKit 的 Tab 与 Shift+Tab 双向都不动，
+  // 键盘用户就此困在页面里（`lib/focusRescue.ts` 有实测记录）。接手者选左轨的
+  // 「图层」——它一直在（画布本身不可聚焦），而且正是回到排版之后要看的东西。
+  // 与 `enterElementEdit` 选「图内元素」是同一条理由、同一个套路。
+  rescueFocus(() => document.querySelector<HTMLElement>('[data-rail="layers"]'))
+}
+
+/**
+ * 定位到画布上的某个面板：切到它所在的画布、选中、滚进视野。
+ * Prompt 11 的问题面板与 Prompt 12 的导出报告直接调它。
+ */
+export function focusLayoutPanel(panelId: string): boolean {
+  const s = useDocumentStore.getState()
+  const inActive = s.doc.objects.find((o) => o.id === panelId)
+  if (!inActive) {
+    const owner = s.canvases.find(
+      (c) => c.id !== s.activeCanvasId && c.objects.some((o) => o.id === panelId),
+    )
+    if (!owner) return false
+    activateCanvas(owner.id)
+  }
+  const obj = useDocumentStore.getState().doc.objects.find((o) => o.id === panelId)
+  if (!obj) return false
+  useWorkspaceStore.getState().exitToLayout()
+  useUiStore.getState().setElementPanel(null)
+  useSelectionStore.getState().set([panelId])
+  revealPanel(obj)
+  return true
+}
+
+/** 把对象滚进视野。**只动视口，不动文档**——视口不是用户数据 */
+function revealPanel(o: CanvasObject): void {
+  useViewportStore.getState().revealRect({ x: o.x, y: o.y, w: o.w, h: o.h })
+}
+
+/* ---------------------------- 本机持久化 ---------------------------------- */
+
+interface Persisted {
+  mode: WorkspaceMode
+  panelId: string | null
+}
+
+/**
+ * 本机那一档说「上次停在哪个面板上」。**只有一处判据**：模式不是
+ * `fast_edit`、没有 panelId、blob 坏了，都是同一个答案——没有目标。
+ *
+ * 曾经这里先校验一遍 `mode` 的取值、`restoreWorkspace` 再判一次是不是
+ * `fast_edit`，两句话说的是同一件事，于是把前一句改成恒真也没有任何用例会
+ * 红（变异反证里它活了下来）。冗余的保证杀不死，处置是合成一处，不是造个
+ * 输入去覆盖它。
+ */
+function readFastEditTarget(documentId: string): string | null {
+  try {
+    const raw = localStorage.getItem(KEY_PREFIX + documentId)
+    if (!raw) return null
+    const v = JSON.parse(raw) as Partial<Persisted>
+    return v.mode === 'fast_edit' && typeof v.panelId === 'string' ? v.panelId : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 恢复上次的模式。**先验对象还在不在**：文档换过、那个面板被删掉、
+ * 或者存的是另一个文档的 id 时，一律回排版模式——恢复出一个指向不存在对象
+ * 的快速编辑，用户看到的是一个空工作区，而且退不出来。
+ */
+export function restoreWorkspace(documentId: string, objects: readonly CanvasObject[]): void {
+  const store = useWorkspaceStore.getState()
+  const panelId = readFastEditTarget(documentId)
+  const o = panelId ? objects.find((x) => x.id === panelId) : undefined
+  if (o?.type !== 'panel' || o.hidden) {
+    store.clear()
+    return
+  }
+  store.enterFastEdit(o.id)
+}
+
+/**
+ * 订阅：文档换代就恢复一次，模式变了就存一次。**一个订阅，不是两个**
+ * ——两个的话「载入时写回一次」与「恢复」会互相盖。
+ */
+export function startWorkspacePersistence(): () => void {
+  let documentId = useDocumentStore.getState().documentId
+  restoreWorkspace(documentId, useDocumentStore.getState().doc.objects)
+
+  const stopDoc = useDocumentStore.subscribe((s) => {
+    if (s.documentId === documentId) return
+    documentId = s.documentId
+    restoreWorkspace(documentId, s.doc.objects)
+  })
+  const stopMode = useWorkspaceStore.subscribe((s, prev) => {
+    if (s.mode === prev.mode && s.activePanelId === prev.activePanelId) return
+    try {
+      localStorage.setItem(
+        KEY_PREFIX + documentId,
+        JSON.stringify({ mode: s.mode, panelId: s.activePanelId } satisfies Persisted),
+      )
+    } catch {
+      /* 存不下只影响「下次打开还在这张图上」 */
+    }
+  })
+  return () => {
+    stopDoc()
+    stopMode()
+  }
+}

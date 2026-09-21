@@ -1,0 +1,316 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tavotto"
+dynamic = ["version"]
+description = "Make AI-generated scientific figures editable without losing the code behind them."
+readme = "README.md"
+# 上界与 CI 实测范围一致（1.0 审计 P1-05）：矩阵铺的是 3.10–3.14，元数据就
+# 只承诺 3.10–3.14。3.14 于 2026-09-14 放开（issue #33）：Homebrew / pipx 的
+# 默认解释器已是 3.14，而**只有没写上界的 0.8.0** 能被 3.14 的 pip 解析到——
+# 用户装到六个版本前的 0.8.0、插件报 engine_too_old、`pipx upgrade` 仍是 0.8.0。
+# 「pip 允许装」必须等于「我们真的测过」：backend-fast 有 Linux 3.14 腿，
+# package 的 wheel 冒烟多一档 Linux 3.14，classifiers 同步列出已验证版本；
+# 3.15 同样要先进矩阵再放开。
+requires-python = ">=3.10,<3.15"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{ name = "erwanjun" }]
+keywords = ["matplotlib", "figure", "layout", "publication", "pdf", "科研绘图"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: Flask",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Topic :: Multimedia :: Graphics :: Editors :: Vector-Based",
+]
+
+# Flask 父进程只要这两个：科学栈刻意不在这里——engine/registry.py、pool.py、
+# ai_bridge.py 必须保持纯标准库可 import，matplotlib 由 worker 解释器提供。
+dependencies = [
+    "flask>=3.1,<4",
+    "pymupdf>=1.24,<2",
+]
+
+[project.optional-dependencies]
+# 单环境安装：渲染 worker 直接用当前解释器，无需另找科学栈 python。
+# 上界跟着实测走（P1-05）：runtime-lock 与视觉基线在 matplotlib 3.11 /
+# numpy 2.x 上验证，matplotlib 的 minor 升版历史上多次破坏私有接口
+# （axis3d 几何助手、colorbar 落位），未验证的下一档 minor 不该被顺手装上。
+worker = ["matplotlib>=3.8,<3.12", "numpy>=1.24,<3"]
+# Ruff 的上界跟着实测走，与上面 worker 那条同一个理由：ruff 在 1.0 之前会在
+# minor 里把 preview 规则转正，于是**同一份代码、同一份配置**在升一个 minor 之后
+# 可能突然多出几十条诊断——那种红与本次改动无关，只会让人学会忽略 lint 门禁。
+# 换 minor 是一次要有人负责的决定（跑一遍全仓、看新规则值不值得开）。
+dev = ["pytest>=8", "build>=1.2", "twine>=5", "ruff>=0.16,<0.17"]
+# 实验室 CI（scripts/ci/）专用。**刻意不进 dev**：普通开发与 PR 上的
+# `pip install -e ".[dev]"` 不该被迫拖进图像库，而 Flask 父进程的依赖边界
+# （只有 flask + pymupdf，没有科学栈）更是一个字都不能松。
+# 视觉回归要解码 PNG 并做像素级比较，这是它唯一需要的两样东西。
+ci = ["numpy>=1.24", "Pillow>=10"]
+
+[project.scripts]
+tavotto = "tavotto.cli_entry:main"
+
+[project.urls]
+Homepage = "https://github.com/Tavotto/Tavotto"
+Issues = "https://github.com/Tavotto/Tavotto/issues"
+Changelog = "https://github.com/Tavotto/Tavotto/releases"
+
+[tool.hatch.version]
+path = "src/tavotto/__init__.py"
+
+# 前端产物 src/tavotto/web/ 由 scripts/build_frontend.py 生成，进 .gitignore（可再生）。
+# hatchling 默认跳过 VCS 忽略的文件，targets 的 include 也救不回来——必须在这里
+# 用 artifacts 显式收回，否则打出来的包没有界面（首页 404）。
+[tool.hatch.build]
+artifacts = ["src/tavotto/web/**"]
+# Windows 桌面版的内置渲染 runtime（仓库根的 runtime/，200 MiB 上下）只跟着
+# 安装包走，**绝不能混进 wheel / sdist**：pip 用户拿到的是轻量包，
+# 而且那是一堆 Windows 二进制。它已经在 .gitignore 里（hatchling 默认就会跳过），
+# 这条 exclude 是第二道闸——artifacts 那类显式收回的规则容易越写越宽。
+# Rust supervisor 的 crate（workerd/）同理：它是随桌面产物分发的二进制源码，
+# 不属于 pip 包。**必须显式 exclude**——sdist 的 include 里那条 `tests` 是
+# gitignore 风格的模式，会把任何一层的 `tests/` 都收进来，`workerd/tests/` 正好
+# 撞上（实测过：不加这条，sdist 里会多出三个 .rs 文件和一个 fake worker）。
+# Codex 插件（codex-plugin/ + 仓库根的 .agents/ 市场清单）同理：它随 Codex 的
+# 插件市场分发，不属于 pip 包。sdist 的 include 里那条 `tests` 是 gitignore 风格
+# 的模式，任何一层的 `tests/` 都会被收走——插件将来加 tests/ 就会撞上。
+# 遥测代理（services/telemetry_proxy/）是一个**独立部署的服务**，不是 Tavotto
+# 运行时的一部分：客户端只知道一个 URL，代理跑在别处。它进 wheel 唯一的效果是
+# 给每个 pip 用户塞一份用不到的服务端代码，还会让「Tavotto 里有没有 PostHog
+# 相关代码」这个问题变得需要解释。sdist 的 include 里那条 `tests` 是 gitignore
+# 风格的模式，将来给代理加 tests/ 就会撞上，所以这里也显式挡掉。
+# CI 工具 crate（tools/，如 updater-extract-probe）同理：它们是发布链自检的
+# 二进制源码，不属于 pip 包——同样要防住 sdist include 那条 `tests` 模式。
+exclude = ["runtime", "runtime/**", "build/runtime-cache/**",
+           "workerd", "workerd/**",
+           "codex-plugin", "codex-plugin/**", ".agents", ".agents/**",
+           "services", "services/**",
+           "tools", "tools/**"]
+
+# 包内数据（profiles/、resources/tutorial_project/）随 packages 自然收进 wheel 与 sdist，
+# 前提是它们不被 .gitignore 挡（hatchling 默认跳过 VCS 忽略的文件）。桌面产物那边
+# PyInstaller **不会**自己收数据文件，见 packaging/tavotto.spec 的 datas。
+[tool.hatch.build.targets.wheel]
+packages = ["src/tavotto"]
+
+[tool.hatch.build.targets.sdist]
+# 源码包里带上前端构建产物（src/tavotto/web），从 sdist 装也不需要 node。
+include = [
+    "src/tavotto",
+    "tests",
+    "web/src",
+    "web/package.json",
+    "web/pnpm-lock.yaml",
+    "README.md",
+    "LICENSE",
+    "pytest.ini",
+]
+
+# ---------------------------------------------------------------------------
+# Mutation testing（实验室 weekly CI，见 scripts/ci/mutation.py）
+#
+# **mutmut 3.x 只从 cwd 的 pyproject.toml / setup.cfg 读配置**——没有命令行
+# 或环境变量能覆盖它（实测 `mutmut.configuration._config_reader` 里硬编码了
+# 这两个文件名）。所以这段必须留在仓库里，也因此它会被 code review 看到，
+# 这正好是我们想要的：scope 圈了哪些模块，是需要有人负责的决定。
+#
+# `only_mutate` 逐个审计过，共同点是**纯标准库 + 逻辑密集 + 算错了会安静地
+# 产生错误结果**。刻意排除 app.py（庞大的 HTTP/subprocess 集成层）、
+# worker.py（要科学栈）、desktop.py 与 runtime.py（平台分支会产出大量
+# 「另一个平台才走到」的 survived，纯噪声）、pathgeom.py（依赖 numpy）。
+#
+# 键名按 3.x 的实际字段：`source_paths`（`paths_to_mutate` 已废弃并会告警）、
+# `only_mutate`（每项必须以 .py 或 * 结尾）、`pytest_add_cli_args`。
+[tool.mutmut]
+source_paths = ["src/tavotto"]
+only_mutate = [
+    "src/tavotto/engine/patchspec.py",
+    "src/tavotto/engine/registry.py",
+    "src/tavotto/engine/locate.py",
+    "src/tavotto/engine/preflight.py",
+    "src/tavotto/engine/profiles.py",
+    # 2026-09-17 审计 PR E 从 app.py 提出来的写回基线：纯标准库、逻辑密集、算错了会安静地
+    # 让预览停在磁盘原图上（基线有效性判据）。看护 tests/test_baked_baseline_store.py。
+    "src/tavotto/engine/bakedbaseline.py",
+]
+pytest_add_cli_args = ["-q", "-p", "no:cacheprovider"]
+
+# ---------------------------------------------------------------------------
+# Ruff（`ruff check .`，PR 上的 python-lint job）
+#
+# 定位是**开发闭环里最便宜的第一层**：改完 Python 先秒级拿到「引用了不存在的
+# 名字」「导入了不用的模块」这类回答，而不是等十分钟的 CI 矩阵告诉你一个 F821。
+# 它不参与渲染路径，也不替代 pytest / CompatBench / 等价性矩阵——那几层问的
+# 是完全不同的问题。
+#
+# **select 必须显式写死**。ruff 的默认规则集本身会随版本变宽：本仓库接入时
+# 实测 0.16.4 的默认集会报出 RUF100/PLW1510/UP037/FURB167 等上千条诊断，
+# 而 0.16 之前的默认只有 E4/E7/E9/F。不钉住 select，一次例行升版就能让门禁
+# 一夜之间红成一片——那正是让人开始忽略 lint 的方式。
+[tool.ruff]
+# 元数据承诺的是 3.10–3.14，静态分析就必须按**下界**做。
+# 开发机跑 3.13，若让 ruff 也按 3.13 分析，它会认为 `X | None`、match 语句、
+# 新式泛型处处可用，于是「在 3.10 上根本 import 不了」这类问题静态层面永远
+# 看不见（ruff 会从 requires-python 推出同样的 py310，这里显式写死是为了
+# 让它不随元数据的措辞变化而漂）。
+target-version = "py310"
+# **first-party 的判据是目录，不是一张名字清单。**
+# 本仓库有大量「平铺 import 的兄弟模块」：worker.py / browser.py 先
+# `sys.path.insert(0, HERE)` 再 `import manifest` / `import overrides` /
+# `import pathgeom`；scripts/ci/* 先注入自己再 `from _common import ...`；
+# 测试注入 scripts/ci 之后 `import aggregate_gate`。ruff 认不出这些是自家代码，
+# 会把它们排进第三方组——于是 `import pathgeom` 被挪到 matplotlib 中间，而那条
+# 空行分隔的正是「外面的世界」与「我们自己的模块」，抹掉它就少了一个语义。
+#
+# `src` 让 ruff 按**路径**解析：下面这几个目录正是运行时真的被注入 sys.path 的
+# 那几个。它把维护粒度从「几十个模块名」降到「少数几个源码根」——实测名字清单
+# 形态需要 39 条，且每加一个平铺模块都得记得回来补一行。
+#
+# **但它不是「从此不用维护」**，边界要说清楚：
+#   * 在**已有**的某个源码根下新增模块 → 不用动这里，ruff 按路径自然认出来；
+#   * 新写了一处 `sys.path.insert(0, NEW_ROOT)` 并从那里平铺 import →
+#     **必须回来审查这张表**，否则那些模块会被排进第三方组。
+# 这条规则同时写在 AGENTS.md 与 docs/ci/ruff.md 里，改 sys.path 的人看得到。
+src = [
+    ".",                                     # 仓库根（scripts/、tests/ 等按包路径解析）
+    "src",                                   # `tavotto`（pytest.ini 的 pythonpath 也是它）
+    "src/tavotto/engine",                    # worker.py / browser.py 注入：manifest、overrides、
+                                             # pathgeom、patchspec、figcapture、browser_imports
+    "scripts",                               # smoke_app、bench_render、build_* 系列
+    "scripts/ci",                            # _common、compat_corpus、pixelcompare、aggregate_gate…
+    "tests",                                 # support.frontend_schema / support.engine_invariant_probe
+    "codex-plugin/mcp",                      # tavotto_mcp
+    "codex-plugin/skills/tavotto-figure/scripts",   # handoff、update_check
+    "services/telemetry_proxy",              # tavotto_telemetry_proxy
+]
+# 实测出来的数字，不是抄模板：全仓 85762 行 Python 里超过 100 列的只有 33 行
+# （0.04%），超过 88 列的有 474 行（0.55%）——这个代码库事实上写到 100。
+# **当前没有任何被选中的规则消费它**（E501 在 E5，没选）；它只作用于
+# `ruff format`，而 formatter 还没成为门禁（理由见下）。写在这里是为了让
+# 谁临时跑一次 `ruff format` 时不会按默认的 88 去和既有风格打架。
+line-length = 100
+
+# exclude 刻意为空：ruff 默认 `respect-gitignore = true`，而本仓库所有生成物
+# 与外来物（/runtime/、/dist/、/build/、/cache/、web/node_modules/、
+# web/dist*/、src/tavotto/web/、__pycache__/）本来就在 .gitignore 里。
+# 再抄一份 exclude 只会变成第二处需要同步的清单——少一条不同步，就有一片
+# 目录在没人注意的时候退出检查。
+
+[tool.ruff.lint]
+# 第一阶段刻意保守。这是个成熟代码库，接入 lint 的成功标准不是「开的规则多」，
+# 而是「长期保持绿、没人想把它关掉」。逐族的理由：
+#
+#   E4  导入形状（E401 一行多个导入 / E402 导入不在文件顶部）。本仓库已经在
+#       用 `# noqa: E402` 标注那 89 处**有意为之**的延后导入（sys.path 注入之后
+#       才能 import 的兄弟模块），这一族等于把既有约定变成可执行的。
+#   E7  语句级错误形状——E711/E712（`== None` / `== True`）、E713/E714
+#       （`not x in` / `not x is`）、E722（裸 except）、E741。这些是真错，
+#       而且全仓当前一条 E711/E712/E722 都没有：开着它是防回归，不是补债。
+#   E9  语法 / IO 级错误。永远该开。
+#   F   Pyflakes：未定义名字（F821）、未使用导入（F401）、未使用变量（F841）、
+#       重复定义。这一族才是本次接入真正的目标——它挡的正是「AI 改完代码，
+#       十分钟后 CI 告诉你有个名字拼错了」那类循环。
+#   I   import 排序（isort）。**2026-08-27 补开**：接入 Ruff 那轮把它推迟了，
+#       因为当时 ruff 会把平铺 import 的兄弟模块判成第三方（见上面的 `src`）。
+#       归属问题解决之后它才有意义——排序本身是机械的，真正的价值是
+#       「谁是自家代码」这条线不再靠人肉维持。
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# 浏览器 playground 的示例脚本是**给用户看的成品**：它们经 `?raw` 原样打进
+# playground bundle（scripts/build_browser_playground.py），在网站 /try 的编辑器
+# 里逐字显示，并且参与产物指纹。`peak = lambda c, s, a: ...` 是科研绘图里
+# 常见的紧凑写法，改成 def 既动了指纹又让示例变啰嗦——为 lint 重写展示给用户的
+# 示例代码是本末倒置。
+"web/src/playground/examples/*.py" = ["E731", "I001"]
+
+# 下面三处豁免 I001 的是**同一条理由**：这些 .py 的 import 段落是**内容**，
+# 不是风格。
+#
+# * examples/**            随产品分发、用户会在应用里打开的示例图库
+#                          （`tavotto --figures examples/figures`）。
+# * web/src/playground/**  网站 /try 编辑器里逐字显示给用户的示例，而且参与
+#                          产物指纹：动它就要重建 playground 并重新同步网站
+#                          仓库，为 import 排序付这个代价不值。
+# * tests/compat/cases/**  CompatBench 语料，**存在的意义就是模拟外部
+#                          matplotlib 世界的真实写法**。`script_shapes/` 里几个
+#                          case 问的正是「用户脚本的 import 长什么样」（含
+#                          import 本地 helper、import 不在顶部），按我们的规矩
+#                          排一遍等于把题目改了。
+#
+# F / E9（未定义名字、语法错误）在这些目录里照常生效：那是示例或语料自己写坏
+# 了，必须红。这里只关掉「排版」这一维。
+"examples/**/*.py" = ["I001"]
+"tests/compat/cases/**/*.py" = ["I001"]
+
+# 上面三处共有的那一条是 **I001**：import 怎么排属于示例 / 语料的**内容**，
+# 不是我们的代码风格。playground 那条**另外**还豁免 `E731`——`peak = lambda c,
+# s, a: ...` 是科研绘图里常见的紧凑写法，而那份示例在 /try 里逐字显示给用户，
+# 为 lint 把它改成 def 是本末倒置。
+#
+# 正确性规则（F 未定义名字与未使用、E9 语法错误、E4/E7 的其余各条）在这三个
+# 目录里**照常生效**——那是示例或语料自身写坏了，必须红。
+#
+# 将来 ruff 若与某条语料的意图再起冲突，做法是在这张表里加一条**精确到规则**
+# 的豁免并写明理由，**不是**为了让 lint 高兴去「现代化」语料——那会悄悄改掉
+# 这条门禁在问的问题。
+
+# ---------------------------------------------------------------------------
+# Formatter（`ruff format`）
+#
+# **exclude 的 glob 是实测确定的，不是照着直觉写的。** 用当前钉住的 ruff 0.16.4
+# 配 `--force-exclude` 逐个验过：目录形式（`"examples/"`）**一个文件都排不掉**
+# ——写成目录形式与「三个目录一条都不排」得到的是同一个数（291 个 .py，
+# 286 待重排 + 5 已合规），必须写成 `**/*.py`。
+#
+# 覆盖面因此是算得出来的：仓库 291 个 .py − 三个内容目录 86 个 = **205**，
+# 与 `ruff format --check .` 报的 202 待重排 + 3 已合规逐位相同。
+[tool.ruff.format]
+exclude = [
+    # **Markdown。** `ruff format` 会重排 .md 里 ```python 代码块，而
+    # `ruff check` 对同一个文件说「No Python files found」——门禁的两半对
+    # 「什么算 Python」判断不一致，本身就该消除。而那些文件是什么更要紧：
+    # docs/release-notes/** 是**已经发出去的历史记录**；docs/adr/0014 里
+    # dataclass 的行尾注释对齐成一列，那份对齐就是它想表达的东西；
+    # docs/audit/** 记的是当时那份复现配方的原样；codex-plugin 的
+    # figure-contract.md 随插件发给用户。文档里的代码块是**内容**。
+    "*.md",
+    # 下面三处与 lint 的 per-file-ignores 是**同一批目录、同一条理由**：
+    # 这些 .py 的排版是给人看的内容，不是我们的代码风格。
+    #   examples/**            随产品分发、用户会在应用里打开的示例图库
+    #   web/src/playground/**  /try 编辑器里逐字显示给用户，且参与产物指纹
+    #   tests/compat/cases/**  CompatBench 语料，模拟外部 matplotlib 世界的
+    #                          真实写法；`script_shapes/` 问的正是「用户脚本
+    #                          的 import 长什么样」，AST 一样不代表 shape 可改
+    # 两张清单必须一起改——漏一处的表现是 `ruff check` 放过而
+    # `ruff format --check` 报红，而两条门禁说的是同一件事。
+    "examples/**/*.py",
+    "web/src/playground/examples/**/*.py",
+    "tests/compat/cases/**/*.py",
+]
+# **显式关掉，即使当前版本默认就是关的。** docstring 里的代码片段不该因为将来
+# 某次 ruff 升版而自动触发第二轮全仓迁移——真想开的话单独一个 PR 评估。
+docstring-code-format = false
+
+[tool.ruff.lint.isort]
+# **必须开**。默认 `false` 时 ruff 会把带 as 别名的成员拆成一条条独立语句：
+#     from tavotto.engine import (config as engine_config,
+#                                 handoff as engine_handoff, patchspec, ...)
+# 会变成七条各自带括号的 `from tavotto.engine import (...)`——比原样难读得多，
+# 而且每加一个别名成员就多一条语句。开了它，一次 import 就还是一条 import。
+# （codex-plugin/mcp/tavotto_mcp/bridge.py 是实测出这条的地方。）
+combine-as-imports = true

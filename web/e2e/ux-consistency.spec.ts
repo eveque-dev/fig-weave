@@ -1,0 +1,377 @@
+import { expect, test, type RunningApp } from './fixtures'
+import { horizontalOffenders } from './overflow'
+import type { Page } from '@playwright/test'
+
+/**
+ * 桌面端 UX 一致性修复的黄金路径（真浏览器 + 真引擎渲染，
+ * `examples/figures` 的 Fig1_kinetics，不是手写 manifest）。
+ *
+ *   A. 统一改图中文字：多选图标题 + X/Y 轴标题 → 改字体、字号、加粗 →
+ *      三个目标一起变 → 撤销一次全回来 → 重做一次全变回去；
+ *   B. 刻度方向与次刻度：选中子图 → 开上/右刻度 → X 朝内、Y 内外 → 开 X 次刻度
+ *      → 示意图状态跟着变 → 等真实渲染 → 撤销重做；
+ *   C. AI 配置：模型 / 键盘调强度 / 关掉重开偏好还在 / 无横向溢出；
+ *   D. 设置渐进披露：无文字墙 / 键盘聚焦问号 / Esc / 展开环境诊断才见完整路径。
+ *
+ * 断言全部打在「结构与行为」上，不打在某台机器上装没装 codex/claude。
+ */
+
+async function openFigure(page: Page, a: RunningApp) {
+  await page.goto(a.baseURL)
+  // Prompt 09 起，双击素材卡 = 打开这张图（快速编辑工作区），**当场就在图内
+  // 编辑态**——不再需要先「加入画布」再点一次「编辑图内元素」。
+  await page.getByText('Fig1_kinetics.pdf').dblclick({ timeout: 30_000 })
+  await expect(page.locator('[data-element-svg] svg').first()).toBeVisible({ timeout: 60_000 })
+}
+
+/** 打开左侧元素树并展开全部分组（分组头点行即展开，元素行点行首小三角） */
+async function openTree(page: Page) {
+  // **轨道按钮是开关，不是「打开」。** Prompt 09 起双击素材卡直接进快速编辑，
+  // 左栏本来就停在「图内元素」上（实测 `aria-expanded=true`、6 个 treeitem）；
+  // 再点一次是**关掉它**，后面每一条断言都会在「找不到 treeitem」上超时。
+  // 所以先看它开着没有——已经开着就什么都不做。
+  if (!(await page.locator('[role="treeitem"]').count())) {
+    await page.getByRole('navigation').getByRole('button', { name: '图内元素' }).click()
+  }
+  await page.locator('[role="treeitem"]').first().waitFor({ timeout: 30_000 })
+  for (let i = 0; i < 20; i++) {
+    const rows = page.locator('[role="treeitem"][aria-expanded="false"]')
+    if (!(await rows.count())) break
+    const row = rows.first()
+    const chevron = row.getByRole('button', { name: '展开', exact: true })
+    try {
+      if (await chevron.count()) await chevron.first().click({ timeout: 4000 })
+      else await row.click({ timeout: 4000 })
+    } catch {
+      break
+    }
+    await page.waitForTimeout(120)
+  }
+}
+
+const inspector = (page: Page) => page.getByLabel('右侧面板', { exact: true })
+
+/* ============================ 流程 A：统一图中文字 ========================== */
+
+test('流程 A：图标题 + X/Y 轴标题一起改字体 / 字号 / 加粗，撤销重做全组一致', async ({
+  app,
+  page,
+}) => {
+  const a = await app()
+  await openFigure(page, a)
+  await openTree(page)
+
+  await page.getByRole('treeitem', { name: /^标题/ }).first().click()
+  await page.getByRole('treeitem', { name: /^X 轴/ }).first().click({ modifiers: ['Shift'] })
+  await page.getByRole('treeitem', { name: /^Y 轴/ }).first().click({ modifiers: ['Shift'] })
+
+  const panel = inspector(page)
+  // 公共样式区出现（角色不同也能一起改——这正是修改前做不到的）
+  await expect(panel.getByText(/个文字元素的公共样式/)).toBeVisible({ timeout: 15_000 })
+  // 对齐工具同时在：样式与几何互不排斥
+  await expect(panel.getByText('已选 3 个元素')).toBeVisible()
+
+  const size = panel.getByRole('textbox', { name: '字号' })
+  // Fig1_kinetics 里三条文字的字号本来就一样，先把标题单独改掉造出 mixed
+  await page.getByRole('treeitem', { name: /^标题/ }).first().click()
+  await panel.getByRole('textbox', { name: '字号' }).fill('12')
+  await panel.getByRole('textbox', { name: '字号' }).press('Enter')
+  await expect(panel.getByRole('textbox', { name: '字号' })).toHaveValue('12', { timeout: 15_000 })
+
+  await page.getByRole('treeitem', { name: /^X 轴/ }).first().click({ modifiers: ['Shift'] })
+  await page.getByRole('treeitem', { name: /^Y 轴/ }).first().click({ modifiers: ['Shift'] })
+  // --- mixed：输入框留空 + 「多个值」占位，绝不谎报某一个的字号 ---
+  await expect(size).toHaveValue('', { timeout: 15_000 })
+  await expect(size).toHaveAttribute('placeholder', '多个值')
+
+  // --- 字号：三个目标一起变 ---
+  await size.fill('13')
+  await size.press('Enter')
+  await expect(size).toHaveValue('13', { timeout: 15_000 })
+
+  // --- 加粗：B 图标（不是「常规 / 加粗」下拉） ---
+  const bold = panel.getByRole('button', { name: /^加粗/ })
+  await expect(bold).toBeVisible()
+  await bold.click()
+  await expect(bold).toHaveAttribute('aria-pressed', 'true', { timeout: 15_000 })
+
+  // --- 字体：选一个新字体 ---
+  await panel.getByRole('combobox', { name: '字体' }).click()
+  await page.getByRole('option', { name: /无衬线|sans/i }).first().click()
+  await page.waitForTimeout(600)
+
+  // 三个目标都被改过：头部计数说 3 项（每个元素各自算）
+  // 逐个选中确认，比数字更硬
+  for (const name of [/^标题/, /^X 轴/, /^Y 轴/]) {
+    await page.getByRole('treeitem', { name }).first().click()
+    await expect(panel.getByRole('textbox', { name: '字号' })).toHaveValue('13', {
+      timeout: 15_000,
+    })
+    await expect(panel.getByRole('button', { name: /^加粗/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  }
+
+  // --- 撤销：一次点击 = 一条历史 ---
+  const undo = page.getByRole('button', { name: '撤销' })
+  const redo = page.getByRole('button', { name: '重做' })
+  await undo.click() // 字体
+  await undo.click() // 加粗
+  await page.getByRole('treeitem', { name: /^标题/ }).first().click()
+  await expect(panel.getByRole('button', { name: /^加粗/ })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+    { timeout: 15_000 },
+  )
+  await undo.click() // 批量字号 → 回到「标题 12、轴标题各自原值」
+  await expect(panel.getByRole('textbox', { name: '字号' })).toHaveValue('12', { timeout: 15_000 })
+
+  // --- 重做：全部回到新值 ---
+  await redo.click()
+  await redo.click()
+  await redo.click()
+  for (const name of [/^标题/, /^X 轴/, /^Y 轴/]) {
+    await page.getByRole('treeitem', { name }).first().click()
+    await expect(panel.getByRole('textbox', { name: '字号' })).toHaveValue('13', {
+      timeout: 15_000,
+    })
+  }
+})
+
+/* ========================= 流程 B：刻度方向与次刻度 ========================= */
+
+test('流程 B：选中子图即可设四边刻度、方向与次刻度，示意图跟着真实状态变', async ({
+  app,
+  page,
+}) => {
+  const a = await app()
+  await openFigure(page, a)
+  await openTree(page)
+  await page.getByRole('treeitem', { name: /^子图 1/ }).first().click()
+
+  const panel = inspector(page)
+  await expect(panel.getByText('次刻度', { exact: true })).toBeVisible({ timeout: 15_000 })
+  await expect(panel.getByText('方向', { exact: true })).toBeVisible()
+
+  // --- 开上边与右边刻度（四边点按这条既有交互必须还在）---
+  // 审计 T13 之后「在哪几条边显示」只在示意图上一处（卡里不再有第二排开关）：
+  // 点那条边框**里侧**的带。这张图刻度朝内（paper_style.py），里侧带 = 这一边的
+  // 向内刻度；打开一条隐藏的边不动轴的方向——下面的方向断言仍对着 X 轴写
+  const zone = (side: string, z: 'inner' | 'outer') =>
+    panel.locator(`[data-tick-zone="${side}:${z}"]`)
+  await expect(panel.getByRole('switch', { name: '上边刻度线' })).toHaveCount(0)
+  await zone('top', 'inner').click()
+  await expect(zone('top', 'inner')).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 })
+  await zone('right', 'inner').click()
+  await expect(zone('right', 'inner')).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 })
+
+  // Session 16（ADR 0035）之后示意图按**边 × 内外半区**画：方向不再是一条边上的
+  // 一个属性，而是「内半区亮 / 外半区亮 / 都亮」——与 tickTaskCard.test 读同一份锚点
+  const half = (side: string, dir: 'in' | 'out') =>
+    panel.locator(`[data-tick-major="${side}"][data-tick-half="${dir}"]`)
+  const expectDirection = async (side: string, direction: 'in' | 'out' | 'inout') => {
+    const want = { in: ['true', 'false'], out: ['false', 'true'], inout: ['true', 'true'] }[direction]
+    await expect(half(side, 'in')).toHaveAttribute('data-tick-on', want[0], { timeout: 15_000 })
+    await expect(half(side, 'out')).toHaveAttribute('data-tick-on', want[1], { timeout: 15_000 })
+  }
+
+  // --- 示意图读的是真实状态 ---
+  // paper_style.py 里 xtick.direction = "in"：**这张图本来就是朝内的**，
+  // 而修改前的示意图把刻度画死在框外（before/zh-1440-axes-ticks.png）。
+  // 起手就该是 in——这一条本身就是那个缺陷的真数据反例。
+  await expectDirection('bottom', 'in')
+  // 三档都要能带动示意图
+  await panel.getByRole('radio', { name: '朝外' }).click()
+  await expectDirection('bottom', 'out')
+  await panel.getByRole('radio', { name: '朝内' }).click()
+  await expectDirection('bottom', 'in')
+
+  // --- 切到 Y 刻度（「X / Y 刻度」是看哪条轴的页签，方向才是取值），设成内外 ---
+  await panel.getByRole('tab', { name: 'Y 刻度' }).click()
+  await panel.getByRole('radio', { name: '内外' }).click()
+  await expectDirection('left', 'inout')
+  // X 不受影响（两个轴各写各的 ticks 元素）
+  await expectDirection('bottom', 'in')
+
+  // --- 开 X 次刻度：示意图上出现更短的次刻度 ---
+  await panel.getByRole('tab', { name: 'X 刻度' }).click()
+  await expect(panel.locator('[data-tick-minor="bottom"]')).toHaveCount(0)
+  await panel.getByRole('switch', { name: 'X 轴的次刻度' }).click()
+  await expect(panel.locator('[data-tick-minor="bottom"]')).toHaveCount(1, { timeout: 15_000 })
+
+  // --- 等真实渲染定稿：画布上的图确实被重画过 ---
+  await expect(page.locator('[data-element-svg] svg').first()).toBeVisible()
+  await page.waitForTimeout(2500)
+
+  // --- 撤销 / 重做 ---
+  const undo = page.getByRole('button', { name: '撤销' })
+  await undo.click()
+  await expect(panel.locator('[data-tick-minor="bottom"]')).toHaveCount(0, { timeout: 15_000 })
+  await page.getByRole('button', { name: '重做' }).click()
+  await expect(panel.locator('[data-tick-minor="bottom"]')).toHaveCount(1, { timeout: 15_000 })
+})
+
+/* ============================== 流程 C：AI 配置 ============================= */
+
+test('流程 C：AI 模型与推理强度——键盘可调、偏好保持、无横向溢出', async ({ app, page }) => {
+  const a = await app()
+  await openFigure(page, a)
+
+  // 右栏切到改图助手
+  // 2026-09-14 起助手是右栏 tablist 里的第三个页签（ADR 0010 修订），不再是头部按钮
+  await page.getByRole('tab', { name: /改图助手/ }).first().click()
+  const openPopover = async () => {
+    await page.getByRole('button', { name: '作用范围与执行器' }).click()
+    await expect(page.getByText('作用范围')).toBeVisible({ timeout: 15_000 })
+  }
+  await openPopover()
+
+  const popover = page.locator('[data-radix-popper-content-wrapper]').first()
+
+  // 正常状态不常驻实现说明。（原先它们收在弹层里的「技术详情」折叠下；Visual
+  // Consolidation 把那段整个撤了——CLI 版本 / 路径在设置 → 编码 Agent 的详情里）
+  await expect(popover.getByText(/自动快照/)).toHaveCount(0)
+  await expect(popover.getByRole('button', { name: '技术详情' })).toHaveCount(0)
+
+  // **锚点全是稳定 `data-*`。** 这一段原先按可见文案与 role 定位，审计 T37 把执行器
+  // 从「双选 radiogroup」换成了「执行器与模型」一个 Select、把推理强度收进了折叠区，
+  // 于是 `getByRole('radiogroup', { name: '执行改动的命令行工具' })` 与
+  // `getByRole('slider', …)` 双双匹配到 0 个元素——而它们都写在 `if (…)` 里，
+  // **一条都没红，全部静默跳过**：用例名字里的「模型与推理强度、键盘可调、偏好保持」
+  // 一个字都没在验（2026-09-07 复核发现）。条件分支里的定位是假绿最好的藏身处。
+  const agentSelect = popover.locator('[data-ai-agent-model="select"]')
+  const agentStatic = popover.locator('[data-ai-agent-model="static"]')
+  const effortDisclosure = popover.locator('[data-ai-effort="disclosure"]')
+  const recovery = popover.locator('[data-ai-open-settings]')
+
+  const nSelect = await agentSelect.count()
+  const nStatic = await agentStatic.count()
+  // 执行器与模型只有三种合法形态：可选时给选择器、只有一项时写成静态文字、
+  // 一个可用 Agent 都没有时什么都不摆。**绝不摆一个选不动的选择器。**
+  expect(nSelect + nStatic, '执行器与模型同时出现了选择器和静态文字').toBeLessThanOrEqual(1)
+  if (!nSelect && !nStatic) {
+    // 这台机器上一个可用 Agent 都没有：恢复入口必须在
+    await expect(recovery).toBeVisible()
+  }
+
+  // 推理强度默认收起，**当前值不藏**（审计 T37）：折叠行上就写着档位名，
+  // 展开之后才有滑杆。原先的用例直接找滑杆，于是永远找不到。
+  const hasEffort = (await effortDisclosure.count()) > 0
+  if (hasEffort) {
+    await expect(effortDisclosure).toHaveAttribute('aria-expanded', 'false')
+    await effortDisclosure.click()
+    await expect(effortDisclosure).toHaveAttribute('aria-expanded', 'true')
+  }
+  const slider = popover.getByRole('slider', { name: '推理强度' })
+  const hasSlider = hasEffort && (await slider.count()) > 0 && (await slider.isEnabled())
+
+  if (hasSlider) {
+    const before = await slider.getAttribute('aria-valuetext')
+    // 键盘调节：方向键是原生 range 免费拿到的
+    await slider.focus()
+    await page.keyboard.press('ArrowLeft')
+    await expect(slider).not.toHaveAttribute('aria-valuetext', before ?? '', { timeout: 10_000 })
+    const after = await slider.getAttribute('aria-valuetext')
+
+    // 关掉再打开：偏好还在（折叠区要再展开一次才看得到滑杆）
+    await page.keyboard.press('Escape')
+    await openPopover()
+    const again = page.locator('[data-radix-popper-content-wrapper]').first()
+    await again.locator('[data-ai-effort="disclosure"]').click()
+    await expect(again.getByRole('slider', { name: '推理强度' })).toHaveAttribute(
+      'aria-valuetext',
+      after ?? '',
+      { timeout: 10_000 },
+    )
+  }
+
+  // 弹层无横向溢出（真布局才量得出来；修改前六档按钮在这里两头被切掉）
+  const offenders = await horizontalOffenders(page, '[data-radix-popper-content-wrapper]')
+  expect(offenders).toEqual([])
+})
+
+/* ========================== 流程 D：设置渐进披露 =========================== */
+
+test('流程 D：设置页没有文字墙，问号键盘可达、Esc 可关，完整路径只在诊断里', async ({
+  app,
+  page,
+}) => {
+  const a = await app()
+  await page.goto(a.baseURL)
+  await page.locator('[data-rail="settings"]').click()
+  // 帮助气泡也是 role=dialog：按**里面装着设置外壳**消歧，不按对话框的名字
+  // ——那个名字是本地化文案，与顶栏那颗按钮同一个赌注（#299）
+  const dialog = page.getByRole('dialog').filter({ has: page.locator('[data-settings-shell]') })
+  await expect(dialog).toBeVisible({ timeout: 30_000 })
+
+  /** 对话框正文里独立成段的长解释有几段 */
+  const proseCount = async () =>
+    dialog.evaluate(
+      (d) =>
+        [...d.querySelectorAll('p')].filter((p) => (p.textContent ?? '').trim().length >= 30).length,
+    )
+
+  // Session 19 把设置分成十一个分区：这里挑五个正文最容易长成文字墙的
+  for (const section of ['常规', '界面', '项目', '样式', '导出']) {
+    await dialog.getByRole('navigation').getByRole('button', { name: section }).click()
+    await page.waitForTimeout(250)
+    expect(await proseCount(), `${section} 分区仍是文字墙`).toBeLessThanOrEqual(1)
+    expect(await horizontalOffenders(page, '[role="dialog"][aria-labelledby]')).toEqual([])
+  }
+
+  // --- 常规页一个问号都没有（审计「说明文字专项补查」）---
+  await dialog.getByRole('navigation').getByRole('button', { name: '常规' }).click()
+  await expect(dialog.locator('[data-help-tip]')).toHaveCount(0)
+
+  // 绝对路径的判据。**读的是 innerText 不是 textContent**：`textContent()` 把相邻
+  // 元素的文字无分隔地粘在一起，于是「渲染引擎 Python」的末字符直接顶在
+  // `/opt/hostedtoolcache/...` 前面，而这条正则要求路径前面是行首或非词字符
+  // ——粘住之后前一个字符是 `n`，永远匹不上。三条反向断言因此一直在假绿
+  // （`textContent()` 连折叠起来的技术详情一起读了，里面就有绝对路径），
+  // 正向那条则在 CI 上必红。`innerText` 按渲染结果给出换行，且**只含可见文字**，
+  // 这正是 T40 要判的东西：用户看得见的首屏里没有全路径。
+  // 形状要同时认 POSIX 的 `/opt/...` 与 Windows 的 `D:\a\...`。原先枚举的是
+  // POSIX 顶级目录名（usr|opt|home|Users|private|tmp），windows-exe-smoke 上
+  // 打包产物报的是 `D:\a\Tavotto\...\runtime\python.exe`，`\a\` 不在那张表里
+  // ——**产品没问题，是判据只认得一种平台的路径长相**。
+  // 前导守卫排除 `:` 与 `/`，挡掉 `https://…` 这类 URL 的双斜杠。
+  const absolutePath = /(^|[^\w:/])(?:[A-Za-z]:)?[/\\][^\s]{8,}/
+
+  // --- 项目页首屏没有绝对路径：正文只给末级目录，全路径在展开项里（审计 T40）---
+  await dialog.getByRole('navigation').getByRole('button', { name: '项目' }).click()
+  await page.waitForTimeout(250)
+  const projectScreen = await dialog.innerText()
+  expect(projectScreen).not.toMatch(absolutePath)
+
+  // --- 问号：Tab 到它 → 展开 → Esc 收回。设置里唯一剩下的那个（界面 / 拖动联动）---
+  await dialog.getByRole('navigation').getByRole('button', { name: '界面' }).click()
+  const help = dialog.getByRole('button', { name: '关于移动子图时，同步移动标题和图例' })
+  await expect(help).toHaveAttribute('aria-expanded', 'false')
+  await help.focus()
+  await expect(help).toHaveAttribute('aria-expanded', 'true', { timeout: 10_000 })
+  await expect(page.getByText(/关联元素是手动摆过位置的标题/)).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(help).toHaveAttribute('aria-expanded', 'false', { timeout: 10_000 })
+  // Esc 关的是气泡，不是整个设置对话框
+  await expect(dialog).toBeVisible()
+
+  // --- 关于与隐私：只说「发什么 / 不发什么」，一个绝对路径都没有 ---
+  await dialog.getByRole('navigation').getByRole('button', { name: '关于与隐私' }).click()
+  await expect(dialog.getByText(/开启后只发送匿名的功能使用情况/)).toBeVisible()
+
+  const aboutScreen = await dialog.innerText()
+  expect(aboutScreen).not.toMatch(absolutePath)
+
+  // --- 诊断：完整解释器路径只在折叠的「技术详情」里（Session 19 把诊断拆成独立分区）---
+  await dialog.getByRole('navigation').getByRole('button', { name: '诊断', exact: true }).click()
+  const diag = dialog.getByRole('button', { name: '技术详情' })
+  await expect(diag).toHaveAttribute('aria-expanded', 'false')
+  const firstScreen = await dialog.innerText()
+  expect(firstScreen).not.toMatch(absolutePath)
+  await diag.click()
+  await expect(diag).toHaveAttribute('aria-expanded', 'true')
+  await page.waitForTimeout(500)
+  const expanded = await dialog.innerText()
+  expect(expanded).toMatch(absolutePath)
+})

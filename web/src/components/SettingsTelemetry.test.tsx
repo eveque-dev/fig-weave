@@ -1,0 +1,324 @@
+/**
+ * 设置里的「匿名用量统计」：三档同意态、真的写到后端、硬开关关着时点不动。
+ *
+ * 它放在「隐私、诊断与 About」这一档里——用户找「这东西会不会上传我的图」
+ * 时会来这里，而不是去翻一个新分区。
+ *
+ * 审计 T49 之前这里是个只会开 / 关的开关，于是 `unset`（还没问过）和 `disabled`
+ * （问过了，用户说不）在界面上一模一样——后端刻意分开的两件事被界面重新合并
+ * 了一次。下面这组用例的主语就是这个：**三档必须是三种可辨状态**（控件 + 行内
+ * 现状文字一起表达），而**可写的仍然只有开 / 关两档**。
+ */
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('@/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api')>()),
+  fetchTelemetrySettings: vi.fn(),
+  patchTelemetryConsent: vi.fn(),
+}))
+
+import { fetchTelemetrySettings, patchTelemetryConsent } from '@/lib/api'
+import { SettingsDialog } from '@/components/SettingsDialog'
+import { TooltipProvider } from '@/components/ui/Tooltip'
+import { t } from '@/i18n'
+import { setTelemetryEnabled } from '@/lib/telemetry'
+import { TELEMETRY_DISCLOSED_EVENTS } from '@/lib/telemetryDisclosure'
+import { useTelemetryStore } from '@/store/telemetryStore'
+import { useUiStore } from '@/store/uiStore'
+
+declare global {
+  // eslint-disable-next-line no-var
+  var IS_REACT_ACT_ENVIRONMENT: boolean
+}
+globalThis.IS_REACT_ACT_ENVIRONMENT = true
+
+const fetchMock = vi.mocked(fetchTelemetrySettings)
+const patchMock = vi.mocked(patchTelemetryConsent)
+
+const settings = (over: Record<string, unknown> = {}) =>
+  ({
+    consent: 'enabled',
+    enabled: true,
+    hard_disabled: false,
+    consent_version: 1,
+    saved_consent_version: 1,
+    needs_reconsent: false,
+    ...over,
+  }) as Awaited<ReturnType<typeof fetchTelemetrySettings>>
+
+const st = (key: string) => t(`settings.${key}`, { ns: 'dialogs' })
+
+let host: HTMLDivElement
+let root: Root
+
+async function open(initial = settings()) {
+  fetchMock.mockResolvedValue(initial)
+  useTelemetryStore.setState({ settings: null, askOpen: false })
+  useUiStore.setState({ settingsOpen: true, settingsSection: 'about' })
+  host = document.createElement('div')
+  document.body.appendChild(host)
+  root = createRoot(host)
+  await act(async () => {
+    root.render(
+      <TooltipProvider>
+        <SettingsDialog />
+      </TooltipProvider>,
+    )
+  })
+  await act(async () => {})
+}
+
+const bodyText = () => document.body.textContent ?? ''
+
+/**
+ * 同意控件是一颗滑动开关（`role="switch"`）。**认 role + 可达名**，不认某个 class。
+ *
+ * 2026-09-11 Visual Consolidation Session 1 把这里第二套三档 `Segmented` 并回了
+ * `Toggle`：控件只表达开 / 关，**第三档（还没问过）与第四档（同意的是上一版采集
+ * 范围）由行内的现状文字说出来**——三档仍是三种可辨状态，只是「可辨」落在文字上，
+ * 不落在第三颗按钮上。
+ */
+const toggle = () =>
+  document.querySelector<HTMLButtonElement>(
+    `button[role="switch"][aria-label="${st('about.telemetry.toggle')}"]`,
+  )
+const checked = () => toggle()?.getAttribute('aria-checked') ?? null
+const clickToggle = () =>
+  act(async () => {
+    toggle()?.click()
+  })
+
+beforeEach(() => {
+  fetchMock.mockReset()
+  patchMock.mockReset()
+  patchMock.mockResolvedValue(settings({ consent: 'disabled', enabled: false }))
+  setTelemetryEnabled(false)
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() => Promise.resolve({ json: () => Promise.resolve({ checks: [] }) })),
+  )
+})
+
+afterEach(() => {
+  act(() => root.unmount())
+  host.remove()
+  document.body.innerHTML = ''
+  vi.unstubAllGlobals()
+  useUiStore.setState({ settingsOpen: false })
+})
+
+describe('隐私承诺常驻', () => {
+  /**
+   * 隐私授权的**最短摘要常驻**：用户判断「这东西会不会上传我的图」靠的是它，
+   * 不许折叠。
+   */
+  it('最短隐私摘要与政策链接常驻，不需要任何交互', async () => {
+    await open()
+    expect(bodyText()).toContain(st('about.telemetry.title'))
+    expect(bodyText()).toContain(st('about.telemetry.summary'))
+    expect(bodyText()).not.toContain('**')
+    const link = [...document.querySelectorAll('a')].find(
+      (a) => a.textContent?.trim() === st('about.telemetry.policy'),
+    )
+    expect(link?.getAttribute('href')).toContain('privacy.md')
+  })
+})
+
+describe('三档同意是三种可辨状态', () => {
+  it('同意：开关是开的，现状写「开启」', async () => {
+    await open(settings({ consent: 'enabled', enabled: true }))
+    expect(checked()).toBe('true')
+    expect(bodyText()).toContain(st('about.telemetry.optIn'))
+    expect(bodyText()).not.toContain(st('about.telemetry.unset'))
+  })
+
+  it('拒绝：开关是关的，现状写「关闭」，而不是「什么都没选」', async () => {
+    await open(settings({ consent: 'disabled', enabled: false }))
+    expect(checked()).toBe('false')
+    expect(bodyText()).toContain(st('about.telemetry.optOut'))
+    expect(bodyText()).not.toContain(st('about.telemetry.unset'))
+  })
+
+  /**
+   * 这一条是整组的主语：**「还没问过」不许画成「用户说了不」**。开关本身只有
+   * 开 / 关两态，所以判据落在现状文字上——它必须明说「尚未选择」，而不是「关闭」。
+   */
+  it('未选择：开关关着，并且明说是「尚未选择」', async () => {
+    await open(settings({ consent: 'unset', enabled: false }))
+    expect(toggle()).toBeTruthy()
+    expect(checked()).toBe('false')
+    expect(bodyText()).toContain(st('about.telemetry.unset'))
+    expect(bodyText()).not.toContain(st('about.telemetry.optOut'))
+  })
+
+  it('未选择与拒绝画出来不一样', async () => {
+    await open(settings({ consent: 'unset', enabled: false }))
+    const unsetText = bodyText()
+    await act(async () => {
+      root.unmount()
+    })
+    host.remove()
+    document.body.innerHTML = ''
+    await open(settings({ consent: 'disabled', enabled: false }))
+    expect(bodyText()).not.toEqual(unsetText)
+    expect(bodyText()).toContain(st('about.telemetry.optOut'))
+  })
+
+  /**
+   * 第四种情形：同意过，但同意的是**上一版采集范围**（后端升了
+   * `CONSENT_VERSION`），此刻一个字节都不发。画成「已开启」是一句假话。
+   */
+  it('同意的是上一版采集范围：说清在等重新确认', async () => {
+    await open(
+      settings({
+        consent: 'enabled',
+        enabled: false,
+        needs_reconsent: true,
+        saved_consent_version: 1,
+        consent_version: 2,
+      }),
+    )
+    expect(bodyText()).toContain(st('about.telemetry.needsReconsent'))
+  })
+})
+
+describe('可撤销：两个方向都写得回后端', () => {
+  it('从同意改成拒绝：写 disabled', async () => {
+    await open(settings({ consent: 'enabled', enabled: true }))
+    setTelemetryEnabled(true)
+    await clickToggle()
+    expect(patchMock).toHaveBeenCalledWith('disabled', 'settings')
+  })
+
+  it('从拒绝改回同意：写 enabled', async () => {
+    await open(settings({ consent: 'disabled', enabled: false }))
+    patchMock.mockResolvedValue(settings())
+    await clickToggle()
+    expect(patchMock).toHaveBeenCalledWith('enabled', 'settings')
+  })
+
+  /**
+   * 界面**说得出** unset，却**写不回** unset：表过态就是表过态，回到「还没问过」
+   * 只会让首启询问再弹一次。控件是一颗二值开关、页面上没有第二个同意控件，
+   * 这一条把它钉住：从 unset 点一下写的是 enabled，不是别的什么档。
+   */
+  it('界面上没有任何一个能写回「未选择」的入口', async () => {
+    await open(settings({ consent: 'unset', enabled: false }))
+    expect(
+      document.body.querySelectorAll('[role="switch"], [role="radiogroup"]'),
+    ).toHaveLength(1)
+    patchMock.mockResolvedValue(settings({ consent: 'enabled', enabled: true }))
+    await clickToggle()
+    expect(patchMock).toHaveBeenCalledWith('enabled', 'settings')
+  })
+
+  /**
+   * 设置还没载入完就点得动 = 与在途的 `load()` 赛跑（评审 #300-4）。
+   *
+   * `settings` 是 null 时 `hard` 算出来是 false，于是开关可点。那一下点下去
+   * PATCH 先回来写下同意态，随后那份**陈旧**的 GET 响应把 store 里的
+   * `settings` 连同 `lib/telemetry` 的缓存一起覆盖回去——界面显示的与后端
+   * 刚存下的同意状态从此对不上，而且用户以为自己已经表过态了。
+   *
+   * 判据**真的把请求悬在半空**（GET 的 promise 不 resolve 就点），不是断言
+   * `disabled` 属性：属性写对了而 `onChange` 那条路没被挡住，缺陷照样在。
+   */
+  it('设置还没载入完：那一下点不出去（GET 真的悬在半空）', async () => {
+    let settle!: (v: Awaited<ReturnType<typeof fetchTelemetrySettings>>) => void
+    fetchMock.mockReturnValue(
+      new Promise<Awaited<ReturnType<typeof fetchTelemetrySettings>>>((res) => {
+        settle = res
+      }),
+    )
+    patchMock.mockResolvedValue(settings({ consent: 'enabled', enabled: true }))
+    useTelemetryStore.setState({ settings: null, askOpen: false })
+    useUiStore.setState({ settingsOpen: true, settingsSection: 'about' })
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    root = createRoot(host)
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <SettingsDialog />
+        </TooltipProvider>,
+      )
+    })
+
+    // 前提：这一刻 GET 确实还没回来（不然下面这一条什么都没证明）
+    expect(fetchMock).toHaveBeenCalled()
+    expect(useTelemetryStore.getState().settings).toBeNull()
+
+    expect(toggle()).toBeTruthy()
+    await clickToggle()
+    await clickToggle()
+    expect(patchMock).not.toHaveBeenCalled()
+
+    // 载入完成之后照常可点，而且不会被那份 GET 再覆盖回去
+    await act(async () => {
+      settle(settings({ consent: 'unset', enabled: false }))
+    })
+    await clickToggle()
+    expect(patchMock).toHaveBeenCalledWith('enabled', 'settings')
+    expect(useTelemetryStore.getState().settings?.consent).toBe('enabled')
+    expect(checked()).toBe('true')
+  })
+
+  it('TAVOTTO_NO_TELEMETRY 关着时开关点不动，并说明是谁关的', async () => {
+    await open(settings({ consent: 'unset', enabled: false, hard_disabled: true }))
+    expect(toggle()!.disabled).toBe(true)
+    expect(bodyText()).toContain(st('about.telemetry.hardDisabled'))
+    await clickToggle()
+    expect(patchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('「会发送哪些数据」', () => {
+  const disclosureBtn = () =>
+    [...document.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === st('about.telemetry.detailsTitle'),
+    ) as HTMLButtonElement
+
+  it('默认折叠——它是一张清单，不该每次打开设置都占半屏', async () => {
+    await open()
+    expect(disclosureBtn().getAttribute('aria-expanded')).toBe('false')
+    expect(document.querySelectorAll('[data-telemetry-event]')).toHaveLength(0)
+  })
+
+  /**
+   * 展开后**每条事件都有一行**，且与闭集精确相等（顺序也比）。
+   *
+   * 判据认 `data-telemetry-event` 的取值集合，不认「文本里含某几个词」——
+   * 后者在漏掉一条时照样绿，而漏掉的那一条正是用户没同意过的采集。
+   * 闭集与后端 `EVENTS` 表的对齐由 `tests/test_telemetry_disclosure.py` 看住，
+   * 这里只负责「闭集里的每一条真的渲染出来了」。
+   */
+  it('展开后逐条列出，与闭集一一对应', async () => {
+    await open()
+    await act(async () => {
+      disclosureBtn().click()
+    })
+    const listed = [...document.querySelectorAll('[data-telemetry-event]')].map((el) =>
+      el.getAttribute('data-telemetry-event'),
+    )
+    expect(listed).toEqual([...TELEMETRY_DISCLOSED_EVENTS])
+    // 每一行都得有真的文案，空的 `<li>` 看起来像「这条不发」
+    for (const el of document.querySelectorAll('[data-telemetry-event]')) {
+      expect((el.textContent ?? '').trim().length).toBeGreaterThan(0)
+    }
+  })
+
+  it('展开后「绝不发送」与标识说明也在，且不带字面 Markdown 星号', async () => {
+    await open()
+    await act(async () => {
+      disclosureBtn().click()
+    })
+    const text = bodyText()
+    expect(text).toContain(st('about.telemetry.never'))
+    expect(text).toContain(st('about.telemetry.autoProps'))
+    // 「跨启动稳定」这一句是这段话诚实性的关键，不许在精简里被删掉
+    expect(text).toContain(st('about.telemetry.sendsPersist'))
+    expect(text).not.toContain('**')
+  })
+})

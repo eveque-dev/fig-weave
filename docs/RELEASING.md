@@ -1,0 +1,734 @@
+# 发版
+
+**`release.yml` 是唯一入口**，推 `v*` tag 或手动 dispatch 触发。2026-09-16 起
+（实验室 runner 迁到私有仓库 ci-infra，公开仓库不能等它）发布链在 lab 门禁处
+**切成两段**，中间由 ci-infra 接力：
+
+**第一段 `release.yml`**（到派发 lab 为止，**不等结果**）：
+
+| job | 做什么 |
+|---|---|
+| `trust` | ref → 精确 SHA，验证它**可达于 origin/main**（发布只接受已合并进受保护 main 的提交），从源码读出版本号并与 tag 核对，release:blocker 签字；之后所有 job 只认它输出的 SHA |
+| `build` | 构建前端 → 打 wheel + sdist → 核对版本 → `twine check` → 干净环境装一遍冒烟 → Codex 插件 → **产出这条腿的产物清单** |
+| `desktop` | `workflow_call` 调 `desktop-tauri.yml`：Windows NSIS + macOS 签名公证 dmg，各自**产出自己那条腿的产物清单** |
+| `dispatch_lab` | `gh workflow run lab-qualification.yml -R Tavotto/ci-infra`（`mode=release`、`use_prebuilt_dist=true`、`source_run_id=<本 run>`、`publish`、`ack_open_blockers`）：实验室 runner 上的 exact-artifact 发行资格验证由 ci-infra 执行，结论以 commit status `lab/release` 回到 SHA 上——**这一关不过，第二段不会开始** |
+
+**第二段 `release-publish.yml`**（只有 `workflow_dispatch`，ci-infra 在 lab 绿后派发；
+`trust2` **不信任载荷**，重验全部判断）：
+
+| job | 做什么 |
+|---|---|
+| `trust2` | 重跑 `trust` 同一段 ancestry + tag 判断；对**此刻** open 的 release:blocker 用第一段的 ack 再核一次；publish **按同一规则重算**（有 `v<版本>` tag 指向该 SHA → true，载荷只能压成 false）；`pypi_target` 只收窄（∉ {none, testpypi, pypi} → 红，publish 不是 true → none）；读**一次** `lab/release` status（success 且 target_url 指向 `lab_run_id` 那个 run） |
+| `validate_artifacts` | 按 `source_run_id` 从第一段 run 取全部产物，合并三条腿的清单并**逐条核对 sha256 与 source_sha** → provenance → SBOM → SHA256SUMS → Codex 插件清单 → release notes。**演练也跑这一整段** |
+| `github_release` | 建 GitHub Release，**一次挂全部**（只在 `publish=true`） |
+| `n1_update_windows` | 发布后装 N-1 官方安装包、驱动真实应用内更新（只在 `publish=true`） |
+| `pypi` | 发到 PyPI / TestPyPI（只在 `publish=true` 且 `pypi_target != none`；`pypi_target` 由第一段 `trust` 折算：tag 触发看 `PYPI_PUBLISH_ENABLED`、dispatch 看 `pypi` 输入，`trust2` 只收窄） |
+| `plugin_stable` | 把同一份插件 zip 投影到发行分支 `plugin-stable`（演练对临时 bare 仓库跑发布器） |
+
+```
+tag push / workflow_dispatch          Tavotto/ci-infra                    release-publish.yml
+        │                             lab-qualification.yml               （只 workflow_dispatch）
+      trust ──┬──► build ───────┐        trust-check                          trust2（重验 SHA / tag /
+              ├──► desktop ──────┼──►  dispatch_lab ──派发──► qualify（lab）   blocker、重算 publish、
+              │  （workflow_call）│                            report ──┬── status lab/release   读一次 lab/release）
+              └──────────────────┘                                     └── release 且绿：派发 ──►   │
+                                                                                                validate_artifacts
+                                                                                                    │ publish=true 才继续
+                                                                                                    ├─ github_release → n1_update_windows
+                                                                                                    ├─ pypi
+                                                                                                    └─ plugin_stable
+```
+
+**读结论要看三处**：第一段 run success（只表示产物造出来了、lab 派出去了）→ 该 SHA 的
+commit status `lab/release` → `release-publish.yml` 有该 SHA 的 run 且 success。lab 红时第一段
+早已 success 结束、第二段从未开始——「没有发布」靠的是第二段不存在。细节见
+`docs/ci/release-qualification.md`「发行链上的 gate」。
+
+## `publish=false`：正式 tag 不该承担「第一次测这条链」
+
+**推荐流程：**
+
+```bash
+# 1. main 上定好版本，拿到精确 SHA
+git rev-parse origin/main
+
+# 2. 在那个 SHA 上跑一次完整演练（默认就是 publish=false）
+gh workflow run release.yml --ref main -f ref=<那个 SHA>
+
+# 3. 演练全绿之后，在**同一个 SHA** 上打正式 tag
+git tag -a v1.0.0 <那个 SHA> -m "v1.0.0" && git push origin v1.0.0
+```
+
+演练会在指定 SHA 上走完两段链——wheel/sdist、Windows 与 macOS 最终产物
+（含签名与公证）、发行资格验证、SBOM、checksum、provenance、updater 清单、
+产物清单校验——**唯独不建 Release、不发 PyPI、不打 tag**。`publish=false` 随载荷
+经 ci-infra 传回第二段，`trust2` 按 tag 规则重算后仍是 false（没有 tag 指向该 SHA），
+第二段的 summary 有「演练（publish=false）到此为止」。
+
+**为什么非要有这一档**：v0.9.0 与 v0.9.1 两个正式 tag 都是在发布链上第一次
+被执行时炸掉的（一个是 SBOM 把 glob 当文件名，一个是汇总步骤自己挂掉），
+而 tag ruleset 是 immutable——它们至今改不动也删不掉，仓库里躺着两个没有
+Release 的 tag。完整经过见
+`docs/audit/2026-08-22-v1-release-process-audit.md` §5–6。
+
+## 产物清单是下游唯一的文件名出处
+
+三条构建腿各产出一份 `artifact-manifest-*.json`（role / path / sha256 /
+platform），`validate_artifacts` 合并成一份并校验：
+
+- 每个必须角色**恰好一个**（两个 wheel 谁都不会报错，而用户装到的和我们
+  验过的不是同一个）；
+- **`source_sha` 必须全都一样**——「同一个 tag」证明不了「同一个 commit」，
+  这是唯一能挡住两条腿分叉的地方；
+- 清单里**不许出现通配符**（`artifact_manifest.build` 直接拒绝）。
+
+SBOM、SHA256SUMS、provenance、updater 清单、Release 附件、PyPI 校验一律
+读这份清单，不再各自猜文件名——#63 那个 bug（`dist/*.whl` 喂给只认单个
+路径的 syft）就是七处各猜一次里的一处。
+
+发布 job 用的是 `build` 上传的**同一份** artifact，且在挂上去之前**再校验
+一次哈希**：下载 artifact 再上传是一次真实的搬运，而「Release 上挂的与
+发行资格验证过的不是同一个东西」是这条链上最不能接受的失败。
+
+**搬运本身也要点名**（#327）：`actions/download-artifact` 的 `pattern:` 下载
+排了两个只落了一个也报 success（v0.14.0 演练实测），下游要到合成 `latest.json`
+/ 合并清单那步才以「缺平台」的面目红。所以每个 `pattern:` 下载之后**紧跟**一步
+按名字点名（下载目录里每个期望名字的子目录非空），名单与上传侧（桌面 build
+矩阵 / `upload-artifact` 的 `name:`）严格同源，
+`tests/test_update_chain_gates.py` 看着它们不漂。
+
+Release 资产里还有一个**不在清单里**的文件：项目 `LICENSE`（#182）。它不是
+构建腿造出来的，是 `trust` 验过的那个 SHA 上的源码文件——`validate_artifacts`
+从自己的 checkout 拷进 `out/`，与 `SHA256SUMS.txt` 同路进 `release-assets`，
+再由 `github_release` 一次挂全部。桌面安装包里的那份走
+`src-tauri/tauri.conf.json` 的 `bundle.resources`（Windows 落安装根、macOS 落
+`Contents/Resources`），**不走 `licenseFile`**——那会把许可证页放回安装器。
+
+## 发行资格验证只有一份定义
+
+`_lab-qualification.yml` 是唯一定义，`lab-ci.yml`（push/schedule）与
+`release.yml`（发布链）都 `uses:` 它，`mode` 只决定阈值、基线和跑哪几档。
+
+从前它在两个文件里各有一份手抄的 shell，两处的差别实测只有
+「`$LAB_MODE` vs 字面量 release」和一处换行——修一个 bug（#61）必须同时
+改两处，而抄两遍的代价不是多打字，是**总有一天只改了一处**。
+
+## 桌面链不再由 tag 触发，也不再等待任何东西
+
+`desktop-tauri.yml` 现在**只能被 `workflow_call` 调用**（或手动 dispatch
+单独构建，那时不挂 Release）。它拿的是 `trust` 已经验过的精确 SHA，
+构建完只把产物传成 workflow artifact；挂 Release 归 `github_release` 一家。
+
+从前它由同一个 tag 并行触发，构建完轮询 `gh release view` 最长 190 分钟
+等 release.yml 建出 Release。那不是「等太久」的问题：lab gate 的**排队**
+时间本身没有上界，而两条腿各自 checkout tag 意味着 wheel 与桌面产物**没有
+任何机制保证来自同一个 commit**。
+
+桌面链保留**发行签名门禁**：`publish=true` 的构建缺任一签名、公证或
+updater 私钥直接失败，不再是 warning 后继续；第三方 Actions 在所有
+secret-bearing 工作流里一律钉死到 commit SHA。
+
+> **为什么 PyPI 发布不是单独一个工作流**：Release 是本工作流用 `GITHUB_TOKEN`
+> 建的，而 GitHub 明确规定 `GITHUB_TOKEN` 触发的事件**不会**再触发新的工作流运行
+> （防递归）。`on: release: published` 那条链根本不会响——实测过，v0.1.1 发布时
+> 独立的 publish 工作流一次都没被触发。
+
+## 一次性设置：PyPI Trusted Publishing
+
+Trusted Publishing 用 OIDC 换短时凭据，仓库里不存任何 API token。PyPI 校验
+「哪个仓库 + 哪个工作流文件 + 哪个 environment」，三者任一改名都要同步改这里的
+配置，否则鉴权直接失败。
+
+### 1. PyPI（正式）
+
+项目已经在 PyPI 上（v0.9 起），入口是**项目页**：<https://pypi.org/manage/project/tavotto/settings/publishing/>
+（项目 tavotto → Manage → 左栏 Publishing）。账号级的 <https://pypi.org/manage/account/publishing/>
+是给**还不存在**的项目预登记 pending publisher 用的，这里用不到。
+
+页面上半部分列已登记的 publisher，下半部分 **Add a new publisher → GitHub**，四个框：
+
+| 字段 | 值 |
+|---|---|
+| Owner | `Tavotto` |
+| Repository name | `Tavotto`（PyPI 比对不分大小写，但按仓库实际名字填） |
+| Workflow name | **`release-publish.yml`**（只填文件名，不带 `.github/workflows/`；F.2 之前是 `release.yml`） |
+| Environment name | `pypi` |
+
+**登记好的 publisher 不可编辑，只能加新、删旧**：改文件名或环境名时先加新的那条，再删旧的，最后页面上
+只剩一条。PyPI 没有任何 API 或 CLI 能读写这个配置，只能在网页上点；改完也没有不发布就能验证的办法——
+OIDC 换凭据只在 `publish=true` 那一步真的发生，所以判据是下一次正式发布第二段的 `pypi` job 绿。
+
+> **切两段之后 trusted publisher 必须指向 `release-publish.yml`。** OIDC token 的
+> `workflow_ref` 是实际跑 `pypa/gh-action-pypi-publish` 的那份 workflow，现在是第二段；
+> 还登记着 `release.yml` 的话，第一次 publish=true 会在 PyPI 那一步被拒——而那时
+> GitHub Release 已经建好。演练（publish=false）测不到这一步。
+> **已于 2026-09-17 改完**：pypi.org 与 test.pypi.org 各只剩一条 `Tavotto / Tavotto / release-publish.yml`
+> （环境分别 `pypi` / `testpypi`），旧的 `release.yml` 两条都已删。
+
+### 2. TestPyPI
+
+在 <https://test.pypi.org/manage/project/tavotto/settings/publishing/> 重复一遍（同样是项目页、
+同样先加后删），**Environment name 填 `testpypi`**。两边是完全独立的账号与配置。
+
+> 两段链里 TestPyPI 的走法：`workflow_dispatch(ref=<已有 tag 的 SHA>, publish=true, pypi=testpypi)`
+> → 第一段 `trust` 折成 `pypi_target=testpypi` 随载荷经 ci-infra 传到第二段 → `trust2`
+> 算出 publish=true（tag 指向该 SHA）、`pypi_target` 原样保留 → `pypi` job 走 TestPyPI 那一步。
+
+### 3. 开闸
+
+配好之前自动发布是关着的（否则每发一个 Release 都会红一次）。准备好了就在
+Settings → Secrets and variables → Actions → **Variables** 加一条
+`PYPI_PUBLISH_ENABLED = true`。
+
+手动 Run workflow 不受此限——没开闸也能先演练。
+
+### 4. 给正式发布加一道人工确认（可选但推荐）
+
+Settings → Environments → `pypi` → 勾 **Required reviewers** 填自己。
+之后每次发 PyPI 都会停下来等你点一下。
+
+> PyPI 上的项目名一旦被占用就再也拿不回来，**同名文件永远不能重传**——
+> 版本号发错了只能作废该版本再发一个新号。这道确认值得加。
+
+## 演练
+
+Actions → **Release** → Run workflow，`ref` 填精确 SHA、`publish` 不勾（默认）。
+两段都会跑：第一段造产物 + 派 lab；lab 绿后 ci-infra 派第二段，`trust2` 重算出
+publish=false，`validate_artifacts` 全部产物真实存在并校验，最后不发布。判据是三个
+run 都有结论（`docs/ci/release-qualification.md`「发行链上的 gate」的三步）。
+
+发到 TestPyPI 之后的装机验证：
+
+```sh
+pip install --index-url https://test.pypi.org/simple/ \
+            --extra-index-url https://pypi.org/simple/ tavotto
+```
+
+（`--extra-index-url` 是必要的：TestPyPI 上没有 flask / pymupdf 这些依赖。）
+
+## 发一个新版本
+
+这一节的每一步都有一条判据看着它——**下面写的是去哪看，不是把判据的内容
+再抄一遍**。抄一份就是第二份权威，迟早与判据漂开。
+
+1. 改 `src/tavotto/__init__.py` 里的 `__version__`——**版本号唯一权威**。
+
+   发布产物还会在别的文件里把版本号印出去（桌面壳、workerd、Codex 插件清单
+   ……），它们必须跟着一起动。**那些位置不在这份文档里列**：枚举在
+   `tests/test_source_hygiene.py` 的 `_VERSION_SITES`，那条用例逐条看着它们等于
+   `__version__`。改完跑一次，还差谁它会逐个点名：
+
+   ```sh
+   python -m pytest tests/test_source_hygiene.py -k version
+   ```
+
+   这一步此前只写了 `__version__` 一处，照着做在 v0.13.0 上会红五条。漏一处的
+   表现是「装完显示的版本和发布页对不上」，而发布链没有任何一步会失败。
+
+2. 写 `docs/release-notes/vX.Y.Z.md`（体例见下）：**先把
+   `docs/release-notes/UNRELEASED.md` 里的待发条目搬进来并从那边删掉**
+   ——那里放的是已经合进 main、但还没有任何一版告诉用户的行为变更与迁移提示
+   （说明注释留在原处，搬走的只是 `## ` 段落）。搬完跑一次，还没并入它会
+   逐条点名：
+
+   ```sh
+   python scripts/check_pending_release_notes.py --tag vX.Y.Z
+   ```
+
+   带着没搬走的段落打 tag，`release.yml` 的「拼 release body」会当场红——
+   这道闸就是这个脚本。
+
+3. 提交、打 tag、推送：
+
+   ```sh
+   git commit -am "0.2.0"
+   git tag -a v0.2.0 -m "Tavotto 0.2.0"
+   git push origin main v0.2.0
+   ```
+
+4. 发布链绿了之后同步网站 `/try`（在 `Tavotto_website` 仓库）：
+
+   ```sh
+   # web/dist-playground/ 不进版本库（.gitignore），发布树必须先自己建一份
+   (cd <发布 SHA 所在的那棵树> && python scripts/build_browser_playground.py)
+   TAVOTTO_REPO=<发布 SHA 所在的那棵树> pnpm sync-playground -- --dry-run
+   TAVOTTO_REPO=<发布 SHA 所在的那棵树> pnpm sync-playground
+   TAVOTTO_REPO=<发布 SHA 所在的那棵树> pnpm check-playground
+   ```
+
+   **这两条命令必须显式带 `TAVOTTO_REPO`**，理由见下面一节。
+
+tag 与 `__version__` 对不上时 `build` job 直接失败，不会发出错版本。
+
+**发之前确认 CI 是绿的**——`release.yml` 的 `dispatch_lab` 派出去的发行档会对候选 wheel
+重跑全量 + slow 用例、升级验收与视觉回归（exact artifact），但那是**发行资格
+验证**，不是替代日常 CI：tag 只应打在 CI 已经全绿、且已合并进 main 的提交上
+（`trust` job 会硬校验 main 可达性，够不着直接拒；第二段的 `trust2` 再验一次）。
+
+## 网站 `/try`：同步与复核必须指名读的是哪棵树
+
+浏览器 playground 的产物由本仓库构建（`scripts/build_browser_playground.py`），
+由网站仓库 `Tavotto_website` 分发（`public/try/`，见 ADR 0007）。两个脚本
+`pnpm sync-playground` 与 `pnpm check-playground` 都用 `TAVOTTO_REPO` 定位产品
+仓库，**默认 `../Tavotto`——那是主工作区，而主工作区停在谁的分支上没有任何
+机制保证**。发布 SHA 与主工作区 HEAD 是两个不同的事实。
+
+**复核 playground 必须带 `TAVOTTO_REPO` 指向发布 SHA 所在的那棵树**：
+
+```sh
+# 先自证这棵树就是发布 SHA（trust job 认的那个），别凭印象
+git -C <发布树> rev-parse HEAD
+# 再自证它是干净的——`-dirty` 的产物不对应任何提交，脚本会直接拒绝（见下）
+git -C <发布树> status --porcelain
+
+# web/dist-playground/ 在 .gitignore 里，发布树上没有现成产物，必须先建
+(cd <发布树> && python scripts/build_browser_playground.py)
+
+cd ../Tavotto_website
+TAVOTTO_REPO=<发布树> pnpm sync-playground -- --dry-run   # 先看一眼读的是哪棵树
+TAVOTTO_REPO=<发布树> pnpm sync-playground
+TAVOTTO_REPO=<发布树> pnpm check-playground
+```
+
+`--dry-run` 解析 checkout、按 manifest 校验产物、把两者都报出来，但不动
+`public/try/`——**贵的错误是从一棵没人看过的树上拷贝**。
+
+**注意 `web/dist-playground/` 不进版本库**（`.gitignore:76`，`git ls-files` 为空）。
+按发布 SHA 新建的干净 checkout 上**没有**现成产物：不先在那棵树上跑一次
+`python scripts/build_browser_playground.py`，同步要么因为源目录不存在而失败，
+要么——更糟——让人顺手把 `TAVOTTO_REPO` 指到「碰巧有产物的那棵树」，那正是下面
+这个缺陷本身。
+
+**为什么不能省**：v0.12.0 发版时主工作区停在落后 main 五个 PR 的提交上，
+两条后果都实测发生过（issue #148）：
+
+1. `sync-playground` 把一份来自非发布祖先的陈旧产物拷进了 `public/try/`
+   （指纹 `fcfb77bc`，而发布树建出来是 `53b8a6ab`）——只因为指纹对不上才发现；
+2. 同步纠正之后 `check-playground` 仍报 `playground stale`，因为它是从**主工作区**
+   算的源指纹。照着这条红去「重做同步」，重做又把错版本拷回来——**成环**。
+
+**`-dirty` 与「不可达于发布线」是同一类事实，而且是更糟的那一半**：实测主工作区
+`web/dist-playground` 里那份产物的 `product_commit` 是
+`48fa4ca323de…-dirty`——它连 `48fa4ca` 这个提交都不完全对应，是从一棵有未提交
+改动的树上建的。那份东西**在世界上任何一棵树上都复现不出来**：指纹对不上时，
+你连去哪儿找源头都不知道。所以这条缺陷的性质不是「同步了一个旧版本」，是
+「同步了一个**不对应任何提交**的产物」。**这一条现在是硬失败，不是提醒**：`sync-playground` 拒绝拷贝
+`product_commit` 带 `-dirty`（或读不出 commit）的产物，`check-playground` 把它
+列为第 0 道校验直接 `FAIL`。判据读的是**产物自己的 manifest**，不需要任何本地
+checkout，CI 里同样成立——因为另外两道校验结构上看不见它：产物与它自己的
+manifest 一致，指纹又是从建它的那棵脏树重算的，两边自然都对得上。`--force`
+是刻意的本地预览逃生口，发布流程里不许用。
+
+两个脚本现在开跑前都打印读到的路径、这个路径的来源（`TAVOTTO_REPO` 还是默认值）
+与那棵树的 HEAD，并在该 commit 不可达于 `origin/main` 时告警；`check` 的 `FAIL`
+文本里也带着同样三样。**看到 stale 先读那三行**：先确认路径与 commit 是你要的
+那棵树，再谈重建与重新同步。实现见网站仓库 `scripts/lib/product-repo.mjs`。
+
+## Release notes
+
+`docs/release-notes/<tag>.md` 存在就作为 Release 正文，缺失则退回自动生成
+（一串提交标题，用户看不出该不该升级，会在 Actions 里留一条 warning）。
+用英文写，与 README 一致。
+
+**按症状和触发条件写，不要按提交写**。用户是带着「我这边坏了」来找的，
+要能对上号：
+
+> **Scripts calling `plt.close(fig)` produced an empty figure on matplotlib ≥ 3.11.**
+> Symptom: double-clicking a panel does nothing, or the element tree comes up empty.
+> Trigger: your script closes the figure after saving — the normal pattern when one
+> script produces several panels.
+
+`docs/release-notes/v0.1.1.md` 是范例。
+
+**行为变更与存量数据的迁移提示写进 `UNRELEASED.md`，不要只写在 PR 正文
+里。** 发行说明是发版那天写的，写的人不会回头翻每一个 PR 的「遗留」段：
+#215 修好标注旋转的导出方向后，存量文档里手工补偿过角度的用户需要一句
+提示，那句话只留在 PR 正文里，于是一版都没有发出去（issue #244）。
+
+## Codex 插件：Release 上的 zip 与发行分支 `plugin-stable`（ADR 0043）
+
+插件（`codex-plugin/`）随 Tavotto 一起发，但**画布不再从源码 checkout 里拿**：release.yml 的
+`build` job 在固定发行 SHA 上真构建画布、按 git 清单组装完整插件、用发出去的那份 wheel 真起
+server 验一遍，然后把三样东西放进 `dist/`（进产物清单、SHA256SUMS、provenance）：
+
+* `codex-plugin-<版本>.zip` —— 完整插件（含画布与随包清单 `plugin-build.json`）；
+* `codex-plugin.json` —— 版本清单。**文件名不能改**：插件拉的是
+  `releases/latest/download/codex-plugin.json`（`update_check.DEFAULT_URL`）；
+* `codex-plugin-build.json` —— 随包清单的副本（source_sha / 构建输入指纹 / 内容摘要）。
+
+`validate_artifacts` 成对验证（zip 内容 ↔ 版本清单 ↔ 随包清单 ↔ trust 的 SHA），
+`github_release` 随 `dist/*` 挂上，之后 `plugin_stable` job 把**同一份** zip 投影到发行分支
+`plugin-stable`——marketplace 的 `git-subdir` 入口读的就是它。`publish=false` 演练里这个 job
+对临时 bare 仓库真实跑完 bootstrap / 幂等 / 拒绝 / 回退，并对真实远端只读 plan。
+
+GitHub Release、PyPI、Git 分支不是一个原子事务：`plugin_stable` 红了 = Release 已公开、
+marketplace 通道**尚未推进**，旧稳定插件原样在，用 Actions → plugin-stable → `promote`
+幂等重试（`docs/ci/plugin-stable-channel.md` 第 7 节）。绝不删公开版本伪装回滚。
+
+本地看看长什么样（不需要发版）：
+
+```bash
+python scripts/build_mcp_widget.py --out build/canvas.html
+python scripts/plugin_stage.py stage --widget build/canvas.html --out build/plugin-stage \
+  --source-sha "$(git rev-parse HEAD)" --allow-dirty
+python scripts/make_plugin_manifest.py --tag v0.7.1 --plugin-dir build/plugin-stage \
+  --out out/codex-plugin.json --zip out/codex-plugin-0.7.1.zip
+```
+
+**发插件新版的完整流程**：
+
+1. 改 `codex-plugin/.codex-plugin/plugin.json` 的 `version`
+   （版本号只有这一处；`tests/test_codex_plugin.py` 盯着它与 `tavotto.__version__` 一致）；
+2. 正常打 tag 发版——build 造插件、validate 验、Release 挂、`plugin_stable` 推进发行分支；
+3. 用户下次调用插件时看到提醒，执行
+   `codex plugin marketplace upgrade tavotto` 并重载 Codex（实测：刷新快照并按版本刷新插件缓存）。
+
+`min_tavotto_version`（`scripts/make_plugin_manifest.py` 里的常量）的判据是
+**「桥 import 得动吗」**：它必须等于第一个装得下 `mcp/server.py::_BRIDGE_IMPORT`
+那整组引擎模块的版本。所以——
+
+> **改了 `bridge.py` 的 import 集，就要回来重估 `MIN_TAVOTTO_VERSION`。**
+
+漏掉这一步不会有任何红灯，但会让老引擎的用户按「有新插件」的提示只升插件，
+然后撞上降级 server，而诊断还会把他们误报成「你装的是桌面版」。v0.13.0 就是
+这么一次：桥新增 import 了 `previewbudget` / `profilestore` / `project_refresh`
+（都晚于 v0.12.0），常量却还停在 `0.7.0`——那是桥只 import `handoff` 的年代
+留下的理由。
+
+排障与用户侧开关（`TAVOTTO_UPDATE_URL` / `TAVOTTO_DISABLE_UPDATE_CHECK`）见
+`docs/handoff-protocol.md`。
+
+## 本地自检
+
+上传不可撤销，本地先过一遍：
+
+```sh
+python scripts/build_frontend.py
+python -m build
+python -m twine check --strict dist/*     # 元数据 + PyPI 的 README 渲染
+```
+
+### 只有人手动开环境变量才跑的六条（插件发行前跑一次）
+
+skip 矩阵（`docs/ci/skip-evidence-matrix.md` #10）里这六条要真 codex CLI / 真网络 /
+真 marketplace，**没有任何 workflow 设这些变量**（ADR 0012：默认 skip、手动 opt-in），
+所以它们没有 CI 通道——插件发行前在装了 `codex`（与 `claude`）的机器上跑一次，
+把输出贴进 release 的 PR：
+
+```sh
+# 真 codex 客户端演练（2 条；PATH 里有 codex 就跑，TAVOTTO_SKIP_REAL_CODEX=1 是关掉它）
+python -m pytest tests/test_codex_real_client.py -rs
+# 真 codex 从本地 marketplace 装插件（PATH 里有 codex 就跑）
+python -m pytest "tests/test_codex_plugin.py::test_real_codex_installs_the_plugin_from_a_local_marketplace" -rs
+# 真 codex 从 GitHub 稀疏安装（要网络）
+TAVOTTO_CODEX_NET_SMOKE=1 python -m pytest "tests/test_codex_plugin.py::test_real_codex_sparse_install_from_github" -rs
+# `tavotto codexinstall` 对着真实 marketplace 装完再 doctor（要网络）
+TAVOTTO_CODEX_REAL_SMOKE=1 python -m pytest "tests/test_codex_install_cli.py::test_real_codex_cli_install_then_doctor" -rs
+# 本机真的装了 codex / claude 时的探测
+TAVOTTO_REAL_CLI_SMOKE=1 python -m pytest "tests/test_ai_agents.py::test_real_cli_detection_smoke" -rs
+```
+
+`-rs` 让仍然 skip 的那条把理由打出来——这一步的判据是「它们真跑了」，全 skip 等于没跑。
+
+## 独立应用（.dmg / .exe）
+
+桌面发行**只有一条链路**（v0.3.0 起）：`desktop-tauri.yml`。旧 PyInstaller
+直发链（`desktop.yml` + Inno Setup + 免安装 zip）已退役删除，git 历史可找回。
+两个平台的桌面产物都是 Tauri 真窗口——不再存在「启动后开浏览器」的桌面包，
+也不再有两条链同名 dmg 互相覆盖的问题（v0.2.0 发布时踩过：两条链前后两秒
+dispatch，后 attach 的旧链 dmg 顶掉了 Tauri dmg）。
+
+### Tauri 桌面壳（desktop-tauri.yml）
+
+真正的桌面窗口（不再开系统浏览器）：Tauri 2 壳 + `tavotto --desktop-sidecar`
+后端（127.0.0.1 动态端口 + 一次性 nonce 认证），架构与安全模型见
+`docs/adr/0002-tauri-desktop-shell.md`。
+
+手动触发（Actions → **Desktop apps (Tauri)** → 填 tag，需 tag 含 `src-tauri/`）。
+本地构建：`python scripts/build_desktop.py`（版本同步 → 前端 → PyInstaller
+sidecar → Tauri bundler）。CI 门禁打的是最终产物：sidecar 真二进制过
+`scripts/smoke_desktop.py` 全链路（认证/项目/渲染/导出/退出无孤儿），Windows
+上另对 Tauri 真 .exe 做启动-探活-退出探针。
+
+| 平台 | 产物 | 说明 |
+|---|---|---|
+| macOS | `Tavotto-X.Y.Z-macOS.dmg` | Tauri .app（内嵌 sidecar）；**含内置渲染 runtime**；**仅 arm64**；签名 + 公证复用下述同一套 secret 与流程 |
+| Windows | `Tavotto-X.Y.Z-Windows-Setup.exe` | NSIS（收集时改成与 wheel/dmg 一致的命名），装到用户目录；**含内置渲染 runtime**；SignPath 启用后由 SignPath Foundation 证书签名 |
+
+macOS 签名注意：sidecar 是 `.app` 里 `Resources/sidecar/` 下的 PyInstaller
+onedir，签名必须继续「签**所有**嵌套 Mach-O、自内向外」——只签壳本体公证会
+Invalid（教训同旧链路）。内置 runtime 进来之后这件事从「几十个」变成
+「五百多个」（解释器 + numpy/scipy/pandas 的全部扩展模块），且它们全都躺在
+`Contents/Resources` 下、**不被 `codesign --deep` 识别为嵌套代码**——所以签名与
+验收都走 `scripts/codesign_macos.py`（读魔数找 Mach-O、深度降序自内向外、
+只给可执行文件挂 entitlements、最后逐个 `--verify` 一遍）。
+
+**Flask 主进程里始终不含 matplotlib**：科学栈只存在于 worker 那一侧。
+这条边界一破，包大小与依赖关系立刻失控（`packaging/tavotto.spec` 文件头有完整说明）。
+
+打包配置从 tag 检出，所以只能构建含 `src-tauri/` 的 tag（v0.2.0 起）。
+免安装 zip 随旧链一起退役：它本质是浏览器模式的 PyInstaller 目录，与「桌面
+产物一律真窗口」冲突；确有需要时从历史 tag 走旧链构建。
+
+### 内置渲染 runtime（macOS 与 Windows）
+
+两个平台的安装包都**自带一套 Tavotto 私有的 Python 渲染环境**，
+用户不需要先装 Python，首次渲染也不联网：
+
+```
+Windows: Tavotto.exe → _internal\runtime\python.exe  → engine\worker.py → 用户的脚本
+macOS:   Tavotto.app → …/_internal/runtime/bin/python3.13 → engine/worker.py → 用户的脚本
+```
+
+| 东西 | 在哪 |
+|---|---|
+| 版本锁（CPython 下载地址 + SHA-256、科学栈的完整传递闭包，**按平台/架构分层**） | `packaging/runtime-lock.json`（schema 2） |
+| 构建脚本 | `scripts/build_worker_runtime.py` |
+| 定位与校验（唯一出处） | `src/tavotto/engine/runtime.py` |
+| 「这份 runtime 配不配得上这次构建」的唯一判据 | `build_worker_runtime.check_runtime_dir()`（spec 与 build_desktop 共用） |
+| 签名与验收 | `scripts/codesign_macos.py` |
+| 产物 | 仓库根的 `runtime/`（**不进 Git**，300 MiB 上下） |
+
+**两个平台的上游发行版不同，理由也不同：**
+
+| 平台 | 上游 | 为什么是它 |
+|---|---|---|
+| Windows | 官方 [embeddable 发行版](https://docs.python.org/3/using/windows.html#the-embeddable-package) | Python 官方就把它定位成「应用私有的运行时，第三方包由安装程序一起提供」 |
+| macOS | [python-build-standalone](https://github.com/astral-sh/python-build-standalone)（`install_only`） | 官方 macOS 安装器装的是 `/Library/Frameworks` 下的固定路径，**不可重定位**，嵌不进 `.app`；Homebrew / Conda 是用户自己的环境，我们不碰。pbs 的 prefix 由解释器自身路径推导，挪到哪都能跑，而且是逐个可 codesign 的普通 Mach-O——公证要求每个嵌套二进制都签得到名 |
+
+**三个目标的闭包目前逐字相同**，这是刻意维持的：同版本的 matplotlib/numpy 才能
+保证同一个脚本在 Windows 和 macOS 上画出同一张图（`tests/test_runtime_build.py`
+里有一条用例盯着）。哪天解析结果真的分叉了，不要硬凑——如实记下来并在发布说明里讲清楚。
+
+**架构范围（如实记录，别扩大）**：目前只发 **macOS arm64**。`macos-x86_64`
+在锁文件里标着 `shipped: false`——版本锁着是为了「要发时不用临时定版本」，但
+CI 的 macOS runner 只有 Apple Silicon 一档，因此那个目标**既没构建过也没冒烟过**。
+真要发 Intel 版，先有 Intel runner（或带 Rosetta 的机器）跑完整的 import +
+真实绘图冒烟，把 `shipped` 改成 true，再改 README——**在那之前 README 里不许
+出现「支持 Intel」**。同理，目前**不产出 universal2**：科学栈的 wheel 是分架构
+发布的，把两份 .so 硬拼成 universal2 没有验证过，不能凭「应该可以」就发。
+
+发行流水线里这条链路是这样护住的（**两个平台同一套**）：
+
+1. `desktop-tauri.yml` 先跑 `scripts/build_worker_runtime.py`（目标按 runner 的
+   平台/架构自动挑）。脚本自己会校验 CPython 归档的 SHA-256（macOS 那份的期望值
+   取自 pbs 上游发布的 `SHA256SUMS`）、按 `.dist-info` 核对装出来的版本、
+   **用刚装好的解释器逐个 import 并画一张真图**——任何一步不过就失败在构建机上，
+   而不是留到用户电脑上。
+2. sidecar 构建带 `TAVOTTO_REQUIRE_RUNTIME=1`。此时 `tavotto.spec` 会再确认三件事：
+   清单 schema 对得上、**平台/架构与本次构建一致**、冒烟状态是 `passed`。
+   第二条挡的是最贵的一种错——Windows 的 runtime 被打进 `.app`，用户那边的症状是
+   「渲染环境不可用」而构建全程绿灯。第三条挡的是 `--allow-skip-smoke` 产出的
+   中间件混进安装包（那份一个 import 都没跑过）。
+3. NSIS / `.app` 经 `tauri.conf.json` 的 `bundle.resources` 把整个 sidecar 目录
+   （含 `_internal/runtime`）收走——第 2 条保证了它此刻一定在。
+4. 打包后跑 `scripts/smoke_app.py --expect-source bundled --expect-runtime`：
+   真启动、真渲染两次（冷 + 热）、真导出两次（含覆盖），并断言用的是**内置**
+   解释器、runtime 本身 `expected` 且 `valid`、控制面确实是 workerd。
+   脚本会把 `TAVOTTO_WORKER_PYTHON`、Conda、`PYTHONHOME`/`PYTHONPATH`、活动 venv
+   一律从子进程环境摘掉——**验的是「一台干净电脑上装完即可用」**。
+5. macOS 额外再来一遍：签完名之后，把 `.app` 用 `ditto` 拷到一个**中文 + 空格**
+   的路径，重验签名，再对 `.app` 里的 sidecar 跑一次同样的 smoke_app。
+   前面那次打的是 `dist/Tavotto`（PyInstaller 裸产物），这一次打的才是用户拿到
+   的东西——hardened runtime 会不会拦下内置解释器加载 numpy 的 .dylib、
+   签名有没有把某个扩展模块弄坏，只有真跑一次才知道。
+
+> **曾经的坑**：macOS 这条腿上一度有一步「现建 worker-env 再设
+> `TAVOTTO_WORKER_PYTHON`」。代价是整条门禁失去意义——借来的解释器让冒烟一路绿灯，
+> 而「内置 runtime 根本没打进安装包」这件事没有任何一处会发现。
+> `tests/test_runtime_build.py::test_macos_ci_no_longer_fakes_a_worker_env`
+> 盯着它别被人顺手加回来。
+
+同一套门禁在 `ci.yml` 的 `windows-exe-smoke` 里对每个 PR 都跑一遍
+（还额外验中文 + 空格路径、以及 `TAVOTTO_WORKER_PYTHON` 仍然优先）。
+
+**换版本怎么办**（升 CPython 补丁版或某个科学包）：
+
+```sh
+python scripts/build_worker_runtime.py --list-targets
+
+# 只换包版本：先改 runtime-lock.json 的 top_level/packages，再逐个目标重解析闭包
+python scripts/build_worker_runtime.py --resolve --target windows-amd64
+python scripts/build_worker_runtime.py --resolve --target macos-arm64
+python scripts/build_worker_runtime.py --resolve --target macos-x86_64
+
+# 连 CPython 一起换
+python scripts/build_worker_runtime.py --resolve --target windows-amd64 \
+    --python-version 3.13.16        # 下载、重算 sha256、核对 _pth 名字
+python scripts/build_worker_runtime.py --resolve --target macos-arm64 \
+    --pbs-release 20260814          # 从上游 SHA256SUMS 取校验和
+```
+
+`--resolve` 只改锁文件，不构建。**三个目标要一起换**，否则跨平台版本会漂移
+（那条用例会红）。改完提交锁文件，让 CI 去验实际能不能用。
+**别手写闭包**——手写迟早漏一个传递依赖，而漏掉的那个会在用户机器上以
+ModuleNotFoundError 的形式出现。
+
+**第三方许可证**：构建脚本会把 CPython 与每个包的许可证收进
+`runtime/licenses/`，并生成 `THIRD-PARTY-NOTICES.md` 索引，随安装包一起分发。
+新增依赖时不需要额外做什么，但**要确认新包的许可证允许再分发**。
+
+macOS 的 pbs 发行版把 OpenSSL、SQLite、libffi、libedit、Tcl/Tk、zlib、bzip2、XZ
+静态链接进 CPython，**全部是宽松许可**（Apache-2.0 / MIT / BSD / 公有领域）；
+行编辑用的是 **libedit 而不是 GNU readline**（实测
+`readline._READLINE_LIBRARY_VERSION == "EditLine wrapper"`），因此桌面分发
+不引入任何 copyleft 义务。来源与说明写进
+`runtime/licenses/cpython/UPSTREAM-BUILD.md` 随包发出。
+**换上游或换 flavor 时必须重新确认这一条**，别默认它还成立。
+
+### 应用内更新的一次性设置（更新器签名密钥）
+
+桌面版的「软件内直接更新」靠一对 **minisign 密钥**（与 macOS 代码签名、
+Windows 代码签名都是两回事）：公钥写死在 `src-tauri/tauri.conf.json` 的
+`plugins.updater.pubkey`，私钥只放 GitHub Secrets。
+
+**没配这对密钥时发行链照常出安装包**，只是这一版进不了自动更新——构建会打
+一条 warning，`updater-manifest` job 也会如实跳过。
+
+> **改名不换密钥。** 这对密钥是 Magplot 时代生成的，本机那份仍叫
+> `~/magplot-updater.key`，Actions 里的 secret 也没动。下面写的是新名，
+> 只是本地文件名的约定——`mv ~/magplot-updater.key ~/tavotto-updater.key`
+> （连 `.pub` 一起）即可，**密钥内容一个字节都不许换**：壳里烧的是旧公钥，
+> 换了等于 0.7.0 及更早的用户再也收不到更新。
+
+1. 生成一对（**私钥丢了就没法给已发出去的用户推更新**，请妥善保存）：
+
+   ```sh
+   pnpm dlx @tauri-apps/cli@2.11.4 signer generate -w ~/tavotto-updater.key
+   ```
+
+2. 仓库 Settings → Secrets and variables → Actions 加两条：
+
+   | Secret | 值 |
+   |---|---|
+   | `TAURI_SIGNING_PRIVATE_KEY` | `~/tavotto-updater.key` 的**全部内容** |
+   | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 生成时设的口令（没设就留空/不建） |
+
+3. 公钥（`~/tavotto-updater.key.pub` 的内容）要与 `tauri.conf.json` 里的
+   `plugins.updater.pubkey` 一致。**换密钥 = 老版本的用户再也收不到更新**
+   （他们壳里烧的是旧公钥），只能引导手动下载一次，非必要不要换。
+
+4. **发版前核一次配对**（配错了极其安静：CI 全绿、资产齐全，只有用户那边
+   「更新失败」）：
+
+   ```sh
+   printf probe > /tmp/probe.bin
+   pnpm dlx @tauri-apps/cli@2.11.4 signer sign -f ~/tavotto-updater.key -p "" /tmp/probe.bin
+   python scripts/check_updater_key.py --sig /tmp/probe.bin.sig
+   ```
+
+   对不上就别发——按那份配置发出去的更新，用户下载完校验失败、装不上。
+
+发出去之后自查：Release 资产里应当有 `latest.json`、`Tavotto.app.tar.gz(.sig)`、
+`Tavotto_<ver>_x64-setup.nsis.zip(.sig)`。少了 `latest.json`，壳那边的表现是
+**一直显示「已是最新版本」**——用户停在旧版本上而 CI 全绿，这条要盯。
+
+### macOS 签名与公证的一次性设置
+
+不配下面这些 secret 时，流水线照常出包，只是未签名（adhoc），用户首次打开要
+右键 → 打开。配齐后自动变成签名 + 公证 + 装订，双击即开。
+
+> 目录名跟着改名换成了 `~/tavotto-signing`。本机已有 `~/magplot-signing` 的话
+> 直接 `mv` 过去即可——证书与私钥本身与产品名无关，不必重新申请。
+
+1. 加入 [Apple Developer Program](https://developer.apple.com/programs/)（$99/年）。
+2. 生成私钥与 CSR：
+
+   ```sh
+   mkdir -p ~/tavotto-signing && chmod 700 ~/tavotto-signing && cd ~/tavotto-signing
+   openssl genrsa -out developerID.key 2048 && chmod 600 developerID.key
+   openssl req -new -key developerID.key -out developerID.csr \
+     -subj "/emailAddress=<你的邮箱>/CN=<你的名字>/C=CN"
+   ```
+
+3. 到 <https://developer.apple.com/account/resources/certificates/add> 选
+   **Developer ID Application**（**不是** Apple Development——后者只能在自己
+   设备上跑，不能对外分发也过不了公证），上传 `developerID.csr`，
+   把下载到的 `.cer` 放回 `~/tavotto-signing/`。
+4. 一条命令完成打包与写入 secret：
+
+   ```sh
+   scripts/setup_macos_signing.sh
+   ```
+
+   它会核对证书类型、附上 Apple 中间 CA（链不完整时别的机器验不过）、
+   随机生成 .p12 密码，并写入 `MACOS_CERTIFICATE`、
+   `MACOS_CERTIFICATE_PASSWORD`、`MACOS_SIGN_IDENTITY`。
+
+5. 公证还需要一个 App 专用密码（<https://appleid.apple.com> → 登录与安全）：
+
+   ```sh
+   printf '<App 专用密码>' | gh secret set APPLE_APP_PASSWORD --repo Tavotto/Tavotto
+   ```
+
+`APPLE_ID`（邮箱）与 `APPLE_TEAM_ID`（10 位，可从
+`security find-identity -v` 的证书名括号里读到）也要设上，共六个。
+私钥和 .p12 只留在 `~/tavotto-signing/`，绝不进版本库。
+
+验证签名是否真的生效：下载 dmg 后 `codesign -dvvv Tavotto.app`，要看到
+`Authority=Developer ID Application: …`。**只看 `codesign --verify` 会被骗**——
+PyInstaller 留下的 adhoc 签名同样能通过 verify；流水线里已加了显式断言。
+
+踩过的坑（都已在流水线里堵上，改动签名步骤前先读这段）：
+
+1. **`codesign` 只在钥匙串搜索列表里找身份。** 光 `default-keychain -s` 或传
+   `--keychain` 都不够（新版 macOS 上后者不可靠），症状是 `no identity found`。
+   更坑的是它会**静默假成功**：PyInstaller 留下的 adhoc 签名让随后的
+   `codesign --verify` 照样通过。所以流水线里除了用
+   `security list-keychains -d user -s` 显式加入，还显式断言
+   `Authority=Developer ID Application`。
+
+2. **要签的不只是 `*.dylib` / `*.so`。** 包里还有无后缀的 Mach-O——
+   `Contents/MacOS/Tavotto`、sidecar 的 `Tavotto`、内置 runtime 的
+   `bin/python3.13`——漏签就公证 Invalid。所以判据是**读魔数**（`scripts/
+   codesign_macos.py`），不是看扩展名。
+
+3. **`--deep` 不是签名策略。** Apple 自己把它标为「仅用于救急」，它对
+   `Contents/Resources` 下那些**不被识别为嵌套代码**的 Mach-O 根本不去签——
+   而内置渲染 runtime 的五百多个 `.so`/`.dylib` 正好全在那儿。
+   同理，`codesign --verify --deep` **也验不出**「Resources 里躺着一个没签名的
+   .so」：那种文件是被当作*资源*封进签名的，封条本身合法。所以验收必须
+   **逐个** `--verify`（`codesign_macos.py verify` 就是干这个的，
+   顺带核对每个 Mach-O 的架构）。
+
+4. **顺序必须自内向外。** 先签好每个嵌套二进制，最后再签 `.app`；反过来的话，
+   外层签名会被内层的后续改动作废。脚本按路径深度降序排，天然满足。
+
+5. **entitlements 只给可执行文件。** 内置解释器需要
+   `disable-library-validation` 才敢加载 numpy/scipy 带的那些 `.dylib`；
+   给 `.dylib` 挂 entitlements 是无意义的噪音。
+
+   公证失败时流水线会自动打印 `notarytool log`——没有它，`status: Invalid`
+   就是个哑谜。
+
+### Windows 签名
+
+Windows 签名通过 SignPath Foundation 的开源项目订阅完成。仓库中的
+`signpath/windows-installer.artifact-configuration.xml` 描述上传的 GitHub
+Actions ZIP 中应签名的 NSIS 安装包及其产品/版本元数据。
+
+获批并在 SignPath 中创建项目后：
+
+1. 安装 SignPath GitHub App，并允许它访问本仓库。
+2. 在仓库中创建以下变量：
+   `SIGNPATH_ENABLED=true`、`SIGNPATH_ORGANIZATION_ID`、
+   `SIGNPATH_PROJECT_SLUG`、`SIGNPATH_SIGNING_POLICY_SLUG`、
+   `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG`。
+3. 创建仓库 secret `SIGNPATH_API_TOKEN`。Token 只保存在 GitHub Secrets，
+   不写入仓库或日志。
+4. 在 SignPath 的 artifact configuration 中导入
+   `signpath/windows-installer.artifact-configuration.xml`，并把 slug 填入
+   `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG`。
+5. 对 tag 运行 `Desktop apps (Tauri)`。工作流会先把未签名安装包作为 GitHub
+   Actions artifact 提交签名，再下载签名结果并把它挂到同一个 GitHub Release。
+
+`SIGNPATH_ENABLED` 未开启时，工作流仍可生成测试用的未签名安装包，但会明确标记
+为未签名；不要把该产物当作正式发行版。当前配置签名的是下载给用户的 NSIS 外层
+安装包；若以后需要对安装包内部的每个 PE 文件做深度签名，应改用 SignPath 支持
+深度签名的 MSI 发行链。
+
+### 改图标
+
+`assets/icon/icon.svg` 是唯一出处；改完在 macOS 上跑
+`python scripts/build_icons.py` 重新生成 `.icns` / `.ico` 并提交
+（CI 机器上没有 SVG 渲染器，产物进版本库）。

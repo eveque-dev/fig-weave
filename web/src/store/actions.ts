@@ -1,0 +1,2031 @@
+import { requestRender, type RenderPolicy } from '@/store/renderScheduler'
+import { isJustBakedBaselineOf } from '@/lib/bakedBaseline'
+import { engineTransport } from '@/lib/engineTransport'
+import { msg, t, type UiMessage } from '@/i18n'
+import { listJoin } from '@/i18n/format'
+import { rescueFocus } from '@/lib/focusRescue'
+import { newId } from '@/lib/id'
+import { flipCapture } from '@/lib/motion'
+import { emitActivity } from '@/lib/activity'
+import { applyAlign, boundsOf, readingOrder, type AlignMode } from '@/lib/geometry'
+import { clamp } from '@/lib/units'
+import { modKey } from '@/lib/utils'
+import { captureTelemetry } from '@/lib/telemetry'
+import {
+  engineInvalidate,
+  type CapturedFigureDescriptor,
+  type ManifestElement,
+  type PanelInfo,
+} from '@/lib/api'
+import { detachPlan, legendPlacementPlan, restoreFollowPlan, type LegendPlacement } from '@/lib/legendModel'
+import type { SidePlan } from '@/lib/tickSides'
+import type { StylePlan, StylePreset, StyleTextEntry } from '@/lib/stylePresets'
+import { TEXT_EFFECTS } from '@/lib/textEffects'
+import { canvasTextDefaults, writeCanvasText } from '@/lib/typography'
+import { reflowPatches, sizeSignature } from '@/lib/layoutGroups'
+import {
+  switchKindLabel,
+  switchObject,
+  switchTargets,
+  type SwitchKind,
+} from '@/lib/shapeSwitch'
+import type {
+  ArrowObject,
+  CanvasObject,
+  FigureDocument,
+  LayoutGroup,
+  PanelObject,
+  ShapeObject,
+  TextObject,
+} from '@/types/document'
+import { emptyProject, objectLabel, type ProjectDocument } from '@/types/document'
+import { useAssetStore } from './assetStore'
+import { readAutosaveDoc, saveNow, useDocumentStore } from './documentStore'
+import { finishActiveGesture } from './gestureCoordinator'
+import { useInteractionStore } from './interactionStore'
+import { renderKeyOf, useRenderStore } from './renderStore'
+import { useSelectionStore } from './selectionStore'
+import { askConfirm, useUiStore } from './uiStore'
+import { useViewportStore } from './viewportStore'
+import { rectOf, type Rect } from '@/lib/geometry'
+import type { CropRect, PanelRotation } from '@/types/document'
+import {
+  panelAspectLocked,
+  panelContentSize,
+  panelRotation,
+  rotateVec,
+  rotationSwaps,
+} from '@/types/document'
+
+/** 本文件的历史标签与状态提示都在 workspace 命名空间下 */
+const hist = (key: string, values?: Record<string, unknown>): UiMessage =>
+  msg(`history.${key}`, values, 'workspace')
+const note = (key: string, values?: Record<string, unknown>): UiMessage =>
+  msg(`status.${key}`, values, 'workspace')
+
+/**
+ * 「移动对象」的历史标签。单数那句不带数量（「移动对象」），**不能交给复数
+ * 规则**：中文只有 other 一档，写进 _one 的那句永远选不中，会退化成
+ * 「移动 1 个对象」。鼠标拖动（canvas/interactions）与方向键微调共用这一个
+ * 出处——两条路径落在历史里的标签必须一模一样。
+ */
+export const moveLabel = (count: number): UiMessage =>
+  count === 1 ? hist('moveObject') : hist('moveObjects', { count })
+
+const doc = () => useDocumentStore.getState().doc
+const commit = (label: UiMessage, recipe: (d: FigureDocument) => void) =>
+  useDocumentStore.getState().commit(label, recipe)
+const select = (ids: string[]) => useSelectionStore.getState().set(ids)
+const status = (message: UiMessage, tone?: 'info' | 'error') =>
+  useUiStore.getState().setStatus(message, tone)
+
+export const findObject = (id: string): CanvasObject | undefined =>
+  doc().objects.find((o) => o.id === id)
+
+export const selectedObjects = (): CanvasObject[] => {
+  const ids = useSelectionStore.getState().ids
+  return doc().objects.filter((o) => ids.includes(o.id))
+}
+
+/* ------------------------------- 新增对象 --------------------------------- */
+
+export function addPanel(info: PanelInfo, atX?: number, atY?: number) {
+  const page = doc().page
+  // 按原始尺寸放入（100% 缩放）：等效字号即原字号，所见即出版效果；
+  // 比页面宽也不自动缩小，要多大用户自己定
+  const w = info.native_w_mm
+  const h = info.native_h_mm
+  const obj: PanelObject = {
+    id: newId('p'),
+    type: 'panel',
+    fileId: info.id,
+    fileKind: info.kind,
+    nativeW: info.native_w_mm,
+    nativeH: info.native_h_mm,
+    pxW: info.px_w,
+    pxH: info.px_h,
+    script: info.script ?? null,
+    cost: info.cost,
+    // 继承「写回原始文件」的基线，这样编辑态看到的就是文件当前的样子
+    overrides: info.baked_overrides ? structuredClone(info.baked_overrides) : [],
+    name: info.name,
+    x: clamp(atX != null ? atX - w / 2 : (page.w - w) / 2, -w * 0.9, page.w - w * 0.1),
+    y: clamp(atY != null ? atY - h / 2 : (page.h - h) / 2, -h * 0.9, page.h - h * 0.1),
+    w,
+    h,
+  }
+  commit(hist('addPanel', { name: info.name }), (d) => {
+    d.objects.push(obj)
+  })
+  select([obj.id])
+  useAssetStore.getState().markUsed(info.id)
+  return obj
+}
+
+/**
+ * 把一张试运行捕获的 Figure 作为 RuntimeFigureAsset 面板放上画布
+ * （ADR 0013）。fileId 是描述符里的稳定 asset id（不透明标识）；描述块
+ * 持久化进文档，重开 / 项目搬移后据此恢复。overrides 从空开始——它没有
+ * 「写回基线」可继承（没有原件就没有写回）。
+ */
+export function addRuntimePanel(desc: CapturedFigureDescriptor, atX?: number, atY?: number) {
+  const page = doc().page
+  const [w, h] = desc.size_mm
+  const obj: PanelObject = {
+    id: newId('p'),
+    type: 'panel',
+    fileId: desc.asset_id,
+    fileKind: 'runtime',
+    nativeW: w,
+    nativeH: h,
+    script: desc.script,
+    source: {
+      script: desc.script,
+      entry: desc.entry,
+      stem: desc.stem,
+      captureSource: desc.capture_source,
+      fingerprint: desc.source_fingerprint,
+      sizeMm: [w, h],
+    },
+    overrides: [],
+    name: desc.stem,
+    x: clamp(atX != null ? atX - w / 2 : (page.w - w) / 2, -w * 0.9, page.w - w * 0.1),
+    y: clamp(atY != null ? atY - h / 2 : (page.h - h) / 2, -h * 0.9, page.h - h * 0.1),
+    w,
+    h,
+  }
+  commit(hist('addPanel', { name: desc.stem }), (d) => {
+    d.objects.push(obj)
+  })
+  select([obj.id])
+  return obj
+}
+
+export function addText(partial: Partial<TextObject> = {}) {
+  const page = doc().page
+  const d = canvasTextDefaults()
+  const obj: TextObject = {
+    id: newId('t'),
+    type: 'text',
+    text: t('objectType.text'),
+    x: page.w / 2 - 20,
+    y: page.h / 2 - 4,
+    w: 40,
+    h: 5,
+    // 排版默认值只有 `lib/typography.canvasTextDefaults()` 一处。
+    // `fontFamily` 刻意不填：新建的文字「没设过字体」，跟着文档默认族走。
+    sizePt: d.sizePt,
+    bold: d.weight === 'bold',
+    color: d.color,
+    align: d.halign,
+    ...partial,
+  }
+  commit(hist('addText'), (d) => {
+    d.objects.push(obj)
+  })
+  select([obj.id])
+  return obj
+}
+
+export function addArrow(partial: Partial<ArrowObject> = {}) {
+  const page = doc().page
+  const obj: ArrowObject = {
+    id: newId('a'),
+    type: 'arrow',
+    x: page.w / 2 - 15,
+    y: page.h / 2 - 5,
+    w: 30,
+    h: 10,
+    start: { rx: 0, ry: 1 },
+    end: { rx: 1, ry: 0 },
+    strokePt: 1,
+    color: '#1B1B18',
+    head: 'end',
+    ...partial,
+  }
+  commit(hist('addArrow'), (d) => {
+    d.objects.push(obj)
+  })
+  select([obj.id])
+  return obj
+}
+
+export function addShape(shape: ShapeObject['shape'], partial: Partial<ShapeObject> = {}) {
+  const page = doc().page
+  const obj: ShapeObject = {
+    id: newId('s'),
+    type: 'shape',
+    shape,
+    x: page.w / 2 - 15,
+    y: page.h / 2 - 10,
+    w: 30,
+    h: 20,
+    strokePt: 1,
+    color: '#1B1B18',
+    fill: null,
+    ...partial,
+  }
+  commit(hist('addShape', { shape: t(`shape.${shape}`) }), (d) => {
+    d.objects.push(obj)
+  })
+  select([obj.id])
+  return obj
+}
+
+/** 按阅读顺序给所有面板添加 (a)(b)(c) 标签 */
+export function addSubLabels() {
+  const panels = readingOrder(doc().objects.filter((o) => o.type === 'panel'))
+  if (!panels.length) {
+    status(note('noPanels'))
+    return
+  }
+  const created: string[] = []
+  commit(hist('addSubLabels'), (d) => {
+    panels.forEach((p, i) => {
+      const def = canvasTextDefaults()
+      const label: TextObject = {
+        id: newId('t'),
+        type: 'text',
+        text: `(${String.fromCharCode(97 + i)})`,
+        x: p.x + 1.5,
+        y: p.y + 1,
+        w: 10,
+        h: 5,
+        sizePt: def.sizePt,
+        color: def.color,
+        align: def.halign,
+        // 子图序号约定是加粗的——这是这一个入口自己的取舍，
+        // 不是另一套默认值，所以它叠在共用默认值**之上**
+        bold: true,
+      }
+      created.push(label.id)
+      d.objects.push(label)
+    })
+  })
+  select(created)
+  status(note('subLabelsAdded', { count: panels.length }))
+}
+
+/* ------------------------------- 编辑操作 --------------------------------- */
+
+export function updateObject<T extends CanvasObject>(id: string, label: UiMessage, patch: (o: T) => void) {
+  commit(label, (d) => {
+    const o = d.objects.find((x) => x.id === id) as T | undefined
+    if (o) patch(o)
+  })
+}
+
+export function updateObjects(ids: string[], label: UiMessage, patch: (o: CanvasObject) => void) {
+  commit(label, (d) => {
+    for (const o of d.objects) if (ids.includes(o.id)) patch(o)
+  })
+}
+
+export function deleteSelected() {
+  const ids = useSelectionStore.getState().ids
+  if (!ids.length) return
+  // 单选时把对象名（用户自己的内容，不翻译）插进去，多选才说数量——这是
+  // **两句不同的话**，不是同一句的单复数：中文没有单数档（Intl.PluralRules
+  // 只给 other），塞进 _one 的那句永远选不中，「删除 折线图.pdf」会变成
+  // 「删除 1 个对象」。所以在这里按数量选 key，而不是交给复数规则。
+  // 名字现算：对象已经不在文档里时退回类型名，别让历史标签把这条 commit 拖崩。
+  const first = findObject(ids[0])
+  const name = first ? objectLabel(first) : t('objectType.shape')
+  const label =
+    ids.length === 1 ? hist('deleteObject', { name }) : hist('deleteObjects', { count: ids.length })
+  commit(label, (d) => {
+    d.objects = d.objects.filter((o) => !ids.includes(o.id))
+    // 成员不足 2 个的布局组失去意义，一并清掉（约束消失，剩余对象原地不动）
+    if (d.layoutGroups?.length) {
+      d.layoutGroups = d.layoutGroups.filter(
+        (g) => d.objects.filter((o) => o.groupId === g.id).length >= 2,
+      )
+    }
+  })
+  useSelectionStore.getState().clear()
+}
+
+export function duplicateSelected() {
+  const ids = useSelectionStore.getState().ids
+  if (!ids.length) return
+  // 克隆**必须**在 commit 的 recipe 外面做：recipe 里的 d 是 Immer 草稿，
+  // d.objects.filter(...) 逐个取到的是元素的草稿 Proxy，而 structuredClone
+  // 对任何 Proxy 都直接抛 DataCloneError（引擎级行为）——复制会 100% 静默失败。
+  // 对已 finalize 的 plain object 克隆好再整体 push，与 clipboard.materializePaste 同一模式。
+  const regroup = new Map<string, string>()
+  const clones: CanvasObject[] = doc()
+    .objects.filter((o) => ids.includes(o.id))
+    .map((o) => {
+      const copy = structuredClone(o)
+      copy.id = newId(o.type[0])
+      copy.x += 4
+      copy.y += 4
+      // 组要跟着复制成新的一份，否则副本会和原件粘成同一组
+      if (copy.groupId) {
+        const next = regroup.get(copy.groupId) ?? newId('g')
+        regroup.set(copy.groupId, next)
+        copy.groupId = next
+      }
+      return copy
+    })
+  if (!clones.length) return
+  commit(hist('duplicateObjects'), (d) => {
+    d.objects.push(...clones)
+  })
+  select(clones.map((c) => c.id))
+}
+
+export type ZMove = 'top' | 'bottom' | 'up' | 'down'
+
+export function changeZOrder(move: ZMove) {
+  const ids = useSelectionStore.getState().ids
+  if (!ids.length) return
+  const labels: Record<ZMove, string> = {
+    top: 'zTop',
+    bottom: 'zBottom',
+    up: 'zUp',
+    down: 'zDown',
+  }
+  commit(hist(labels[move]), (d) => {
+    // 从后往前处理，避免同批移动时互相挤压
+    const picked = d.objects.filter((o) => ids.includes(o.id))
+    const rest = d.objects.filter((o) => !ids.includes(o.id))
+    if (move === 'top') {
+      d.objects = [...rest, ...picked]
+      return
+    }
+    if (move === 'bottom') {
+      d.objects = [...picked, ...rest]
+      return
+    }
+    const step = move === 'up' ? 1 : -1
+    const order = move === 'up' ? [...d.objects].reverse() : d.objects
+    const next = [...d.objects]
+    for (const o of order) {
+      if (!ids.includes(o.id)) continue
+      const i = next.indexOf(o)
+      const j = i + step
+      if (j < 0 || j >= next.length || ids.includes(next[j].id)) continue
+      next.splice(i, 1)
+      next.splice(j, 0, o)
+    }
+    d.objects = next
+  })
+}
+
+export function alignSelected(mode: AlignMode) {
+  const ids = useSelectionStore.getState().ids
+  if (!ids.length) return
+  if ((mode === 'hdist' || mode === 'vdist') && ids.length < 3) {
+    status(note('needThreeForDistribute'))
+    return
+  }
+  const primaryId = ids.at(-1)!
+  commit(msg(`alignMode.${mode}`, undefined, 'inspector'), (d) => {
+    const objs = d.objects.filter((o) => ids.includes(o.id))
+    const primary = objs.find((o) => o.id === primaryId)
+    applyAlign(objs, mode, d.page, primary)
+  })
+}
+
+export function nudgeSelected(dx: number, dy: number) {
+  const ids = useSelectionStore.getState().ids
+  if (!ids.length) return
+  // 与鼠标拖动同一套规则：组内有锁定成员就整组不动（movableTargets）
+  const { objects, blockedGroups } = movableTargets(ids)
+  warnBlockedGroups(blockedGroups, objects.length > 0)
+  if (!objects.length) return
+  const moving = new Set(objects.map((o) => o.id))
+  commit(moveLabel(objects.length), (d) => {
+    for (const o of d.objects) {
+      if (!moving.has(o.id)) continue
+      o.x += dx
+      o.y += dy
+    }
+  })
+}
+
+/** 选中这些对象并把它们挪进视野——导出预检的警告点击后用 */
+export function revealObjects(ids: string[]) {
+  const objs = doc().objects.filter((o) => ids.includes(o.id))
+  if (!objs.length) return
+  select(objs.map((o) => o.id))
+  const bounds = boundsOf(objs)
+  if (bounds) useViewportStore.getState().revealRect(bounds)
+}
+
+export function selectAll() {
+  select(doc().objects.filter((o) => !o.hidden && !o.locked).map((o) => o.id))
+}
+
+/* ------------------------------- 文档切换 --------------------------------- */
+
+/**
+ * 快照失败时才会走到的确认——正常路径永远静默。
+ * 文案要说清影响范围：不是「可能丢失」，而是「切走后取不回来」。
+ */
+const confirmLoss = () =>
+  askConfirm({
+    title: msg('confirm.docLossTitle', undefined, 'workspace'),
+    body: msg('confirm.docLossBody', undefined, 'workspace'),
+    confirmLabel: msg('confirm.docLossConfirm', undefined, 'workspace'),
+    danger: true,
+  })
+
+/** 切换文档后视口重新适配，选中态清空——三个入口共用（切换成功后再调） */
+function afterSwitch(): void {
+  useSelectionStore.getState().clear()
+  useUiStore.getState().setElementPanel(null)
+  const page = useDocumentStore.getState().doc.page
+  useViewportStore.getState().fit(page.w, page.h)
+}
+
+/**
+ * ⌘S / Ctrl+S 的实际动作：**真的保存**，然后按结果说一句话。
+ *
+ * 改造前这个组合键打开的是「保存为画布文件」对话框，而快捷键帮助里写的就是
+ * 「保存为画布文件」——两边一致，但用户按 ⌘S 想要的从来不是"另存一份"。
+ * 现在 ⌘S 存当前文档（目标已知，直接写），⇧⌘S 才是另存为。
+ *
+ * 保存是离散动作：先把还开着的那一轮连续编辑收干净，否则存下去的是一个
+ * 事务开着、值还没落定的中间态（与 runUndoRedo 同一条理由，issue #131）。
+ */
+export async function runManualSave(): Promise<void> {
+  finishActiveGesture()
+  const ui = useUiStore.getState()
+  const state = await saveNow()
+  if (state === 'saved' || state === 'clean') {
+    ui.setStatus(msg('save.done', undefined, 'workspace'))
+  } else if (state === 'conflict') {
+    ui.setStatus(msg('save.conflict', undefined, 'workspace'), 'error')
+  } else if (state === 'save_error') {
+    ui.setStatus(msg('save.failed', undefined, 'workspace'), 'error')
+  }
+  // dirty / saving：保存期间用户又改了，或又排了一次写。那不是失败，
+  // 顶栏的状态会继续往下走，这里不再多说一句话。
+}
+
+export async function newBlankDocument(): Promise<void> {
+  const next = emptyProject()
+  if (!(await useDocumentStore.getState().switchDocument(next, newId('d'), confirmLoss))) return
+  afterSwitch()
+  status(note('blankCreated'))
+}
+
+/** 载入画布文件：每次载入都是一个新的编辑会话，因此给一个新的文档身份 */
+export async function openLayoutDocument(doc: FigureDocument | ProjectDocument): Promise<void> {
+  if (!(await useDocumentStore.getState().switchDocument(doc, newId('d'), confirmLoss))) return
+  afterSwitch()
+  const s = useDocumentStore.getState()
+  status(note('documentLoaded', { name: s.projectMeta.name, count: s.canvases.length }))
+}
+
+/** 切回本机自动保存过的文档；沿用它原来的身份，槽位因此不会分叉 */
+export async function openRecentDocument(id: string): Promise<void> {
+  const { doc: pd, notice } = await readAutosaveDoc(id)
+  if (!pd) {
+    // schema 太新是「读不了」而不是「不见了」：文件好好的，说清楚是哪一种
+    status(note(notice?.kind === 'schema_too_new' ? 'recentTooNew' : 'recentMissing'), 'error')
+    return
+  }
+  if (!(await useDocumentStore.getState().switchDocument(pd, id, confirmLoss))) return
+  afterSwitch()
+  // 未决的恢复副本跟着这份文档走：switchDocument 刚把待裁决事项清空了
+  if (notice) useDocumentStore.setState({ docNotice: notice })
+  status(note('documentReopened', { name: pd.project.name, count: pd.canvases.length }))
+}
+
+/* --------------------------------- 页面 ----------------------------------- */
+
+export function setPageSize(w: number, h: number) {
+  commit(hist('setPageSize'), (d) => {
+    d.page.w = clamp(w, 10, 1000)
+    d.page.h = clamp(h, 10, 1000)
+  })
+}
+
+/** 页面的非尺寸设置（背景、页边距）；尺寸走 setPageSize */
+export function setPageSetup(patch: Partial<FigureDocument['page']>, label: UiMessage) {
+  commit(label, (d) => {
+    Object.assign(d.page, patch)
+  })
+}
+
+/** 顶栏的「文档名」= 项目文档名；画布名走 renameCanvas（C2 画布管理） */
+export function setDocumentName(name: string) {
+  useDocumentStore.getState().renameProject(name)
+}
+
+/* -------------------------------- 参考线 ---------------------------------- */
+
+export function addGuide(axis: 'x' | 'y', pos: number) {
+  commit(hist('addGuide'), (d) => {
+    d.guides.push({ axis, pos })
+  })
+}
+
+export function moveGuide(index: number, pos: number) {
+  commit(hist('moveGuide'), (d) => {
+    if (d.guides[index]) d.guides[index].pos = pos
+  })
+}
+
+export function removeGuide(index: number) {
+  commit(hist('deleteGuide'), (d) => {
+    d.guides.splice(index, 1)
+  })
+}
+
+export function clearGuides() {
+  commit(hist('clearGuides'), (d) => {
+    d.guides = []
+  })
+}
+
+/* -------------------------------- 图层 ------------------------------------ */
+
+/**
+ * 图层树拖放：把 fromId 放到 targetId 的上方或下方。
+ * 「上方」= 视觉上更靠前 = 数组中更靠后。
+ */
+export function reorderObject(fromId: string, targetId: string, position: 'above' | 'below') {
+  if (fromId === targetId) return
+  commit(hist('reorderLayers'), (d) => {
+    const from = d.objects.find((o) => o.id === fromId)
+    if (!from) return
+    const rest = d.objects.filter((o) => o.id !== fromId)
+    const at = rest.findIndex((o) => o.id === targetId)
+    if (at < 0) return
+    rest.splice(position === 'above' ? at + 1 : at, 0, from)
+    d.objects = rest
+  })
+}
+
+export function toggleHidden(id: string) {
+  const o = findObject(id)
+  if (!o) return
+  updateObject(id, hist(o.hidden ? 'showObject' : 'hideObject'), (obj) => {
+    obj.hidden = !obj.hidden
+  })
+}
+
+export function toggleLocked(id: string) {
+  const o = findObject(id)
+  if (!o) return
+  updateObject(id, hist(o.locked ? 'unlockObject' : 'lockObject'), (obj) => {
+    obj.locked = !obj.locked
+  })
+}
+
+/** 一批对象的锁定 / 隐藏态：全是 / 全不是 / 混合——菜单文案与下一步动作按它派生 */
+export type TriState = 'all' | 'none' | 'mixed'
+
+export function triStateOf(objs: readonly CanvasObject[], pick: (o: CanvasObject) => boolean): TriState {
+  let yes = 0
+  for (const o of objs) if (pick(o)) yes++
+  return yes === 0 ? 'none' : yes === objs.length ? 'all' : 'mixed'
+}
+
+/**
+ * 批量锁定 / 解锁（右键多选菜单，Prompt 18）：**一条历史、一次 commit**。
+ * 循环调 `toggleLocked` 会留下 N 条撤销记录，而且混合状态下 toggle 会把一半锁上、
+ * 一半解开——所以这里收的是**目标状态**，已经是那个状态的对象不动、不进 commit。
+ * 选区一个字不动：锁定改的是「能不能被挪」，不是「选没选中」（拖动 / 对齐都按
+ * `movableTargets` 跳过它，与单个对象的 `toggleLocked` 同一条产品语义）。
+ */
+export function setObjectsLocked(ids: string[], locked: boolean) {
+  const targets = doc().objects.filter((o) => ids.includes(o.id) && !!o.locked !== locked)
+  if (!targets.length) return
+  finishActiveGesture()
+  const tids = targets.map((o) => o.id)
+  const label =
+    tids.length === 1
+      ? hist(locked ? 'lockObject' : 'unlockObject')
+      : hist(locked ? 'lockObjects' : 'unlockObjects', { count: tids.length })
+  updateObjects(tids, label, (o) => {
+    o.locked = locked
+  })
+}
+
+/** 批量隐藏 / 显示：同上，一条历史。隐藏后对象仍留在选区里（与 `toggleHidden` 一致，图层树里可恢复） */
+export function setObjectsHidden(ids: string[], hidden: boolean) {
+  const targets = doc().objects.filter((o) => ids.includes(o.id) && !!o.hidden !== hidden)
+  if (!targets.length) return
+  finishActiveGesture()
+  const tids = targets.map((o) => o.id)
+  const label =
+    tids.length === 1
+      ? hist(hidden ? 'hideObject' : 'showObject')
+      : hist(hidden ? 'hideObjects' : 'showObjects', { count: tids.length })
+  updateObjects(tids, label, (o) => {
+    o.hidden = hidden
+  })
+}
+
+/**
+ * 换标注类型（矩形 ↔ 椭圆 ↔ …、直线 ↔ 箭头）：**一条 commit、一条历史**。
+ *
+ * 「切成什么样」整段在 `lib/shapeSwitch.switchObject` 里，这里只负责三件事——
+ * 在**当前文档**上算出新对象、把它写回**原来的数组位置**、给这次修改一句话。
+ *
+ * 三条纪律：
+ * * **不换 id**：选择、成组（`groupId`）、布局组（`layoutGroups.order` 记的就是
+ *   id）、锁定、图层树全靠它。换 id 的话上面每一样都会在用户眼皮底下静默掉
+ *   一份，而画面上只看得出「形状变了」。
+ * * **就地替换而不是删了再 push**：数组序即 z 序，push 到末尾等于顺手把它提到
+ *   最上层。
+ * * **算在 draft 外面**：`switchObject` 是拿普通对象写的纯函数，喂 immer 的
+ *   draft 会让它把 draft 子对象（`start` / `end`）塞进新对象里。所以先从当前
+ *   state 取原对象算好，recipe 里只做赋值。
+ */
+export function switchObjectKind(ids: string[], target: SwitchKind) {
+  const selected = doc().objects.filter((o) => ids.includes(o.id))
+  // **与两个入口同一条判据**（`switchTargets`）：跨族、或选区里有不参与切换的
+  // 对象，整个不做。少了这一句，`switchObjectKind(['矩形','箭头'], 'ellipse')`
+  // 会把矩形切了、箭头留着——「点了一下只有一半变了」比什么都不发生更难理解，
+  // 而界面上没有任何地方会说出这件事
+  if (!switchTargets(selected).includes(target)) return
+  const next = new Map<string, CanvasObject>()
+  for (const o of selected) {
+    const switched = switchObject(o, target)
+    if (switched) next.set(o.id, switched)
+  }
+  // 一个都没变 = 选区里每个对象**已经**是这个类型（唯一能走到这里的成因）。
+  // 「不进历史」这半其实下游也保证得了（`commit` 拿到空补丁集就早退），所以
+  // 单独拿掉这一行，只看历史长度的用例是**杀不死的**；它自己那份职责是
+  // **别为一次什么都没发生的点击去收掉用户正开着的那一轮连续编辑**
+  // ——`shapeSwitchActions.test.ts` 的「空操作不打断进行中的手势」盯的正是这个。
+  if (!next.size) return
+  finishActiveGesture()
+  const name = switchKindLabel(target)
+  const label =
+    next.size === 1
+      ? hist('switchKind', { name })
+      : hist('switchKindCount', { name, count: next.size })
+  commit(label, (d) => {
+    d.objects.forEach((o, i) => {
+      const switched = next.get(o.id)
+      if (switched) d.objects[i] = switched
+    })
+  })
+}
+
+export function renameObject(id: string, name: string) {
+  updateObject(id, hist('renameObject'), (o) => {
+    o.name = name.trim() || undefined
+  })
+}
+
+/** 选区包围盒，状态栏与 Inspector 多选态用 */
+export const selectionBounds = () => boundsOf(selectedObjects())
+
+/* ---------------------------- 图内元素 override ---------------------------- */
+
+/**
+ * manifest 里 prop 的显示名。
+ *
+ * **matplotlib 的属性是开放集合**：脚本能暴露前端从没见过的 prop，所以查不到
+ * 翻译时**原样回退到属性名本身**（`linewidth`），而不是显示一个空白标签或
+ * 一串 `inspector.prop.foo`。前端不硬编码 matplotlib 属性表，这条回退就是
+ * 「不认识也不能坏」的那道保险。
+ */
+export const propLabel = (prop: string): string =>
+  t(`prop.${prop}`, { ns: 'inspector', defaultValue: prop })
+
+/**
+ * enum 选项的显示名，按属性分档——"center" 在水平/垂直对齐里含义不同，
+ * "normal" 在字重/字形里也不同，所以不能只按值查表。
+ * 查不到的原样显示：具体字体名（Times New Roman 等）不该被翻译，
+ * 脚本自定义的枚举值也不该被吞掉。
+ */
+export const optionLabel = (prop: string, value: string): string =>
+  // `nsSeparator: false`：**枚举值是开集，里面真的有 i18next 的分隔符**。
+  // 默认 nsSeparator 是 `:`，于是 `enum.linestyle.:`（点线）被切成
+  // 命名空间 `enum.linestyle.` + 空 key，查不到就原样回退成 `:`——界面上
+  // 那一格的名字就是一个冒号（审计 T15 点名的「个别辅助标签显示 :」）。
+  // keySeparator 的 `.` 不用关：i18next 的 deepFind 会把剩下的段拼回去，
+  // `marker` 的 `.`（小点）与 `..` 实测都查得到。
+  t(`enum.${prop}.${value}`, { ns: 'inspector', nsSeparator: false, defaultValue: value })
+
+/**
+ * 写入一条图内元素 override 并触发重渲染。
+ * override 存在 PanelObject 上，因此天然进 undo history；
+ * immediate=true 用于颜色/开关/枚举/拖动结束这类不需要防抖的改动。
+ *
+ * 第五个参数也接受**渲染策略**（'immediate' / 'defer' / 'none'）。
+ * 策略只管「什么时候麻烦 matplotlib」——文档改动**无论如何都经过
+ * documentStore.commit**（updateObject → commit），历史一条不少。
+ * 'none' 是给假实时手势用的：拖动 / scrub / 取色期间画面由 SVG 局部预览
+ * 负责，手势结束由 flushRender 定稿。
+ */
+export function setOverride(
+  panelId: string,
+  gid: string,
+  prop: string,
+  value: unknown,
+  immediate: boolean | RenderPolicy = false,
+) {
+  updateObject<PanelObject>(panelId, hist('setProp', { prop: propLabel(prop) }), (o) => {
+    o.overrides = o.overrides.filter((p) => !(p.gid === gid && p.prop === prop))
+    o.overrides.push({ gid, prop, value })
+  })
+  const panel = findObject(panelId)
+  if (panel?.type === 'panel') requestRender(panel, immediate)
+  // 本地信号只带属性名（matplotlib 的 prop，不是用户内容），不带 gid 与值
+  emitActivity({ kind: 'element.property_changed', prop })
+}
+
+/**
+ * 关掉图内文字的一种效果（背景 / 描边）：写开关 `false`，**并把从属字段的
+ * override 一并清掉**——一条历史、一次渲染。
+ *
+ * 为什么不是普通的 `setOverride(prop, false)`：展示注册表有一条「用户改过的
+ * 字段永远显示」，留着从属字段的 override 的话，效果关了、参数还摆在那里
+ * ——而它们此刻对画面没有任何作用（审计 T14「关闭效果后收起参数」）。
+ * 表在 `lib/textEffects`；不认识的 prop 退化成一条普通开关写入。
+ */
+export function disableTextEffect(panelId: string, gid: string, prop: string) {
+  const dependents = TEXT_EFFECTS[prop] ?? []
+  // 开关是离散动作：先收掉开着的手势，不让它并进上一条历史
+  finishActiveGesture()
+  updateObject<PanelObject>(panelId, hist('setProp', { prop: propLabel(prop) }), (o) => {
+    o.overrides = o.overrides.filter(
+      (p) => !(p.gid === gid && (p.prop === prop || dependents.includes(p.prop))),
+    )
+    o.overrides.push({ gid, prop, value: false })
+  })
+  const panel = findObject(panelId)
+  if (panel?.type === 'panel') requestRender(panel, true)
+  emitActivity({ kind: 'element.property_changed', prop })
+}
+
+/**
+ * 「删除」图内元素 = 写 visible:false override。
+ * 非破坏、进撤销、导出与写回原始文件都生效，随时可从「已隐藏元素」恢复。
+ */
+export function hideElement(panelId: string, gid: string, label: string) {
+  setOverride(panelId, gid, 'visible', false, true)
+  status(note('elementHidden', { label }))
+}
+
+/** 多选一起隐藏：一次撤销、一次渲染（键盘 Delete 走这条） */
+export function hideElements(panelId: string, targets: { gid: string; label: string }[]) {
+  if (!targets.length) return
+  if (targets.length === 1) {
+    hideElement(panelId, targets[0].gid, targets[0].label)
+    return
+  }
+  setOverrides(
+    panelId,
+    hist('hideElements', { count: targets.length }),
+    targets.map((x) => ({ gid: x.gid, prop: 'visible', value: false })),
+  )
+  status(note('elementsHidden', { count: targets.length }))
+}
+
+/** 锁定/解锁图内元素：命中测试跳过锁定元素，元素树是唯一的解锁入口 */
+export function toggleElementLocked(panelId: string, gid: string, label?: string) {
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel') return
+  const locked = panel.lockedGids?.includes(gid) ?? false
+  updateObject<PanelObject>(panelId, hist(locked ? 'unlockElement' : 'lockElement'), (o) => {
+    const cur = o.lockedGids ?? []
+    const next = locked ? cur.filter((g) => g !== gid) : [...cur, gid]
+    o.lockedGids = next.length ? next : undefined
+  })
+  if (!locked) {
+    // 锁定的元素不该继续是选中目标（属性页会继续改它）
+    const ui = useUiStore.getState()
+    if (ui.selectedGids.includes(gid)) {
+      ui.setSelectedGid(null)
+    }
+    status(note('elementLocked', { label: label ?? gid }))
+  }
+}
+
+/** 恢复：移除该元素的 visible override，而不是写 visible:true */
+export function unhideElement(panelId: string, gid: string) {
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel') return
+  updateObject<PanelObject>(panelId, hist('unhideElement'), (o) => {
+    o.overrides = o.overrides.filter((p) => !(p.gid === gid && p.prop === 'visible'))
+  })
+  const next = findObject(panelId)
+  if (next?.type === 'panel') requestRender(next, true)
+}
+
+/**
+ * 清掉单个 prop 的 override —— 「自动范围」「恢复脚本原始尺寸」这类动作
+ * 本质就是移除覆盖、让引擎回到脚本自己算的值，不是写一个新值。
+ */
+export function clearOverride(panelId: string, gid: string, prop: string) {
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel') return
+  if (!panel.overrides.some((p) => p.gid === gid && p.prop === prop)) return
+  updateObject<PanelObject>(panelId, hist('clearProp', { prop: propLabel(prop) }), (o) => {
+    o.overrides = o.overrides.filter((p) => !(p.gid === gid && p.prop === prop))
+  })
+  const next = findObject(panelId)
+  if (next?.type === 'panel') requestRender(next, true)
+}
+
+/**
+ * 批量移除 override：多选同类元素时「回到脚本值」要一次撤销、一次渲染，
+ * 逐个调 clearOverride 会留下一串撤销记录。
+ */
+export function clearOverrides(
+  panelId: string,
+  label: UiMessage,
+  targets: { gid: string; prop: string }[],
+) {
+  // 「清理孤儿 override」「批量回到脚本值」都是点一下完成的结构性操作：
+  // 不先收掉开着的手势，它们会被并进上一条历史（issue #131）
+  finishActiveGesture()
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel') return
+  const hit = targets.filter((t) =>
+    panel.overrides.some((p) => p.gid === t.gid && p.prop === t.prop),
+  )
+  if (!hit.length) return
+  updateObject<PanelObject>(panelId, label, (o) => {
+    o.overrides = o.overrides.filter(
+      (p) => !hit.some((t) => t.gid === p.gid && t.prop === p.prop),
+    )
+  })
+  const next = findObject(panelId)
+  if (next?.type === 'panel') requestRender(next, true)
+}
+
+/**
+ * 图例项「恢复跟随图中对象」（ADR 0034）：删掉示意线的全部 handle_* override，
+ * 脚本原样是 custom 的项再写一条 `binding = follow_source`。**一次 commit**：
+ * 一条撤销、一次渲染——拆成几步的话中间态会渲染出一帧半跟随半自定义的图例。
+ */
+export function restoreLegendEntryFollow(panelId: string, element: ManifestElement) {
+  finishActiveGesture()
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel') return
+  const plan = restoreFollowPlan(element)
+  const touches =
+    plan.set.length > 0 ||
+    plan.remove.some((t) => panel.overrides.some((p) => p.gid === t.gid && p.prop === t.prop))
+  if (!touches) return
+  updateObject<PanelObject>(panelId, hist('legendFollowSource'), (o) => {
+    o.overrides = o.overrides.filter(
+      (p) => !plan.remove.some((t) => t.gid === p.gid && t.prop === p.prop),
+    )
+    upsertOverrides(o, plan.set)
+  })
+  const next = findObject(panelId)
+  if (next?.type === 'panel') requestRender(next, true)
+}
+
+/**
+ * 图例项「断开」（#414）：`binding = custom` 连同此刻的五条示意线样式**一次 commit**
+ * 写进文档（`detachPlan`）。引擎那边脱开 = 脚本原样 + 文档里的 handle_*，所以「定格此刻
+ * 的样子」靠这五条 override 兑现——一条撤销、一次渲染，撤销就回到跟随。
+ */
+export function detachLegendEntry(panelId: string, element: ManifestElement) {
+  finishActiveGesture()
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel') return
+  const plan = detachPlan(element)
+  updateObject<PanelObject>(panelId, hist('legendDetach'), (o) => {
+    upsertOverrides(o, plan)
+  })
+  const next = findObject(panelId)
+  if (next?.type === 'panel') requestRender(next, true)
+}
+
+/**
+ * 图例位置的一次点击（属性页 / 快捷编辑 / 画布浮动栏共用）：内 / 外两带写的
+ * 是同一件事，落进**同一次 commit**——一条撤销、一次渲染。
+ *
+ * 计划由 `legendPlacementPlan` 算（三条规则连同它们的现场都写在那里）；
+ * 这里只负责把 set 与 remove 放进一次修改，并在真的什么都不动时**不留历史**
+ * ——点一个已经选中的档位不该在撤销栈里多一条。
+ */
+export function setLegendPlacement(
+  panelId: string,
+  legends: ManifestElement[],
+  next: LegendPlacement,
+) {
+  finishActiveGesture()
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel' || !legends.length) return
+  const plan = legendPlacementPlan(panel, legends, next)
+  const removes = plan.remove.filter((t) =>
+    panel.overrides.some((p) => p.gid === t.gid && p.prop === t.prop),
+  )
+  const changes = plan.set.filter((t) => {
+    const cur = panel.overrides.find((p) => p.gid === t.gid && p.prop === t.prop)
+    return !cur || JSON.stringify(cur.value) !== JSON.stringify(t.value)
+  })
+  if (!removes.length && !changes.length) return
+  updateObject<PanelObject>(panelId, hist('setProp', { prop: propLabel('loc') }), (o) => {
+    o.overrides = o.overrides.filter(
+      (p) => !removes.some((t) => t.gid === p.gid && t.prop === p.prop),
+    )
+    upsertOverrides(o, plan.set)
+  })
+  const after = findObject(panelId)
+  if (after?.type === 'panel') requestRender(after, true)
+  emitActivity({ kind: 'element.property_changed', prop: 'loc' })
+}
+
+/**
+ * 四边刻度的一次点击（画布命中区 / 示意图 / 刻度卡共用，Prompt 16）：
+ * 计划里的 set 与 remove 进**同一次 commit**——一条撤销、一次渲染。方向落在
+ * 刻度元素、显隐落在子图元素，两条 override 分属两个 gid，拆成两步的话中间
+ * 那一帧会渲染出「边打开了、方向还是旧的」的图，撤销栈里也多一条。
+ */
+export function applyTickSidePlan(panelId: string, plan: SidePlan | null) {
+  if (!plan) return
+  finishActiveGesture()
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel') return
+  const remove = plan.remove.filter((t) =>
+    panel.overrides.some((p) => p.gid === t.gid && p.prop === t.prop),
+  )
+  if (!plan.set.length && !remove.length) return
+  const e = plan.effect
+  const label = hist(e.hides ? 'tickSideHide' : e.on ? 'tickSideOn' : 'tickSideOff', {
+    side: t(`tick.side.${e.side}`, { ns: 'inspector' }),
+    dir: t(`tick.dir.${e.dir}`, { ns: 'inspector' }),
+  })
+  updateObject<PanelObject>(panelId, label, (o) => {
+    o.overrides = o.overrides.filter(
+      (p) => !remove.some((r) => r.gid === p.gid && r.prop === p.prop),
+    )
+    upsertOverrides(o, plan.set)
+  })
+  const next = findObject(panelId)
+  if (next?.type === 'panel') requestRender(next, true)
+}
+
+export function resetOverrides(panelId: string) {
+  finishActiveGesture()
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel' || !panel.overrides.length) return
+  updateObject<PanelObject>(panelId, hist('resetOverrides'), (o) => {
+    o.overrides = []
+  })
+  // 清空之后的那个面板才是要渲染的变体（overrides 已经是空表）
+  const cleared = findObject(panelId)
+  if (cleared?.type === 'panel') requestRender(cleared, true)
+  status(note('overridesCleared'))
+}
+
+/**
+ * 「恢复图内修改」（右键菜单，Prompt 18）：先问一句再清。
+ *
+ * 语义与属性页那颗「重置到脚本原始」按钮**完全相同**（同一个 `resetOverrides`）：
+ * 清掉**这个面板实例**的全部 override → 回到源脚本**当前**生成的状态。源脚本不动、
+ * 原始文件不动、同一文件的其他面板不动；进一条历史，⌘Z 整份回来。
+ *
+ * 写回过的面板要分开说：那份 override 已经烙在磁盘文件上（`isJustBakedBaseline`），
+ * 清掉之后画布上这个面板显示的是脚本原样，而文件仍是写回后的样子——两者从此不同，
+ * 确认框必须把这一句说出来，否则用户会以为文件被改回去了。
+ */
+export async function resetOverridesConfirmed(panelId: string): Promise<boolean> {
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel' || !panel.overrides.length) return false
+  const baked = isJustBakedBaseline(panel)
+  const ok = await askConfirm({
+    title: msg('confirm.resetOverridesTitle', undefined, 'workspace'),
+    body: msg(
+      baked ? 'confirm.resetOverridesBodyBaked' : 'confirm.resetOverridesBody',
+      { count: panel.overrides.length },
+      'workspace',
+    ),
+    confirmLabel: msg('confirm.resetOverridesConfirm', undefined, 'workspace'),
+    danger: true,
+  })
+  if (!ok) return false
+  // 等用户点头的这段时间里面板可能已经没了 / 已经空了：以那一刻为准
+  resetOverrides(panelId)
+  return true
+}
+
+export type RebuildOutcome = 'rebuilt' | 'rerendered' | 'failed' | 'skipped'
+
+/**
+ * 这一版画完（成功或失败）之前不回来；`render()` 在同键忙时只排队就返回。
+ *
+ * **要循环等**：在飞的那次结束时 `renderStore` 会先写一次它的结果（`ready`），
+ * 紧接着**同步**把排队的那次置回 `rendering`——订阅回调看到的那个 `ready`
+ * 只存在于两次 `patch` 之间，等 Promise 的消费者真正恢复时，键已经又在渲染了。
+ * 只等一次的话「重新构建」在上一次渲染还在飞的时候点下去（慢机器、刚打开的图）
+ * 会拿着 `rendering` 判成 failed，一声不吭（Windows 桌面腿的 e2e 抓到的）。
+ */
+async function settledRender(key: string): Promise<void> {
+  for (;;) {
+    if (useRenderStore.getState().get(key).status !== 'rendering') return
+    await new Promise<void>((resolve) => {
+      const off = useRenderStore.subscribe((s) => {
+        if (s.get(key).status !== 'rendering') {
+          off()
+          resolve()
+        }
+      })
+    })
+  }
+}
+
+/**
+ * 「重新构建」（右键菜单，Prompt 18）：作废这张图的热会话，按**当前 overrides**
+ * 从头跑一遍源脚本再画。
+ *
+ * 它是用户明确触发的一次脚本执行（00_SHARED_RULES §4 允许的形态），做的事与
+ * 「脚本文件变了」那条路**逐字相同**：后端 `pool.invalidate`（同一个原语）+
+ * 前端 `markStale`（清掉该文件全部变体的权威，画布留着上一张不闪白）+ 一次
+ * immediate 渲染。**不改源脚本、不写回原始文件、不清 override**——文档一个字节
+ * 不动，所以它**不进历史**（撤销撤的是编辑，不是一次重画）。
+ *
+ * 同一文件的多个实例共享一条会话：会话作废对它们一视同仁，其余实例由
+ * `useEngineSync` 的跟踪位（`markStale` 置的）按各自 overrides 重画。
+ *
+ * 结果分四档：`rebuilt`（脚本真的重跑了）/ `rerendered`（会话作废不了——native
+ * 会话是用户自己终端里的进程，或内嵌画布 / playground 没有作废通道——只按当前
+ * overrides 重画了，**要说出来**）/ `failed`（渲染错误已落在该变体上：画布角标 +
+ * 属性页的错误块显示，这里**不叠一条 toast**）/ `skipped`（不是可编辑面板）。
+ */
+export async function rebuildPanel(panelId: string): Promise<RebuildOutcome> {
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel' || !panel.script) return 'skipped'
+  // 字号还在安静计时里时点「重新构建」：先把那次编辑收进历史，重画的才是定稿的 overrides
+  finishActiveGesture()
+  const fileId = panel.fileId
+  let invalidated = false
+  if (!engineTransport()) {
+    try {
+      invalidated = (await engineInvalidate(fileId)).invalidated
+    } catch (err) {
+      status(
+        note('rebuildFailed', { error: err instanceof Error ? err.message : String(err) }),
+        'error',
+      )
+      return 'failed'
+    }
+  }
+  // 等后端这一趟的时间里面板可能被删了：以此刻文档里的那份为准
+  const fresh = findObject(panelId)
+  if (fresh?.type !== 'panel') return 'skipped'
+  const store = useRenderStore.getState()
+  store.markStale([fileId])
+  // 登记 wantPatches、清掉挂着的防抖计时器；真正的发送在下一行，要等它的结果
+  requestRender(fresh, 'none')
+  const key = renderKeyOf(fresh)
+  await store.render(fileId, fresh.overrides, undefined, 'immediate')
+  await settledRender(key)
+  if (useRenderStore.getState().get(key).status !== 'ready') return 'failed'
+  status(note(invalidated ? 'panelRebuilt' : 'panelRerenderedNoRerun'))
+  return invalidated ? 'rebuilt' : 'rerendered'
+}
+
+/**
+ * 批量 upsert：**已经存在的那条原地改值，新的才追加**。
+ *
+ * 旧写法是 `filter(...)` 再 `push(...)`，等于把命中的那条挪到数组末尾。
+ * override 数组的 JSON 就是变体键（`renderKeyOf`），顺序一变键就变，于是
+ * 「改回同一个值」也会触发一次完全没必要的重渲染，撤销栈里还多一条看不出
+ * 差别的历史。issue #131 里对齐一次能挪好几条，键churn 尤其明显。
+ */
+function upsertOverrides(
+  panel: PanelObject,
+  patches: { gid: string; prop: string; value: unknown }[],
+) {
+  for (const p of patches) {
+    const i = panel.overrides.findIndex((x) => x.gid === p.gid && x.prop === p.prop)
+    if (i >= 0) panel.overrides[i] = { ...panel.overrides[i], ...p }
+    else panel.overrides.push(p)
+  }
+}
+
+/**
+ * 一次写入多条 override（子图对齐等批量操作）：一条历史、一次渲染。
+ * render 同 setOverride 的第五参：'none' 交给手势结束时的 flushRender 定稿。
+ */
+export function setOverrides(
+  panelId: string,
+  label: UiMessage,
+  patches: { gid: string; prop: string; value: unknown }[],
+  render: boolean | RenderPolicy = true,
+) {
+  if (!patches.length) return
+  updateObject<PanelObject>(panelId, label, (o) => {
+    upsertOverrides(o, patches)
+  })
+  const panel = findObject(panelId)
+  if (panel?.type === 'panel') requestRender(panel, render)
+  for (const prop of new Set(patches.map((p) => p.prop))) {
+    emitActivity({ kind: 'element.property_changed', prop })
+  }
+}
+
+/**
+ * 混排对齐（图内元素 + 画布标注）：元素落 override、标注改画布位置，
+ * 全部进**同一次 commit**——一条撤销、一次渲染。
+ *
+ * **几何权威由调用方把关**：图内多选对齐走 `alignSelectedPanelElements`
+ * （点击那一刻现取几何 + `exactPanelRender`），这里只负责把一批已经算好的
+ * patch 与位移落进同一次 commit。
+ */
+export function applyMixedAlign(
+  panelId: string,
+  label: UiMessage,
+  patches: { gid: string; prop: string; value: unknown }[],
+  moves: { id: string; x: number; y: number }[],
+) {
+  if (!patches.length && !moves.length) return
+  useDocumentStore.getState().commit(label, (d) => {
+    const p = d.objects.find((o) => o.id === panelId)
+    if (p?.type === 'panel') upsertOverrides(p, patches)
+    for (const mv of moves) {
+      const o = d.objects.find((x) => x.id === mv.id)
+      if (o && !o.locked) {
+        o.x = mv.x
+        o.y = mv.y
+      }
+    }
+  })
+  if (patches.length) {
+    const panel = findObject(panelId)
+    if (panel?.type === 'panel') requestRender(panel, true)
+  }
+}
+
+/* ------------------------ 「写回原始文件」基线的继承 --------------------------- */
+
+/**
+ * 该面板的 overrides 是否恰好等于资产基线（即文件上已经烙好、没再动过）。
+ *
+ * 两个条件（逐字相等 **且** `baked_current !== false`）与三档语义的全文在
+ * `lib/bakedBaseline.ts`。消费点（renderTargets 跳过渲染、PanelView 显示走
+ * /api/render、写回候选熄灭）全部经由那一份判据，别在消费点各补一刀。
+ */
+export function isJustBakedBaseline(panel: PanelObject): boolean {
+  // 判据本体在 lib/bakedBaseline.isJustBakedBaselineOf（纯函数）；这里只负责去素材表取事实
+  return isJustBakedBaselineOf(panel.overrides, useAssetStore.getState().byId[panel.fileId])
+}
+
+/**
+ * 给还没有任何 override 的老面板补播种基线。
+ * 已经有自己修改的面板不碰——那是用户的编辑，不能被基线覆盖。
+ */
+export function seedBakedOverrides(panelId: string): number {
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel' || panel.overrides.length) return 0
+  const baked = useAssetStore.getState().byId[panel.fileId]?.baked_overrides
+  if (!baked?.length) return 0
+  updateObject<PanelObject>(panelId, hist('seedBaked'), (o) => {
+    o.overrides = structuredClone(baked)
+  })
+  return baked.length
+}
+
+/**
+ * 进入图内编辑的统一入口：先补基线再进编辑态，避免双击回到脚本原始状态。
+ *
+ * `leftTab`：宽屏下左栏默认顺手切到元素树（`'elements'`）；从问题面板定位
+ * 进来时传 `'keep'`——那份清单就是用户此刻的导航，切走它等于每定位一条都要
+ * 重新打开问题面板（审计 T09）。
+ */
+export function enterElementEdit(
+  panelId: string,
+  { leftTab = 'elements' }: { leftTab?: 'elements' | 'keep' } = {},
+) {
+  const seeded = seedBakedOverrides(panelId)
+  const ui = useUiStore.getState()
+  ui.setElementPanel(panelId)
+  // 匿名用量统计：**真的进了图内编辑流程**才算「打开一张图」，不是每次预览图
+  // 请求。只发载体类型与「可不可参数化」——面板 id、文件名、stem、脚本名
+  // 一个都不发（白名单里根本没有这些属性）。
+  const opened = findObject(panelId)
+  if (opened?.type === 'panel') {
+    const asset = useAssetStore.getState().byId[opened.fileId]
+    captureTelemetry('figure_opened', {
+      asset_kind: asset?.kind === 'raster' ? 'raster' : 'pdf',
+      editable: !!(opened.script ?? asset?.script),
+    })
+  }
+  // 三栏布局下左栏顺手切到元素树；窄断点不动（左右互斥，抢掉属性页得不偿失）
+  if (leftTab === 'elements' && ui.layout === 'wide' && ui.leftOpen && ui.leftTab !== 'elements') {
+    ui.setLeftTab('elements')
+  }
+  // 焦点救援的接手者：左栏留在哪一页，就交给那一页的轨道入口
+  const rail = leftTab === 'keep' ? ui.leftTab : 'elements'
+  if (seeded) status(note('bakedSeeded', { count: seeded }))
+  // 只说「进了图内编辑」；此刻是快速编辑还是画布排版，订阅方自己问 workspace store
+  // （这里不 import 它：`store/workspace` 已经 import 本模块，别绕成环）
+  emitActivity({ kind: 'figure.element_edit_entered' })
+  // **焦点救援**：调用方多半是一个自己会被卸载的控件（画布工具条上那个
+  // 「编辑图内元素」按钮点完就没了）。焦点掉回 body 之后 WebKit 的 Tab 与
+  // Shift+Tab 双向都不动，键盘用户就此困在页面里（macOS 桌面壳 = WKWebView）。
+  // 交给左轨的「图内元素」入口——它一直在，而且正是键盘用户接下来要去的地方
+  // （#37 要求的等价路径）。详见 `lib/focusRescue.ts` 的实测记录。
+  rescueFocus(() => document.querySelector<HTMLElement>(`[data-rail="${rail}"]`))
+}
+
+/* ------------------------------ 论文样式应用 -------------------------------- */
+
+/**
+ * 把样式计划一次性落进文档：多个面板的 override、标注文字、页面尺寸
+ * 合成**一条**历史记录（⌘Z 一次全部撤销），然后统一触发重渲染。
+ */
+export function applyStylePlan(plan: StylePlan, preset: StylePreset) {
+  const touched = plan.panels.filter((p) => p.patches.length)
+  if (
+    !touched.length &&
+    !plan.annotationIds.length &&
+    !plan.subLabelIds.length &&
+    !plan.page &&
+    !plan.background
+  ) {
+    status(note('styleEmpty'), 'error')
+    return
+  }
+  commit(hist('applyStyle', { name: preset.name }), (d) => {
+    for (const { panel, patches } of touched) {
+      const o = d.objects.find((x) => x.id === panel.id)
+      if (o?.type !== 'panel') continue
+      for (const p of patches) {
+        o.overrides = o.overrides.filter((x) => !(x.gid === p.gid && x.prop === p.prop))
+        o.overrides.push({ gid: p.gid, prop: p.prop, value: p.value })
+      }
+    }
+    /**
+     * 样式里的画布文字项 → 文档。**经属性能力层写**（`writeCanvasText`），
+     * 不在这里手写第二遍 `bold ? … : …`：样式应用与手动编辑必须落成同一种
+     * 形状，否则「应用样式之后再手动改一下」会得到两个不同的字段集合。
+     */
+    const applyText = (obj: TextObject, s: StyleTextEntry) => {
+      if (s.sizePt != null) writeCanvasText(obj, 'sizePt', s.sizePt)
+      if (s.bold != null) writeCanvasText(obj, 'weight', s.bold ? 'bold' : 'normal')
+      if (s.italic != null) writeCanvasText(obj, 'style', s.italic ? 'italic' : 'normal')
+      if (s.color != null) writeCanvasText(obj, 'color', s.color)
+      if (s.fontFamily != null) writeCanvasText(obj, 'fontFamily', s.fontFamily)
+    }
+    for (const id of plan.annotationIds) {
+      const obj = d.objects.find((x) => x.id === id)
+      if (obj?.type === 'text' && preset.annotation) applyText(obj, preset.annotation)
+    }
+    for (const id of plan.subLabelIds) {
+      const obj = d.objects.find((x) => x.id === id)
+      if (obj?.type === 'text' && preset.subLabel) applyText(obj, preset.subLabel)
+    }
+    if (plan.page) {
+      d.page.w = clamp(plan.page.w, 10, 1000)
+      d.page.h = clamp(plan.page.h, 10, 1000)
+    }
+    // 背景是**样式的一部分**（图长什么样），所以和其余项一起进同一条历史。
+    // `undefined` = 这份样式没管背景，与「设成白色」是两个不同的答案。
+    if (plan.background) d.page.bg = plan.background
+  })
+  for (const { panel } of touched) {
+    const next = findObject(panel.id)
+    if (next?.type === 'panel') requestRender(next, true)
+  }
+  const parts = [
+    touched.length && t('status.stylePartPanels', { ns: 'workspace', count: touched.length }),
+    plan.annotationIds.length &&
+      t('status.stylePartAnnotations', { ns: 'workspace', count: plan.annotationIds.length }),
+    plan.subLabelIds.length &&
+      t('status.stylePartSubLabels', { ns: 'workspace', count: plan.subLabelIds.length }),
+    plan.page && t('status.stylePartPage', { ns: 'workspace' }),
+  ].filter(Boolean) as string[]
+  status(
+    note('styleApplied', {
+      name: preset.name,
+      parts: listJoin(parts),
+      undo: modKey('Z'),
+    }),
+  )
+}
+
+/* ------------------------------ 结构化布局组 -------------------------------- */
+
+export const layoutKindMsg = (kind: LayoutGroup['kind']): UiMessage =>
+  msg(`layoutKind.${kind}`, undefined, 'workspace')
+
+export const layoutKindLabel = (kind: LayoutGroup['kind']): string =>
+  t(`layoutKind.${kind}`, { ns: 'workspace' })
+
+export function findLayoutGroup(id: string | undefined): LayoutGroup | undefined {
+  if (!id) return undefined
+  return doc().layoutGroups?.find((g) => g.id === id)
+}
+
+/** 选区所属的布局组（成员任选其一即可） */
+export function selectionLayoutGroup(): LayoutGroup | undefined {
+  const sel = selectedObjects()
+  const gid = sel.find((o) => o.groupId && findLayoutGroup(o.groupId))?.groupId
+  return findLayoutGroup(gid)
+}
+
+/**
+ * 把当前选区变成布局组：复用轻量成组（拖动任一成员即整组移动），
+ * 在其上登记排布约束，随后立即按阅读顺序排一次。
+ */
+export function createLayoutGroup(kind: LayoutGroup['kind']) {
+  const ids = useSelectionStore.getState().ids
+  const objs = selectedObjects().filter((o) => !o.hidden)
+  if (objs.length < 2) {
+    status(note('needTwoForLayoutGroup'))
+    return
+  }
+  const gid = newId('g')
+  const ordered = readingOrder(objs)
+  const group: LayoutGroup = {
+    id: gid,
+    kind,
+    order: ordered.map((o) => o.id),
+    gap: 4,
+    cols: kind === 'grid' ? Math.ceil(Math.sqrt(ordered.length)) : undefined,
+    align: 'start',
+    uniform: null,
+  }
+  commit(hist('createLayoutGroup', { kind: layoutKindMsg(kind) }), (d) => {
+    for (const o of d.objects) if (ids.includes(o.id)) o.groupId = gid
+    d.layoutGroups = [...(d.layoutGroups ?? []), group]
+    applyReflowDraft(d, group)
+  })
+  status(note('layoutGroupCreated', { kind: layoutKindLabel(kind), count: objs.length }))
+}
+
+/** 在 immer draft 里就地重排（创建 / 参数修改 / 自动触发共用） */
+function applyReflowDraft(d: FigureDocument, group: LayoutGroup): number {
+  const patches = reflowPatches(d, group)
+  for (const p of patches) {
+    const o = d.objects.find((x) => x.id === p.id)
+    if (!o) continue
+    o.x = p.x
+    o.y = p.y
+    if (p.w != null) o.w = p.w
+    if (p.h != null) o.h = p.h
+  }
+  return patches.length
+}
+
+export function updateLayoutGroup(
+  id: string,
+  patch: Partial<Pick<LayoutGroup, 'kind' | 'gap' | 'cols' | 'align' | 'uniform'>>,
+) {
+  commit(hist('updateLayoutGroup'), (d) => {
+    const g = d.layoutGroups?.find((x) => x.id === id)
+    if (!g) return
+    Object.assign(g, patch)
+    applyReflowDraft(d, g)
+  })
+}
+
+/** 手动「重新排列」：新成员、被挪开的成员都归位 */
+export function reflowLayoutGroup(id: string) {
+  const g = findLayoutGroup(id)
+  if (!g) return
+  commit(hist('reflowLayoutGroup'), (d) => {
+    const gg = d.layoutGroups?.find((x) => x.id === id)
+    if (gg) applyReflowDraft(d, gg)
+  })
+}
+
+/** 解散布局组：成员位置保持现状，只移除约束与成组 */
+export function dissolveLayoutGroup(id: string) {
+  commit(hist('dissolveLayoutGroup'), (d) => {
+    d.layoutGroups = (d.layoutGroups ?? []).filter((g) => g.id !== id)
+    for (const o of d.objects) if (o.groupId === id) o.groupId = undefined
+  })
+  status(note('layoutGroupDissolved'))
+}
+
+export function toggleLayoutPinned(ids: string[]) {
+  if (!ids.length) return
+  const anyUnpinned = selectedObjects().some((o) => ids.includes(o.id) && !o.layoutPinned)
+  updateObjects(ids, hist(anyUnpinned ? 'pinLayout' : 'unpinLayout'), (o) => {
+    o.layoutPinned = anyUnpinned ? true : undefined
+  })
+}
+
+/**
+ * 自动重排：订阅文档，成员**尺寸**变化（替换素材、改面板比例、等效缩放）后
+ * 自动归位。位置变化不触发——手动拖动是用户显式意图；撤销/重做也不触发，
+ * 否则一撤销就被排回去，undo 形同虚设。
+ */
+export function startLayoutAutoReflow(): () => void {
+  let timer: number | undefined
+  const store = useDocumentStore
+  let prevDoc = store.getState().doc
+  const signatures = new Map<string, string>()
+  const snapshot = (d: FigureDocument) => {
+    signatures.clear()
+    for (const g of d.layoutGroups ?? []) signatures.set(g.id, sizeSignature(d, g))
+  }
+  snapshot(prevDoc)
+
+  const unsub = store.subscribe((state, prev) => {
+    if (state.doc === prevDoc) return
+    const undoRedo =
+      state.future.length > prev.future.length || // undo
+      (state.past.length > prev.past.length && state.future.length < prev.future.length) // redo
+    prevDoc = state.doc
+    if (state.txn) return
+    if (undoRedo) {
+      snapshot(state.doc)
+      return
+    }
+    const dirty = (state.doc.layoutGroups ?? []).filter(
+      (g) => sizeSignature(state.doc, g) !== signatures.get(g.id),
+    )
+    snapshot(state.doc)
+    if (!dirty.length) return
+    window.clearTimeout(timer)
+    timer = window.setTimeout(() => {
+      // 自动重排是「文档自己动了」，不是用户在拖——不给动效的话相邻面板会
+      // 凭空跳一下，看不出跟刚才那次改动的因果。**只播没被选中/悬停的那些**：
+      // 选择框与手柄由 OverlaySvg 按文档坐标画，它不参与这段补间，
+      // 给选中对象播的话框和图会分家 180ms。
+      const sel = new Set(useSelectionStore.getState().ids)
+      const hover = useInteractionStore.getState().hoverId
+      const els = dirty
+        .flatMap((g) => g.order)
+        .filter((id) => !sel.has(id) && id !== hover)
+        .map((id) => document.querySelector<HTMLElement>(`[data-object-id="${CSS.escape(id)}"]`))
+      const play = flipCapture(els)
+
+      let moved = 0
+      commit(hist('autoReflow'), (d) => {
+        for (const g of dirty) {
+          const gg = d.layoutGroups?.find((x) => x.id === g.id)
+          if (gg) moved += applyReflowDraft(d, gg)
+        }
+      })
+      snapshot(useDocumentStore.getState().doc)
+      if (moved) {
+        play()
+        status(note('layoutAutoReflowed', { undo: modKey('Z') }))
+      }
+    }, 120)
+  })
+  return () => {
+    window.clearTimeout(timer)
+    unsub()
+  }
+}
+
+/* ========================================================================== */
+/*  成组                                                                       */
+/* ========================================================================== */
+
+/** 该对象所在组的全部成员 id（无组则只有它自己），保持文档顺序 */
+export function groupMates(id: string): string[] {
+  const objs = doc().objects
+  const self = objs.find((o) => o.id === id)
+  if (!self?.groupId) return self ? [id] : []
+  return objs.filter((o) => o.groupId === self.groupId).map((o) => o.id)
+}
+
+/**
+ * 选区里这次真正能移动的对象。组的意义是「保持相对排布」，所以**组内任一成员
+ * 锁定就整组不动**——只动没锁的那一半等于把组悄悄拆散（成员的锁定状态不限于
+ * 选区内，按 groupId 全量扫文档）。不成组的锁定对象照旧逐个过滤。
+ */
+export function movableTargets(ids: string[]): {
+  objects: CanvasObject[]
+  /** 因含锁定成员被整组跳过的组数，调用方据此提示 */
+  blockedGroups: number
+} {
+  const objs = doc().objects
+  const expanded = expandGroups(ids)
+  const lockedGids = new Set(
+    objs.filter((o) => o.locked && o.groupId).map((o) => o.groupId as string),
+  )
+  const blocked = new Set<string>()
+  const objects = objs.filter((o) => {
+    if (!expanded.includes(o.id)) return false
+    if (o.groupId && lockedGids.has(o.groupId)) {
+      blocked.add(o.groupId)
+      return false
+    }
+    return !o.locked
+  })
+  return { objects, blockedGroups: blocked.size }
+}
+
+/** 组因含锁定成员被跳过时的统一提示（移动 / 方向键微调共用） */
+export function warnBlockedGroups(blockedGroups: number, movedAny: boolean) {
+  if (!blockedGroups) return
+  status(
+    movedAny
+      ? note('blockedGroupsSkipped', { count: blockedGroups })
+      : note('blockedGroupsAll'),
+  )
+}
+
+/** 选区补齐成整组：点中组里任意一个 = 选中整组 */
+export function expandGroups(ids: string[]): string[] {
+  const objs = doc().objects
+  const gids = new Set(
+    ids.map((id) => objs.find((o) => o.id === id)?.groupId).filter(Boolean) as string[],
+  )
+  if (!gids.size) return ids
+  const out = [...ids]
+  for (const o of objs) {
+    if (o.groupId && gids.has(o.groupId) && !out.includes(o.id)) out.push(o.id)
+  }
+  return out
+}
+
+export function groupSelected() {
+  const ids = useSelectionStore.getState().ids
+  if (ids.length < 2) {
+    status(note('needTwoForGroup'))
+    return
+  }
+  // 离散动作：先收掉还开着的连续手势，否则这次 commit 会并进上一条历史
+  finishActiveGesture()
+  const gid = newId('g')
+  updateObjects(ids, hist('group', { count: ids.length }), (o) => {
+    o.groupId = gid
+  })
+  status(note('grouped', { count: ids.length }))
+  emitActivity({ kind: 'selection.grouped', count: ids.length })
+}
+
+export function ungroupSelected() {
+  const ids = useSelectionStore.getState().ids
+  const gids = new Set(
+    selectedObjects().map((o) => o.groupId).filter(Boolean) as string[],
+  )
+  if (!gids.size) {
+    status(note('notInAnyGroup'))
+    return
+  }
+  finishActiveGesture()
+  commit(hist('ungroup'), (d) => {
+    for (const o of d.objects) if (ids.includes(o.id)) o.groupId = undefined
+    // 该组若带布局约束，成员散了约束也一并移除
+    if (d.layoutGroups?.length) {
+      d.layoutGroups = d.layoutGroups.filter(
+        (g) => !gids.has(g.id) || d.objects.filter((o) => o.groupId === g.id).length >= 2,
+      )
+    }
+  })
+  emitActivity({ kind: 'selection.ungrouped', count: ids.length })
+}
+
+/**
+ * 这批对象里有没有成组的——「取消成组」可不可用的唯一判据。
+ * 属性页（非响应式地问当前选区）与浮动栏（订阅着 objects 的组件）都读它。
+ */
+export const selectionHasGroupIn = (objs: readonly CanvasObject[]): boolean =>
+  objs.some((o) => !!o.groupId)
+
+/** 选区里存在成组对象——决定「取消成组」是否可用 */
+export const selectionHasGroup = () => selectionHasGroupIn(selectedObjects())
+
+/* ========================================================================== */
+/*  多选：参照目标对齐 / 分布 / 等宽等高 / 精确间距                              */
+/* ========================================================================== */
+
+/** 对齐的参照框：选区包围盒 / 整个画布 / 最后选中的那个对象 */
+export type AlignRef = 'selection' | 'page' | 'primary'
+
+export const alignRefLabel = (ref: AlignRef): string =>
+  t(`alignRef.${ref}`, { ns: 'inspector' })
+
+export const alignModeLabel = (mode: AlignMode): string =>
+  t(`alignMode.${mode}`, { ns: 'inspector' })
+
+/**
+ * 同样两句话的**描述符**版本，给活得比一次渲染长的地方用（历史标签）。
+ *
+ * 上面两个 `*Label` 是**当场翻**的，按钮 tooltip 那种一次性显示用它们没问题；
+ * 塞进历史条目就不行了——历史面板重翻的只是外层模板，参数早已被拼成上一门
+ * 语言的字符串，切语言之后会变成「英文模板 + 中文参数」，而且换不回来。
+ */
+export const alignRefMsg = (ref: AlignRef): UiMessage =>
+  msg(`alignRef.${ref}`, undefined, 'inspector')
+
+export const alignModeMsg = (mode: AlignMode): UiMessage =>
+  msg(`alignMode.${mode}`, undefined, 'inspector')
+
+/** 在给定参照框里就地对齐；直接改传入对象（immer draft） */
+function alignIn(objs: CanvasObject[], mode: AlignMode, box: Rect): void {
+  if (mode === 'hdist' || mode === 'vdist') {
+    const k = mode === 'hdist' ? 'x' : 'y'
+    const s = mode === 'hdist' ? 'w' : 'h'
+    const sorted = objs.slice().sort((a, b) => a[k] - b[k])
+    const total = sorted.reduce((t, o) => t + o[s], 0)
+    const gap = (box[s] - total) / (sorted.length - 1)
+    let cur = box[k]
+    for (const o of sorted) {
+      o[k] = cur
+      cur += o[s] + gap
+    }
+    return
+  }
+  if (mode === 'samew' || mode === 'sameh') {
+    const target = mode === 'samew' ? box.w : box.h
+    for (const o of objs) {
+      if (mode === 'samew') {
+        const k = target / o.w
+        o.w = target
+        if (o.type === 'panel' && panelAspectLocked(o)) o.h *= k
+      } else {
+        // 文字高度由内容决定，等高对它没有意义
+        if (o.type === 'text') continue
+        const k = target / o.h
+        o.h = target
+        if (o.type === 'panel' && panelAspectLocked(o)) o.w *= k
+      }
+    }
+    return
+  }
+  for (const o of objs) {
+    if (mode === 'left') o.x = box.x
+    else if (mode === 'right') o.x = box.x + box.w - o.w
+    else if (mode === 'hcenter') o.x = box.x + (box.w - o.w) / 2
+    else if (mode === 'top') o.y = box.y
+    else if (mode === 'bottom') o.y = box.y + box.h - o.h
+    else if (mode === 'vcenter') o.y = box.y + (box.h - o.h) / 2
+  }
+}
+
+/**
+ * 带参照目标的对齐。单选时参照只能是画布（自己跟自己对齐没有意义），
+ * 因此 alignSelectedTo(mode, 'page') 就是「对齐到画布」。
+ */
+export function alignSelectedTo(mode: AlignMode, ref: AlignRef) {
+  const ids = useSelectionStore.getState().ids
+  if (!ids.length) return
+  if ((mode === 'hdist' || mode === 'vdist') && ids.length < 3) {
+    status(note('needThreeForDistribute'))
+    return
+  }
+  // 离散动作：先收掉还开着的连续手势（字号还在安静计时里时点对齐），否则这次
+  // commit 会静默并进上一条历史，一次撤销把两件事一起吐出来
+  finishActiveGesture()
+  const primaryId = ids.at(-1)!
+  // 锁定对象与含锁定成员的组**不动**——与拖动 / 方向键同一套判据（movableTargets），
+  // 但它们仍算进选区的参照框：锁定的是位置，不是「参与排列」的资格。
+  // 只取选区里的：组的其余成员没被选中就不替用户排。
+  const { objects: movable, blockedGroups } = movableTargets(ids)
+  const movableIds = new Set(movable.filter((o) => ids.includes(o.id)).map((o) => o.id))
+  if (!movableIds.size) {
+    status(blockedGroups ? note('blockedGroupsAll') : note('alignAllLocked'))
+    return
+  }
+  commit(hist('alignWithRef', { mode: alignModeMsg(mode), ref: alignRefMsg(ref) }), (d) => {
+    const objs = d.objects.filter((o) => ids.includes(o.id))
+    if (!objs.length) return
+    const primary = objs.find((o) => o.id === primaryId) ?? objs[objs.length - 1]
+    const box: Rect =
+      ref === 'page'
+        ? { x: 0, y: 0, w: d.page.w, h: d.page.h }
+        : ref === 'primary'
+          ? rectOf(primary)
+          : (boundsOf(objs) ?? rectOf(primary))
+    // 以某个对象为参照时它自己不动，否则等宽等高会把基准也改掉
+    const targets = objs.filter(
+      (o) => movableIds.has(o.id) && (ref !== 'primary' || o !== primary),
+    )
+    alignIn(targets, mode, box)
+  })
+  const skipped = ids.length - movableIds.size
+  if (skipped > 0) status(note('alignLockedSkipped', { count: skipped }))
+  emitActivity({ kind: 'selection.aligned', mode, ref, count: ids.length })
+}
+
+/** 精确间距：按位置排序后依次贴齐，第一个对象保持不动 */
+export function setSelectionSpacing(axis: 'x' | 'y', gap: number) {
+  const ids = useSelectionStore.getState().ids
+  if (ids.length < 2) return
+  commit(hist(axis === 'x' ? 'spacingX' : 'spacingY'), (d) => {
+    const objs = d.objects.filter((o) => ids.includes(o.id))
+    const s = axis === 'x' ? 'w' : 'h'
+    const sorted = objs.slice().sort((a, b) => a[axis] - b[axis])
+    let cur = sorted[0][axis]
+    for (const o of sorted) {
+      o[axis] = cur
+      cur += o[s] + gap
+    }
+  })
+}
+
+/* ========================================================================== */
+/*  复制 / 粘贴样式                                                            */
+/* ========================================================================== */
+
+type StyleClip =
+  | { kind: 'panel'; crop?: CropRect; rotation?: PanelRotation; opacity?: number }
+  | ({ kind: 'text' } & Partial<TextObject>)
+  | ({ kind: 'arrow' } & Partial<ArrowObject>)
+  | ({ kind: 'shape' } & Partial<ShapeObject>)
+
+/** 每类对象参与样式复制的键（几何 x/y/w/h 与内容永不复制） */
+const TEXT_STYLE_KEYS = ['sizePt', 'bold', 'italic', 'underline', 'color', 'align',
+  'lineHeight', 'padding', 'bg', 'borderColor', 'borderPt', 'rotationDeg'] as const
+const ARROW_STYLE_KEYS = ['strokePt', 'color', 'head', 'headStart', 'headEnd',
+  'dash', 'rotationDeg'] as const
+const SHAPE_STYLE_KEYS = ['strokePt', 'color', 'fill', 'cornerRadius',
+  'fillOpacity', 'dash', 'rotationDeg'] as const
+
+function pickKeys(src: object, keys: readonly string[]): Record<string, unknown> {
+  const from = src as Record<string, unknown>
+  return Object.fromEntries(keys.map((k) => [k, from[k]]))
+}
+
+function assignKeys(target: object, clip: object, keys: readonly string[]): void {
+  const from = clip as Record<string, unknown>
+  const to = target as Record<string, unknown>
+  for (const k of keys) {
+    if (from[k] === undefined) delete to[k]
+    else to[k] = from[k]
+  }
+}
+
+/** 样式剪贴板不属于文档，不进 undo；粘贴才是一条历史 */
+let styleClip: StyleClip | null = null
+
+export const styleClipKind = () => styleClip?.kind ?? null
+
+export function copySelectionStyle() {
+  const src = selectedObjects().at(-1)
+  if (src?.type === 'panel') {
+    styleClip = {
+      kind: 'panel',
+      crop: src.crop ? { ...src.crop } : undefined,
+      rotation: src.rotation,
+      opacity: src.opacity,
+    }
+    status(note('styleCopiedPanel'))
+  } else if (src?.type === 'text') {
+    styleClip = { kind: 'text', ...pickKeys(src, TEXT_STYLE_KEYS) }
+    status(note('styleCopiedText'))
+  } else if (src?.type === 'arrow') {
+    styleClip = { kind: 'arrow', ...pickKeys(src, ARROW_STYLE_KEYS) }
+    status(note('styleCopiedArrow'))
+  } else if (src?.type === 'shape') {
+    styleClip = { kind: 'shape', ...pickKeys(src, SHAPE_STYLE_KEYS) }
+    status(note('styleCopiedShape'))
+  } else {
+    status(note('styleCopyNeedSelection'), 'error')
+  }
+}
+
+export function pasteSelectionStyle() {
+  const clip = styleClip
+  if (!clip) return
+  const ids = selectedObjects()
+    .filter((o) => o.type === clip.kind)
+    .map((o) => o.id)
+  if (!ids.length) {
+    status(note('stylePasteNoTarget', { kind: t(`objectType.${clip.kind}`) }), 'error')
+    return
+  }
+  updateObjects(ids, hist('pasteStyle'), (o) => {
+    if (clip.kind === 'panel' && o.type === 'panel') {
+      rotatePanelDraft(o, clip.rotation ?? 0)
+      applyCropDraft(o, clip.crop)
+      o.opacity = clip.opacity
+    } else if (clip.kind === 'text' && o.type === 'text') {
+      assignKeys(o, clip, TEXT_STYLE_KEYS)
+    } else if (clip.kind === 'arrow' && o.type === 'arrow') {
+      assignKeys(o, clip, ARROW_STYLE_KEYS)
+    } else if (clip.kind === 'shape' && o.type === 'shape') {
+      assignKeys(o, clip, SHAPE_STYLE_KEYS)
+    }
+  })
+  status(note('stylePasted', { count: ids.length }))
+}
+
+/* ========================================================================== */
+/*  面板几何：旋转 / 裁剪 / Fit / Fill                                          */
+/* ========================================================================== */
+
+const updatePanels = (ids: string[], label: UiMessage, patch: (o: PanelObject) => void) =>
+  updateObjects(ids, label, (o) => {
+    if (o.type === 'panel') patch(o)
+  })
+
+/** 写内容（未旋转）尺寸，映射回包围盒；锚定左上角，与拖手柄一致 */
+function setContentSize(o: PanelObject, w: number, h: number): void {
+  const swap = rotationSwaps(panelRotation(o))
+  o.w = swap ? h : w
+  o.h = swap ? w : h
+}
+
+/** 旋转到指定角度：包围盒绕自身中心交换宽高，内容与裁剪不变 */
+export function rotatePanelDraft(o: PanelObject, next: PanelRotation): void {
+  const cur = panelRotation(o)
+  if (cur === next) return
+  if (rotationSwaps(((next - cur + 360) % 360) as PanelRotation)) {
+    const cx = o.x + o.w / 2
+    const cy = o.y + o.h / 2
+    const w = o.h
+    const h = o.w
+    o.x = cx - w / 2
+    o.y = cy - h / 2
+    o.w = w
+    o.h = h
+  }
+  o.rotation = next === 0 ? undefined : next
+}
+
+/**
+ * 换裁剪框：**完整图在页面上的落位保持不动**，只有露出的部分变。
+ * 与画布上拖裁剪框、以及原来的「重置裁剪」是同一套语义。
+ */
+export function applyCropDraft(o: PanelObject, next?: CropRect): void {
+  const rot = panelRotation(o)
+  const cur = o.crop ?? { x: 0, y: 0, w: 1, h: 1 }
+  const to = next ?? { x: 0, y: 0, w: 1, h: 1 }
+  const content = panelContentSize(o)
+  const fullW = content.w / cur.w
+  const fullH = content.h / cur.h
+  // 可见区中心在完整图里挪了多少（内容空间 → 页面空间）
+  const [pdx, pdy] = rotateVec(
+    (to.x + to.w / 2 - (cur.x + cur.w / 2)) * fullW,
+    (to.y + to.h / 2 - (cur.y + cur.h / 2)) * fullH,
+    rot,
+  )
+  const cx = o.x + o.w / 2 + pdx
+  const cy = o.y + o.h / 2 + pdy
+  setContentSize(o, fullW * to.w, fullH * to.h)
+  o.x = cx - o.w / 2
+  o.y = cy - o.h / 2
+  o.crop = to.w >= 1 && to.h >= 1 ? undefined : { ...to }
+}
+
+export function rotatePanels(ids: string[], next: PanelRotation) {
+  updatePanels(ids, next === 0 ? hist('rotateReset') : hist('rotate', { deg: next }), (o) =>
+    rotatePanelDraft(o, next),
+  )
+}
+
+export function setPanelOpacity(ids: string[], v: number) {
+  const opacity = clamp(v, 0, 1)
+  updatePanels(ids, hist('setOpacity'), (o) => {
+    o.opacity = opacity >= 1 ? undefined : opacity
+  })
+}
+
+export function setPanelAspectLocked(ids: string[], locked: boolean) {
+  updatePanels(ids, hist(locked ? 'lockAspect' : 'unlockAspect'), (o) => {
+    o.aspectLocked = locked ? undefined : false
+  })
+}
+
+/* ------------------------------- 裁剪态 ---------------------------------- */
+
+/**
+ * 进入裁剪态，并把**进裁剪那一刻**的取景窗与包围盒记下来。
+ *
+ * 裁剪是即时生效的（拖手柄当场看得见结果，审计 T26 的「确认前可见」本来就
+ * 成立），所以「取消」不能只是退出——它得把这一轮的取景还回去。还回哪里？
+ * **回到进来那一刻**，不是回到「从没裁剪过」（那是「重置裁剪」，另一个动作）。
+ *
+ * 所有进裁剪的入口都走这里：属性页、浮动条、右键菜单、面板上按 Enter、
+ * 画布上双击普通面板（`canvas/ObjectView.tsx`）。
+ * 不走这里的话基线是 null，取消降级成单纯退出——**宁可少还原，也不拿一份
+ * 过期快照去改文档**。
+ */
+export function beginCrop(id: string) {
+  const o = findObject(id)
+  if (o?.type !== 'panel') return
+  useUiStore.getState().setCropTarget(id, {
+    id,
+    crop: o.crop ? { ...o.crop } : undefined,
+    x: o.x,
+    y: o.y,
+    w: o.w,
+    h: o.h,
+  })
+}
+
+/** 完成：保留当前取景窗，退出裁剪态（不进历史——拖动那几下各自已经进过了） */
+export function finishCrop() {
+  useUiStore.getState().setCropTarget(null)
+}
+
+/** 取消：还原到 `beginCrop` 那一刻，再退出。一条历史；没动过就不进历史 */
+export function cancelCrop() {
+  const ui = useUiStore.getState()
+  const base = ui.cropBaseline
+  const target = ui.cropTargetId
+  ui.setCropTarget(null)
+  // 基线必须还对应着此刻正在裁的那个对象：换过文档 / 换过面板的快照一律不用
+  if (!base || base.id !== target) return
+  const o = findObject(base.id)
+  if (o?.type !== 'panel') return
+  const same =
+    o.x === base.x &&
+    o.y === base.y &&
+    o.w === base.w &&
+    o.h === base.h &&
+    o.crop?.x === base.crop?.x &&
+    o.crop?.y === base.crop?.y &&
+    o.crop?.w === base.crop?.w &&
+    o.crop?.h === base.crop?.h
+  if (same) return
+  updateObject<PanelObject>(base.id, hist('cancelCrop'), (p) => {
+    if (base.crop) p.crop = { ...base.crop }
+    else delete p.crop
+    p.x = base.x
+    p.y = base.y
+    p.w = base.w
+    p.h = base.h
+  })
+}
+
+export function resetPanelCrop(ids: string[]) {
+  updatePanels(ids, hist('resetCrop'), (o) => {
+    if (o.crop) applyCropDraft(o, undefined)
+  })
+}
+
+/** Fit：清掉裁剪，整图等比缩到当前框内，框跟着收成图的比例（居中） */
+export function fitPanels(ids: string[]) {
+  updatePanels(ids, hist('fitPanel'), (o) => {
+    const box = panelContentSize(o)
+    const ar = o.nativeW / o.nativeH
+    let w = box.w
+    let h = box.w / ar
+    if (h > box.h) {
+      h = box.h
+      w = box.h * ar
+    }
+    const cx = o.x + o.w / 2
+    const cy = o.y + o.h / 2
+    applyCropDraft(o, undefined)
+    setContentSize(o, w, h)
+    o.x = cx - o.w / 2
+    o.y = cy - o.h / 2
+  })
+}
+
+/** Fill：框一点不动，用居中裁剪把溢出的部分切掉 */
+export function fillPanels(ids: string[]) {
+  updatePanels(ids, hist('fillPanel'), (o) => {
+    const box = panelContentSize(o)
+    const r = box.w / box.h
+    const a = o.nativeW / o.nativeH
+    const k = r >= a ? a / r : r / a
+    o.crop = r >= a ? { x: 0, y: (1 - k) / 2, w: 1, h: k } : { x: (1 - k) / 2, y: 0, w: k, h: 1 }
+  })
+}
+
+/** 恢复原始比例：保持内容宽度，按（裁剪后的）原始长宽比修高度 */
+export function restorePanelAspect(ids: string[]) {
+  updatePanels(ids, hist('restoreAspect'), (o) => {
+    const w = panelContentSize(o).w
+    const ar = (o.nativeW * (o.crop?.w ?? 1)) / (o.nativeH * (o.crop?.h ?? 1))
+    setContentSize(o, w, w / ar)
+  })
+}
+
+/** 恢复原始尺寸：回到素材自身的 mm 尺寸（裁剪比例仍生效） */
+export function restorePanelNativeSize(ids: string[]) {
+  updatePanels(ids, hist('restoreNativeSize'), (o) => {
+    setContentSize(o, o.nativeW * (o.crop?.w ?? 1), o.nativeH * (o.crop?.h ?? 1))
+  })
+}
+
+/**
+ * 替换素材：保留 X/Y/W/H、裁剪、旋转、不透明度与层级，只换图源。
+ * 图内修改（override）无法跨脚本搬运，有的话先征求同意再清空。
+ */
+export async function replacePanelAsset(panelId: string, info: PanelInfo): Promise<boolean> {
+  const panel = findObject(panelId)
+  if (panel?.type !== 'panel') return false
+  if (panel.fileId === info.id) return false
+  if (
+    panel.overrides.length &&
+    !(await askConfirm({
+      title: msg('confirm.replaceAssetTitle', { name: info.name }, 'workspace'),
+      body: msg('confirm.replaceAssetBody', { count: panel.overrides.length }, 'workspace'),
+      confirmLabel: msg('confirm.replaceAssetConfirm', undefined, 'workspace'),
+      danger: true,
+    }))
+  ) {
+    return false
+  }
+  if (useUiStore.getState().elementPanelId === panelId) {
+    useUiStore.getState().setElementPanel(null)
+  }
+  updateObject<PanelObject>(panelId, hist('replaceAsset', { name: info.name }), (o) => {
+    o.fileId = info.id
+    o.fileKind = info.kind
+    o.nativeW = info.native_w_mm
+    o.nativeH = info.native_h_mm
+    o.pxW = info.px_w
+    o.pxH = info.px_h
+    o.script = info.script ?? null
+    o.cost = info.cost
+    o.name = info.name
+    o.overrides = info.baked_overrides ? structuredClone(info.baked_overrides) : []
+  })
+  useAssetStore.getState().markUsed(info.id)
+  status(note('assetReplaced', { name: info.name }))
+  return true
+}

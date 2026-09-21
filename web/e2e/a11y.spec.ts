@@ -1,0 +1,554 @@
+/**
+ * 自动化可访问性门禁（审计 P1-09）。
+ *
+ * 三层：axe 扫描（critical/serious 必须为 0——这是发布门禁，不是建议）、
+ * 对话框焦点纪律（trap + Escape 关闭后焦点恢复）、键盘可达性底线。
+ *
+ * axe 那一层**不只看 violations**（issue #130）：`incomplete` 是「axe 查不了」，
+ * 把它当通过就是把「没查到」和「查不了」混成一件事。这里两条一起守——每一类
+ * 「查不了」必须在 `INCOMPLETE_COVERED_ELSEWHERE` 里有去处，而对比度另有一条
+ * 不依赖 axe 的自算判据。
+ * 完整的「纯键盘走完核心流程」在 issue #37 里继续扩：这里守住的是
+ * 「不倒退」的底线，先有门禁再逐步抬高。
+ *
+ * **语言无关写法**：本 spec 同时跑在 zh-CN（chromium / webkit）与 en-US
+ * （chromium-en）三个 project 下，选择器一律 role + 双语正则，不写死文案。
+ */
+import AxeBuilder from '@axe-core/playwright'
+import type { Page } from '@playwright/test'
+import os from 'node:os'
+import path from 'node:path'
+import { expect, test, writeRuntimeNamedProject } from './fixtures'
+import { lowContrastNodes } from './contrast'
+import { resolveScanned, type ScannedNode } from './scannedNodes'
+
+/**
+ * **axe 的 `incomplete` 不是「通过」，是「axe 查不了」**（issue #130）。
+ *
+ * 只断言 `results.violations` 的门禁把两件事混成了一件：「查过了，没问题」和
+ * 「根本没查」。实证：我们「整行可点」的写法（`absolute inset-0` 的按钮盖在行
+ * 内容上）让 axe 算不出背景色，于是 color-contrast 整片进 `incomplete`；把
+ * `--color-warn` 改成明显不达标的 `#e8c98f`，只看 violations 的检查照样绿。
+ *
+ * 所以每条用例都要把 `incomplete` 交代清楚。两条纪律：
+ *
+ * 1. **豁免绑在场景上，不是绑在规则 id 上。** 一张全局表会让「项目选择器上冒出
+ *    aria-hidden-focus」也被静默接受，理由却写着「由导出对话框那条用例的 focus
+ *    trap 覆盖」——那是在更粗的粒度上重造同一个失灵。
+ * 2. **每条豁免都得把 axe 没做完的那件事自己做一遍**，并逐节点核对。只写一句
+ *    「由别处覆盖」而不验，等于换个地方写「查不了 = 通过」。
+ *
+ * （两条都是 Codex 在 PR #167 上指出的，成立。）
+ */
+interface IncompleteAllowance {
+  rule: string
+  /** axe 查不了，但这件事由谁覆盖 */
+  why: string
+  /** 逐节点核对：拿到 axe 报的节点（选择器 + 扫描那一刻的 html 片段），自己去页面里把那件事查一遍 */
+  verify: (page: Page, nodes: ScannedNode[]) => Promise<void>
+}
+
+/**
+ * 模态对话框打开时，Radix 把背景整片标成 `aria-hidden` 并插入焦点哨兵；axe 判不出
+ * 「它同时也进不去焦点」，于是整片进 incomplete。
+ *
+ * 核对的是**语义**而不是选择器长相：每个节点要么是 Radix 的焦点哨兵，要么处在
+ * 一棵 `aria-hidden` 的子树里，且都在对话框**之外**。而「焦点确实困在对话框里」
+ * 由同一条用例紧接着那圈 Tab 断言覆盖。
+ */
+const dialogBackgroundIsInert: IncompleteAllowance = {
+  rule: 'aria-hidden-focus',
+  why: '对话框背景整片 aria-hidden；焦点进不去这一点由同一条用例的 focus trap 断言覆盖',
+  verify: async (page, nodes) => {
+    const bad: string[] = []
+    for (const f of await resolveScanned(page, nodes)) {
+      if (f.found === 'unparseable') bad.push(`${f.target}（选择器解析不了）`)
+      // gone / other：扫描之后已经消失（或这个字符串现在指着别人）——不构成放行理由，也不构成失败
+      if (f.found !== 'same') continue
+      if (f.inDialog || (!f.guard && !f.hidden)) {
+        bad.push(`${f.target}（guard=${f.guard} hidden=${f.hidden} inDialog=${f.inDialog}）`)
+      }
+    }
+    expect(
+      bad,
+      'aria-hidden-focus 的 incomplete 里混进了不属于「对话框背景已 inert」这一类的节点',
+    ).toEqual([])
+  },
+}
+
+/**
+ * 被覆盖层遮住的文字，axe 算不出背景色 → 整片进 incomplete。
+ *
+ * 这**正是自算对比度那条判据存在的理由**：它不依赖 axe 能不能算出背景色，扫的是
+ * 整个 root，且把 CSS `opacity` 计入有效 alpha。所以这里核对的是「axe 报的每一个
+ * 节点，我们自己那把尺子确实量得到」——量不到的要红，不能靠规则 id 一刀放行。
+ */
+const contrastCoveredByOurOwnRuler: IncompleteAllowance = {
+  rule: 'color-contrast',
+  why: '覆盖层下 axe 算不出背景色；由本文件的自算对比度判据逐节点覆盖',
+  verify: async (page, nodes) => {
+    const unreachable: string[] = []
+    for (const f of await resolveScanned(page, nodes)) {
+      if (f.found === 'unparseable') unreachable.push(`${f.target}（选择器解析不了）`)
+      if (f.found !== 'same') continue
+      // 自算判据只看「自己直接持有文字」的元素；禁用态按 WCAG 1.4.3 本就不在
+      // 范围内。两者都不是就说明它落在我们的尺子之外，这条豁免对它不成立。
+      if (!f.direct && !f.disabled) unreachable.push(`${f.target}（没有直接文字，自算判据扫不到它）`)
+    }
+    expect(
+      unreachable,
+      'color-contrast 的 incomplete 里有自算判据也覆盖不到的节点——不能按规则 id 放行',
+    ).toEqual([])
+  },
+}
+
+/**
+ * axe 判不了标题层级时（跨 landmark、`role="heading"` 的自定义标题）也会进
+ * incomplete。同样不按 id 放行：这里**自己把那件事查一遍**——文档顺序上标题层级
+ * 不许一次跳超过一级（`h2` 之后直接 `h4` 是屏幕阅读器用户真会迷路的那种）。
+ */
+const headingOrderCheckedByOurselves: IncompleteAllowance = {
+  rule: 'heading-order',
+  why: 'axe 判不了跨 landmark 的标题顺序；这里自己按文档顺序核对不跳级',
+  verify: async (page) => {
+    const jumps = await page.evaluate(() => {
+      const levelOf = (h: Element): number =>
+        Number(h.getAttribute('aria-level') ?? h.tagName.slice(1))
+      const heads = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')]
+        .filter((h) => (h as HTMLElement).getClientRects().length > 0)
+      const out: string[] = []
+      let prev = 0
+      for (const h of heads) {
+        const lvl = levelOf(h)
+        if (prev && lvl > prev + 1) {
+          out.push(`${(h.textContent ?? '').trim().slice(0, 16)}：h${prev} → h${lvl}`)
+        }
+        prev = lvl
+      }
+      return out
+    })
+    expect(jumps, '标题层级跳级了（axe 判不了这一条，所以这里自己查）').toEqual([])
+  },
+}
+
+interface AxeReport {
+  violations: unknown[]
+  incomplete: { id: string; impact: string | null | undefined; nodes: ScannedNode[] }[]
+}
+
+/** 扫描一次，拿回 critical/serious 违规与**全部** incomplete（含每个节点的 target）。
+ *  扫描前把动效关掉：对话框/抽屉的进出场动画进行到一半时，axe 对
+ *  颜色对比的取样会撞上过渡态，产出不可复现的假阳性；应用本来就支持
+ *  prefers-reduced-motion，这也是它的一次真实行使。 */
+async function axeReport(page: Page): Promise<AxeReport> {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  const results = await new AxeBuilder({ page }).analyze()
+  return {
+    violations: results.violations
+      .filter((v) => v.impact === 'critical' || v.impact === 'serious')
+      .map((v) => ({
+        id: v.id,
+        impact: v.impact,
+        nodes: v.nodes.slice(0, 5).map((n) => ({
+          target: n.target.join(' '),
+          why: n.failureSummary?.split('\n').slice(0, 3).join(' '),
+        })),
+      })),
+    incomplete: results.incomplete.map((v) => ({
+      id: v.id,
+      impact: v.impact,
+      // html 是 axe 扫描那一刻的 outerHTML 片段：verify 用它核对节点身份（resolveScanned）
+      nodes: v.nodes.map((n) => ({ target: n.target.join(' '), html: n.html ?? '' })),
+    })),
+  }
+}
+
+/**
+ * 一处界面的完整可访问性判据：
+ *   ① axe 没有 critical/serious **违规**；
+ *   ② axe 说「查不了」的，**这个场景**必须逐条声明去处，且每条都把那件事自己
+ *      查一遍、逐节点核对；
+ *   ③ **自算对比度**没有不达标的文字——不依赖 axe 能不能算出背景色，并且把 CSS
+ *      `opacity` 计入有效 alpha（禁用态按 WCAG 1.4.3 排除）。
+ *
+ * `allow` 默认是空的：一处界面**本来就该**没有「查不了」。要放行就得写清楚并验。
+ */
+async function expectAccessible(
+  page: Page,
+  { allow = [] as IncompleteAllowance[], root = 'body' } = {},
+) {
+  const report = await axeReport(page)
+  expect(report.violations).toEqual([])
+
+  const byRule = new Map(allow.map((a) => [a.rule, a]))
+  const unexplained = report.incomplete
+    .filter((v) => !byRule.has(v.id))
+    .map((v) => ({ id: v.id, impact: v.impact, n: v.nodes.length }))
+  expect(
+    unexplained,
+    '这个场景冒出了没有交代的「axe 查不了」——先定性它由谁覆盖，再在该用例上声明并验',
+  ).toEqual([])
+
+  for (const v of report.incomplete) {
+    await byRule.get(v.id)!.verify(page, v.nodes)
+  }
+  // 刻意不断言「声明了就必须出现」：同一处界面的 incomplete 会随抽屉开合、卡片
+  // 数量、浏览器而变（实测工作台在 chromium 上有 color-contrast、chromium-en 上
+  // 没有）。每条豁免都带着真核对，用不上并不构成放行。
+
+  expect(
+    await lowContrastNodes(page, root),
+    '自算 WCAG 对比度不达标（axe 可能因为覆盖层根本没测到这些节点）',
+  ).toEqual([])
+}
+
+test('项目选择器：axe 无违规、无未定性的「查不了」、自算对比度达标', async ({ app, page }) => {
+  const a = await app({ noProject: true })
+  await page.goto(a.baseURL)
+  await expect(page.getByRole('main')).toBeVisible()
+  await expectAccessible(page)
+})
+
+test('工作台（项目已开、画布有面板）：axe 无违规、无未定性的「查不了」、自算对比度达标', async ({
+  app,
+  page,
+}) => {
+  const a = await app()
+  await page.goto(a.baseURL)
+  await page.getByText('Fig1_kinetics.pdf').dblclick({ timeout: 30_000 })
+  // 等面板真的渲染出来再扫，扫到一半加载的骨架屏没有意义
+  await expect(page.locator('[data-canvas-stage] img, [data-canvas-stage] svg').first())
+    .toBeVisible({ timeout: 60_000 })
+  // 素材卡上的角标是「覆盖层下的文字」，axe 算不出背景色；标题层级它也判不了。
+  // 两条都不按规则 id 放行——各自带一遍真核对。
+  await expectAccessible(page, {
+    allow: [contrastCoveredByOurOwnRuler, headingOrderCheckedByOurselves],
+  })
+})
+
+test('图内编辑的属性栏：展开每一个折叠区之后 axe 仍然干净', async ({ app, page }) => {
+  const a = await app()
+  await page.goto(a.baseURL)
+  await page.getByText('Fig1_kinetics.pdf').dblclick({ timeout: 30_000 })
+  await expect(page.locator('[data-canvas-stage] img, [data-canvas-stage] svg').first())
+    .toBeVisible({ timeout: 60_000 })
+
+  const inspector = page.locator('[data-inspector-panel]')
+  await expect(inspector).toHaveCount(1)
+
+  // **要扫的是「画布」页签，不是默认那个。** 颜色格与开关最密集的一屏在这里
+  // （图幅 / 背景色 / 透明背景 / 吸附 / 安全区），而默认页签「属性」在没有选中
+  // 元素时**一个 `<input>` 都没有**——本轮实测过：只扫默认页的话 `label` 规则整条
+  // inapplicable，2026-09-07 那两个缺陷一个都碰不到，把所有名字摘掉也照样绿。
+  for (const tab of ['canvas'] as const) {
+    await inspector.locator(`[data-inspector-tab="${tab}"]`).click()
+    await page.waitForTimeout(150)
+
+    // **把折叠区一个不剩地展开再扫。** 收起来的控件 axe 看不见，于是「这一屏
+    // 干净」只说明「默认展开的那部分干净」——webkit 那条真红就藏在「背景」
+    // 折叠区里。按 `aria-expanded` 展开，不按标题文案：文案还会被审计改。
+    for (let i = 0; i < 16; i++) {
+      // 只认真正的折叠区：带 `aria-haspopup` 的是弹层触发器（写回、菜单），
+      // 禁用的点不动——两者都会让这个循环卡死在同一颗按钮上
+      const collapsed = inspector
+        .locator('button[aria-expanded="false"]:not([disabled]):not([aria-haspopup])')
+        .first()
+      if (!(await collapsed.count())) break
+      await collapsed.click()
+      await page.waitForTimeout(80)
+    }
+
+    // **先证明这一屏真的有控件可扫。** `label` 规则对一个输入框都没有的页面是
+    // inapplicable，那时扫出来的空数组只说明「没东西」，不说明「都有名字」——
+    // 少了这一句，把所有名字摘掉这条用例照样绿（本轮变异实测过）。
+    const controls = await inspector.locator('input, [role="switch"]').count()
+    expect(controls, `${tab} 页签里一个控件都没有，这一遍扫描是恒真的`).toBeGreaterThan(0)
+
+    // 这一屏最容易犯的是「控件没有名字」：颜色格是两个输入框（取色盘 + 十六进制），
+    // 开关是 `<button role="switch">`——`<label>` 包着它**不**给它取名（HTML-AAM
+    // 给 button 的取名方式是 name from content），chromium 大方、webkit 按规范办事。
+    const named = await new AxeBuilder({ page })
+      .include('[data-inspector-panel]')
+      .withRules(['button-name', 'label'])
+      .analyze()
+    expect(
+      named.violations.map((v) => ({
+        id: v.id,
+        nodes: v.nodes.slice(0, 8).map((n) => n.target.join(' ')),
+      })),
+      `${tab} 页签`,
+    ).toEqual([])
+  }
+
+  await expectAccessible(page, {
+    allow: [contrastCoveredByOurOwnRuler, headingOrderCheckedByOurselves],
+  })
+})
+
+test('图内编辑的属性栏（属性页签，选中标题）：正文框有名字，展开每个折叠区后 axe 仍然干净', async ({
+  app,
+  page,
+}) => {
+  // 上一条用例扫的是「画布」页签；「属性」页签在没选元素时**一个输入框都没有**，
+  // 而选了元素之后它才是控件最多的那一屏——2026-09-12 的 impeccable critique 在这里
+  // 抓到一条 axe critical（`label`）：标题的正文 `<textarea>` 没有可访问名，
+  // 门禁两条腿一直是绿的，因为它从没扫过这一屏。这条用例就是那个缺口。
+  const a = await app()
+  await page.goto(a.baseURL)
+  await page.getByText('Fig1_kinetics.pdf').dblclick({ timeout: 30_000 })
+  await expect(page.locator('[data-canvas-stage] img, [data-canvas-stage] svg').first())
+    .toBeVisible({ timeout: 60_000 })
+
+  // 元素树 → 展开「文字」组 → 点标题。按 role 与双语正则走（本 spec 三条腿里有
+  // 一条是 en-US，fixtures 的 `openElementsTab` 写死了「图内元素」，这里不能用它）。
+  // 按 aria-expanded 判态、不在才点：盲点击会在收起动画里把刚打开的面板关掉。
+  const nav = page.getByRole('navigation').getByRole('button', { name: /图内元素|Figure elements/ })
+  if ((await nav.getAttribute('aria-expanded')) !== 'true') await nav.click()
+  await expect(nav).toHaveAttribute('aria-expanded', 'true')
+  // 树在引擎首次渲染完之前是空的，先等它有内容
+  const items = page.getByRole('treeitem')
+  await expect(items.first()).toBeVisible({ timeout: 60_000 })
+  // 组行的文字是「文字 3」/「Text 3」（名字 + 计数），`\b` 在 en 里落不到 t 与 3 之间
+  const textGroup = items.filter({ hasText: /^(文字|Text)\s*\d/ }).first()
+  await textGroup.click()
+  await page.keyboard.press('ArrowRight')
+  const title = items.filter({ hasText: /Reaction kinetics/ }).first()
+  await title.click()
+
+  const inspector = page.locator('[data-inspector-panel]')
+  await inspector.locator('[data-inspector-tab="properties"]').click()
+  // 选中态的主语：头部 h2 必须是标题本身，不是「整张图」——否则下面扫的不是这一屏
+  await expect(inspector.locator('h2')).toContainText('Reaction kinetics')
+
+  // 关掉聚焦触发的气泡时**不要按 Escape**：这个应用里 Escape 会把选区往上退
+  // （标题 → 整张图 → 面板），扫描的主语会悄悄变掉（critique-B 实测）
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+
+  // 把折叠区一个不剩地展开：字体下拉是 Radix Select 触发器（role=combobox），
+  // 也带 aria-expanded=false，排除它，否则「展开全部」会把字体菜单弹出来
+  for (let i = 0; i < 16; i++) {
+    const collapsed = inspector
+      .locator(
+        'button[aria-expanded="false"]:not([disabled]):not([aria-haspopup]):not([role="combobox"])',
+      )
+      .first()
+    if (!(await collapsed.count())) break
+    await collapsed.click()
+    await page.waitForTimeout(80)
+  }
+
+  // 先证明这一屏真的有那个正文框，否则 `label` 规则对它 inapplicable、判据恒真
+  await expect(inspector.locator('textarea')).toHaveCount(1)
+  const controls = await inspector.locator('input, textarea, [role="switch"]').count()
+  expect(controls, '属性页签里一个控件都没有，这一遍扫描是恒真的').toBeGreaterThan(3)
+
+  const named = await new AxeBuilder({ page })
+    .include('[data-inspector-panel]')
+    .withRules(['button-name', 'label'])
+    .analyze()
+  expect(
+    named.violations.map((v) => ({
+      id: v.id,
+      nodes: v.nodes.slice(0, 8).map((n) => n.target.join(' ')),
+    })),
+    '属性页签（选中标题）',
+  ).toEqual([])
+
+  await expectAccessible(page, {
+    allow: [contrastCoveredByOurOwnRuler, headingOrderCheckedByOurselves],
+  })
+})
+
+test('导出对话框：axe 干净 + 焦点 trap + Escape 关闭后焦点恢复', async ({
+  app,
+  page,
+}) => {
+  const a = await app()
+  await page.goto(a.baseURL)
+  await page.getByText('Fig1_kinetics.pdf').dblclick({ timeout: 30_000 })
+
+  const exportButton = page.getByRole('button', { name: /导出|Export/ }).first()
+  await exportButton.focus()
+  await page.keyboard.press('Enter') // 键盘打开——鼠标才能开的导出不算可达
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toBeVisible()
+
+  // 三条允许，各自带真核对：背景整片 aria-hidden（「焦点确实困在对话框里」由
+  // 紧接着那圈 Tab 断言覆盖）；覆盖层下 axe 算不出背景色的节点由自算尺子逐个
+  // 核对；跨 landmark 的标题顺序由本文件自己按文档顺序核对。三条进不进
+  // incomplete 都随抽屉开合、卡片数量与浏览器而变（`color-contrast` 这条用例
+  // 实测过两种都出现过），而豁免带着真核对，用不上并不构成放行。
+  //
+  // `heading-order` 是跑 #210 的门禁时抓到的一条**旧**偶发，与 #210 的改动无关：
+  // 交错 A/B 实测，origin/main 上单跑 10 次红 3 次（chromium-en），改动后同一条
+  // 命令 14 次全绿。抓到的节点是**对话框自己的 `h2`**（`#radix-_r_18_`，Radix 把
+  // 它 portal 到 `<body>` 末尾、背景整片 aria-hidden 之后）——axe 判不了它在文档
+  // 里的层级位置，就丢进 incomplete；判不判得了随扫描那一刻的可见性而变，所以
+  // 时红时绿。工作台/问题面板那两条用例早就声明了它，这里补齐。
+  await expectAccessible(page, {
+    allow: [dialogBackgroundIsInert, contrastCoveredByOurOwnRuler, headingOrderCheckedByOurselves],
+  })
+
+  // 焦点 trap：连按 Tab 一整圈，焦点永远落在对话框里
+  for (let i = 0; i < 25; i++) {
+    await page.keyboard.press('Tab')
+    const inside = await page.evaluate(() => {
+      const el = document.activeElement
+      return !!el?.closest('[role="dialog"]')
+    })
+    expect(inside, `第 ${i + 1} 次 Tab 后焦点跑出了对话框`).toBe(true)
+  }
+
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  // 关闭后焦点回到触发它的控件（Radix 的承诺，这里钉死成回归门禁）
+  await expect(exportButton).toBeFocused()
+})
+
+test('项目接入状态：axe 干净 + 焦点 trap + Escape 关闭后焦点恢复', async ({
+  app,
+  page,
+}) => {
+  const a = await app()
+  await page.goto(a.baseURL)
+
+  // 从常驻轨道进（键盘打开——鼠标才能开的入口不算可达）。轨道是 <nav>，
+  // 这样不会跟横幅上那个同名按钮撞上。
+  const railButton = page
+    .getByRole('navigation')
+    .getByRole('button', { name: /项目接入状态|Project readiness/ })
+  await railButton.focus()
+  await page.keyboard.press('Enter')
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toBeVisible()
+  // 每一行都在（报告取回来了才算真的打开，空壳上扫 axe 什么都证明不了）。
+  // 锚点是稳定的 `data-panel-row`：Visual Consolidation 把每行的「技术详情」折叠段
+  // 整个撤了（stem / entry / reason code 不是普通用户连图要懂的东西），按那句文案等
+  // 就永远等不到。
+  await expect(dialog.locator('[data-panel-row]').first()).toBeVisible({ timeout: 30_000 })
+
+  // 两条「查不了」的允许各自带真核对：背景整片 aria-hidden（焦点进不去由下面
+  // 那圈 Tab 覆盖）；覆盖层下 axe 算不出背景色的节点由自算尺子逐个核对。后者是
+  // 这个对话框第一次在真浏览器里跑出来的——`--list` 收得到 ≠ 跑得过。
+  //
+  // **判据扫全页**，不收进 `[role="dialog"]`：模态打开时全页扫描会把背后的工作台
+  // 一并量进来，那正是要的——同一批节点在「有没有模态」下必须给出同一个结论。
+  // 曾经收进对话框是为了绕开一处不一致，而那处不一致是**尺子**的缺陷（背景只走
+  // DOM 祖先链，看不见画在下面的兄弟层），已在 issue #210 里定性并修掉；
+  // `contrast.spec.ts` 里有它的两向判据。
+  await expectAccessible(page, {
+    allow: [dialogBackgroundIsInert, contrastCoveredByOurOwnRuler],
+  })
+
+  for (let i = 0; i < 25; i++) {
+    await page.keyboard.press('Tab')
+    const inside = await page.evaluate(() => {
+      const el = document.activeElement
+      return !!el?.closest('[role="dialog"]')
+    })
+    expect(inside, `第 ${i + 1} 次 Tab 后焦点跑出了接入状态`).toBe(true)
+  }
+
+  // 焦点此刻多半停在一颗带气泡的图标钮上（每行的 ⋯ 菜单是 IconButton + Tip）。
+  // 第一下 Escape 只收气泡：WCAG 1.4.13 要求悬停 / 聚焦冒出来的内容能用 Esc 单独
+  // 关掉且不动焦点，Radix 的层栈也正是这么做的（最上层先接 Esc），对话框要再按
+  // 一下。气泡开没开取决于 Tab 停在哪、以及 420ms 的延时有没有走完——两种情况都
+  // 得对，所以按「对话框还在不在」分支，而不是按「气泡在不在」赌一个时刻。
+  await page.keyboard.press('Escape')
+  if ((await dialog.count()) > 0) {
+    // 这一下被气泡接走了：气泡必须已关（1.4.13 的那一半），再按一下关对话框
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0)
+    await page.keyboard.press('Escape')
+  }
+  await expect(dialog).toHaveCount(0)
+  await expect(railButton).toBeFocused()
+})
+
+test('素材卡的状态角标不引入嵌套交互（axe nested-interactive）', async ({ app, page }) => {
+  // **必须是一张「不能编辑」的图**：角标与那条带按钮的说明条只在这种卡上出现。
+  // 默认夹具里三张图全都已连上脚本（editable），卡上既没有角标也没有说明条，
+  // 于是这条用例什么都没量到——直到它在 windows-exe-smoke 上第一次真跑起来，
+  // 才在「按钮找不到」上红出来。运行期命名的那份夹具给的是 needs_probe。
+  const dir = path.join(os.tmpdir(), `tavotto-e2e-a11y-${Date.now()}`)
+  writeRuntimeNamedProject(dir)
+  const a = await app({ figures: dir })
+  await page.goto(a.baseURL)
+  const card = page.getByRole('option').first()
+  await expect(card).toBeVisible({ timeout: 30_000 })
+  await card.click() // 选中之后说明条才出现——它带一个真按钮，必须在 listbox 外面
+
+  const results = await new AxeBuilder({ page })
+    .withRules(['nested-interactive', 'aria-required-children', 'aria-required-parent'])
+    .analyze()
+  expect(results.violations.map((v) => ({
+    id: v.id,
+    nodes: v.nodes.slice(0, 8).map((n) => n.target.join(' ')),
+  }))).toEqual([])
+
+  // 「查看接入状态」必须键盘到得了：它不在 option 里，所以 Tab 出列表就能落上去
+  await expect(
+    page.getByRole('button', { name: /查看接入状态|Project readiness/ }).first(),
+  ).toBeVisible()
+})
+
+test('问题面板：axe 无违规、行内的「修复」不是「定位」的子节点', async ({
+  app,
+  page,
+}) => {
+  const a = await app()
+  await page.goto(a.baseURL)
+  // 先把一张图放上画布——空画布上问题清单只有页面级那几条，行内动作量不到
+  await page.getByText('Fig1_kinetics.pdf').dblclick({ timeout: 30_000 })
+  await expect(page.locator('[data-canvas-stage] img, [data-canvas-stage] svg').first())
+    .toBeVisible({ timeout: 60_000 })
+
+  // 从常驻轨道进（键盘打开——鼠标才能开的入口不算可达）
+  const rail = page.locator('[data-rail="problems"]')
+  await rail.focus()
+  await page.keyboard.press('Enter')
+  const drawer = page.getByRole('complementary', { name: /问题|Problems/ })
+  await expect(drawer).toBeVisible()
+
+  // **嵌套交互是这一屏最容易犯的错**：整行可点 + 行尾一颗「修复」，写成
+  // 按钮套按钮的话辅助技术里它是一个读不出来的控件
+  const nested = await new AxeBuilder({ page })
+    .withRules(['nested-interactive', 'aria-required-children', 'aria-required-parent'])
+    .analyze()
+  expect(nested.violations.map((v) => ({
+    id: v.id,
+    nodes: v.nodes.slice(0, 8).map((n) => n.target.join(' ')),
+  }))).toEqual([])
+
+  // 覆盖层下 axe 算不出背景色的节点由自算尺子逐个核对（与工作台那条同一条纪律）
+  await expectAccessible(page, {
+    allow: [contrastCoveredByOurOwnRuler, headingOrderCheckedByOurselves],
+  })
+})
+
+test('图标按钮都有可访问名（axe button-name / 顶栏抽查）', async ({ app, page }) => {
+  const a = await app()
+  await page.goto(a.baseURL)
+  await expect(page.getByRole('banner')).toBeVisible() // 顶栏（<header>）
+  const results = await new AxeBuilder({ page })
+    .withRules(['button-name', 'link-name', 'aria-command-name'])
+    .analyze()
+  expect(results.violations.map((v) => ({
+    id: v.id,
+    nodes: v.nodes.slice(0, 8).map((n) => n.target.join(' ')),
+  }))).toEqual([])
+})
+
+test('键盘可达性底线：Tab 能进入界面且焦点可见', async ({ app, page }) => {
+  const a = await app({ noProject: true })
+  await page.goto(a.baseURL)
+  await expect(page.getByRole('main')).toBeVisible()
+  await page.keyboard.press('Tab')
+  const focused = await page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null
+    if (!el || el === document.body) return null
+    const r = el.getBoundingClientRect()
+    return { tag: el.tagName, visible: r.width > 0 && r.height > 0 }
+  })
+  expect(focused, 'Tab 之后焦点仍在 body 上——键盘用户进不了界面').not.toBeNull()
+  expect(focused!.visible).toBe(true)
+})

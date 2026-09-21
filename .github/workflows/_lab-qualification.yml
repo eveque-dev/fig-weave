@@ -1,0 +1,558 @@
+name: Lab Qualification (reusable)
+
+# **发行资格验证的唯一定义。** `lab-ci.yml`（push/schedule）与 `release.yml`
+# （发布链第一段）都经 ci-infra 调到这一个文件，`mode` 只决定阈值、基线和跑哪几档，
+# **不复制步骤**。
+#
+# 为什么非收敛不可：从前这套步骤在两个文件里各有一份手抄。#61 修一个 bug
+# （汇总步骤在有失败要汇总时自己挂掉）必须**同时改两处**，而那两处的差别
+# 实测只有「`$LAB_MODE` vs 字面量 release」和一处换行——也就是说，它们本来
+# 就是同一段逻辑，只是被抄了两遍。抄两遍的代价不是多打字，是**总有一天
+# 只改了一处**，而两条链会因此给出不同的结论。
+#
+# mode 的四档：
+#   main     push 到 main 后的基本资格（不跑 mutation / 前端 / Rust）
+#   nightly  加前端与 Rust、mutation testing
+#   weekly   nightly 的超集（更长的 soak）
+#   release  发行档：**验的是调用方传进来的那一份产物**，不自己造包；
+#            CompatBench 走 `--gate release`（连基线里已知的 product_bug
+#            都不放过）；性能回归**不写基线**（候选版不该改基线）
+#
+# 这个 workflow 跑在 self-hosted 的实验室 runner 上，且**不需要任何写权限**：
+# 长期 runner 拿不到 id-token / contents:write，也就拿不到 PyPI 与 Release
+# 的任何签发能力。
+#
+# ─────────────────── 调用方可以是私有仓库 ci-infra（F 组，2026-09-16）───────────────────
+# 实验室 runner 迁到私有仓库 `Tavotto/ci-infra` 之后（docs/implementation/ci-foundation/
+# ADMIN_HANDOFF_RUNNER_POOL.md F 组），调用方变成那边的 `lab-qualification.yml`：
+# `uses: Tavotto/Tavotto/.github/workflows/_lab-qualification.yml@main`。**本文件仍是资格
+# 验证的唯一定义**——被跨仓库调用时它的 job 在调用方上下文里跑，所以三处「默认取调用方
+# 仓库」的地方必须显式钉回 Tavotto/Tavotto，否则 checkout 会去拉 ci-infra、
+# download-artifact 会去 ci-infra 的 run 里找 `dist`、脚本会以为自己在 ci-infra 里：
+#   * `actions/checkout` 显式 `repository: Tavotto/Tavotto`（`ref` 仍是 `inputs.sha`）；
+#   * 发行档 `download-artifact` 显式 `repository` / `run-id` / `github-token`——
+#     `run-id` 取 `inputs.source_run_id`（公开仓库那次 release run 的 id），
+#     `github-token` 取调用方经 `secrets:` 传进来的 `TAVOTTO_PUBLIC_TOKEN`；
+#   * job env `TAVOTTO_SOURCE_REPOSITORY: Tavotto/Tavotto`——脚本里读仓库名的唯一出口
+#     `scripts/ci/_common.source_repository` 优先取它（`GITHUB_REPOSITORY` 在这里是 ci-infra，
+#     且 `GITHUB_*` 前缀覆盖不了）。第一次真实派发就红在没钉这一处（见 job env 的注释）。
+# 同仓库调用（PR B 之前 release.yml 的 `lab_release_gate`；PR B 之后公开仓库里已没有
+# 调用方，这条回退只为「把本文件搬回同仓库直接调用」时仍成立）时 `source_run_id` 为空、
+# secret 不存在：`run-id` 落回 `github.run_id`，`github-token` 是空串——download-artifact 只在
+# token **非空**时才切到跨仓库的 REST 路径（源码 `if (inputs.token)`），空串走的仍是同 run
+# 内部路径，行为逐字不变。**这里刻意不写 `|| github.token`**：非空 token 会把
+# 同仓库调用也切到 REST 路径，而本文件的 GITHUB_TOKEN 只有 `contents: read`、没有
+# `actions: read`，发行档会 403。
+# 并发槽名含 `inputs.mode`：ci-infra 一个 workflow 服务四档，release 与 nightly 不能共槽。
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "main | nightly | weekly | release"
+        required: true
+        type: string
+      sha:
+        description: "已经由调用方验过可达 main 的精确 commit SHA"
+        required: true
+        type: string
+      baseline_tag:
+        description: "升级验收的 N-1 tag（留空自动选最近的正式 release）"
+        required: false
+        default: ""
+        type: string
+      use_prebuilt_dist:
+        description: >-
+          true 时不自己造包，改用调用方上传的 `dist` artifact——
+          发行档验的必须是**将要发出去的那一份 wheel**，
+          不是「同一个 commit 重新造一个差不多的东西」。
+        required: false
+        default: false
+        type: boolean
+      source_run_id:
+        description: >-
+          发行档取 `dist` 的那次公开仓库 run 的 id（跨仓库调用时必填；
+          同仓库调用留空，落回本 run）。
+        required: false
+        default: ""
+        type: string
+    secrets:
+      TAVOTTO_PUBLIC_TOKEN:
+        description: >-
+          跨仓库取 `dist` artifact 用的 token（ci-infra 的 secret，经调用方传入；
+          同仓库调用不需要，留空即走本 run 的内部路径）。
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  TAVOTTO_NO_TELEMETRY: "1"
+
+jobs:
+  qualify:
+    runs-on: [self-hosted, linux, x64, tavotto-lab]
+    timeout-minutes: 180
+    concurrency:
+      # **每条调用链一个槽，两条链绝不共用。**
+      # `github.workflow` 在可复用 workflow 里取的是**调用方**的名字，
+      # 所以 release.yml 与 lab-ci.yml 各排各的队。
+      #
+      # 为什么不能共用一个槽：GitHub 每组只保留**一个运行中 + 一个待定**，
+      # 第三个排进来会**取代那个待定的**——`cancel-in-progress: false`
+      # 只保护正在跑的，保护不了在排队的。共用一个槽时，发布门禁正等在
+      # 一次长 lab run 后面，这时一次 push to main 或定时任务进来，
+      # **日常 run 会把待定的发布门禁挤掉，发版当场中止**。
+      #
+      # 机器独占不靠这个槽：带 `tavotto-lab` 标签的 runner 只有一台，
+      # 两条链天然排队；runner 端另有 flock 作第二道保险
+      # （见 scripts/ci/bootstrap_lab_runner.sh）。槽在这里只负责
+      # **同一条链内部去重**——同一条链上新的一次本来就该取代旧的待定。
+      #
+      # 槽名还带 `inputs.mode`（F 组）：ci-infra 那边**一个** workflow 服务
+      # main / nightly / weekly / release 四档，`github.workflow` 对它们是同一个
+      # 名字——不带档位的话 release 与 nightly 就共槽了，正是上面那种「日常
+      # run 把待定的发布门禁挤掉」。同一档位内部仍是去重。
+      group: lab-qualification-${{ github.workflow }}-${{ inputs.mode }}
+      cancel-in-progress: false
+    env:
+      LAB_MODE: ${{ inputs.mode }}
+      # **被验的代码来自哪个仓库**——脚本里一切「我在哪个仓库」的判断都读它
+      # （`scripts/ci/_common.source_repository`，顺序：显式源仓库 > 运行仓库 > 默认）。
+      # 被 ci-infra 跨仓库调用时 `GITHUB_REPOSITORY` / `GITHUB_SHA` / `GITHUB_REF` 说的是
+      # ci-infra；第一次真实派发（ci-infra run 35112349056）就红在一条按 `GITHUB_REPOSITORY`
+      # 判「我是不是本仓库」的用例上，而 N-1 发行档也会去 ci-infra 找。`GITHUB_*` 是
+      # 保留前缀、这里覆盖不了，所以另起一个名字。同仓库调用时它与 `GITHUB_REPOSITORY`
+      # 相等，行为不变。
+      TAVOTTO_SOURCE_REPOSITORY: Tavotto/Tavotto
+      TAVOTTO_CI_STATE_ROOT: ${{ vars.LAB_CI_STATE_ROOT || '/srv/tavotto-ci' }}
+      LAB_PERF_GATE: ${{ vars.LAB_PERF_GATE || 'false' }}
+      LAB_VISUAL_GATE: ${{ vars.LAB_VISUAL_GATE || 'true' }}
+      GITHUB_TOKEN: ${{ github.token }}
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      PYTHONHASHSEED: "0"
+      MPLBACKEND: Agg
+    steps:
+      # 分片产物的早清：常规套件那一步自己也清（见那里），但 checkout / 体检 / 建环境失败时
+      # 它根本不跑，而 `failure()` 的诊断包照常跑——self-hosted 的 RUNNER_TEMP 跨 run 复用，
+      # 上一轮的 junit 会被当成这一轮的。放在 checkout 之前：它不需要源码树，而 checkout 是
+      # 第一个可失败步骤。
+      - name: 清掉上一轮的分片产物
+        run: rm -f "$RUNNER_TEMP"/pytest-shard-* "$RUNNER_TEMP"/seq-shard-*
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # 显式钉公开仓库：被 ci-infra 跨仓库调用时默认 repository 是调用方。
+          repository: Tavotto/Tavotto
+          # 只认 trust-check 验过的那个 SHA。**不要**改回分支名。
+          ref: ${{ inputs.sha }}
+          clean: true
+
+      - name: 开跑前体检
+        # `--reap-stale`：发现归属本 CI 的遗留 Tavotto 进程就自己清掉，
+        # **并复检确认真的清干净了**（清不掉照旧阻断）。
+        # 从前没有这一档，于是 2026-08-22 05:55 起**每一次** lab run 都被同一个
+        # 手工探测留下的进程挡在门外——而唯一的解法是有人 SSH 上去手动清。
+        # `cleanup.py`（会 kill）排在体检**之后**，体检失败它就永远轮不到：
+        # **自愈动作排在检测它的那道门之后，等于没有自愈。**
+        run: python3 scripts/ci/lab_preflight.py --mode "$LAB_MODE" --reap-stale
+
+      - name: 清理上一轮残留
+        run: python3 scripts/ci/cleanup.py
+
+      - name: 建一次性验证环境
+        id: venv
+        run: |
+          set -euo pipefail
+          # 这个 venv 是本次 run 专用的，跑完即弃；它落在持久化根的 tmp/ 下，
+          # 由 cleanup.py 按保留期回收。
+          VENV="$TAVOTTO_CI_STATE_ROOT/tmp/venv-run-${GITHUB_RUN_ID}"
+          rm -rf "$VENV"
+          python3 -m venv "$VENV"
+          "$VENV/bin/pip" install -q --disable-pip-version-check --upgrade pip
+          "$VENV/bin/pip" install -q -e ".[dev,ci]"
+          # **科学栈版本取自 packaging/runtime-lock.json**，不用 `pip install matplotlib`。
+          # 视觉基线是像素级的：matplotlib 换个小版本就可能改掉抗锯齿或字体度量，
+          # 让整片 corpus 在一次与产品无关的依赖升级里同时变红。用锁文件还有第二个
+          # 好处——CI 的渲染环境与桌面版用户拿到的内置 runtime 逐字一致，
+          # 基线因此真正代表「用户会看到的那张图」。
+          # shellcheck disable=SC2046
+          "$VENV/bin/pip" install -q $(python3 scripts/ci/runtime_pins.py --include-corpus)
+          echo "python=$VENV/bin/python" >> "$GITHUB_OUTPUT"
+          "$VENV/bin/python" -c "import tavotto,matplotlib,numpy,PIL;print('环境就绪', tavotto.__version__)"
+
+      # ── 正确性 ────────────────────────────────────────────────
+      - name: 常规测试套件（同机 4 片并行）
+        id: regular
+        # 单进程 `pytest -q` 在这台 16 核 VM 上要 46 分钟（2026-09-19 实测，4897 条），
+        # 15 个核闲着；main 档 57 分钟里它占 47，单 runner 上一天 8 次合入，13:11 派发的
+        # run 14:01 才起跑。这里用 CI03a 的 `--shard=K/N`（按文件分、每个进程在自己的
+        # collection 之后算出全部 N 片并自验并集 == 全集，漏片当场 rc 4）在**同一台机器**
+        # 上起 N 个进程：覆盖面一条不减——N 片的并集就是原来那一整个集合，每个进程自己
+        # 核这一点；被切开的只有时间。不用 xdist：按用例分发会把跨用例耦合一次性摊开，
+        # `--shard` 按文件分已经解决同一个问题（docs/rules/ci/pytest-shards.md）。
+        # 判据 = 每一片的退出码，任一片非零整步红，并把那一片的日志尾巴打出来；不加
+        # `-q`（addopts 已带一个，叠成 `-qq` 后 pytest 不打总数行），`-rs` 让 skip 理由
+        # 进日志。每片各自的 junit / manifest 带片号——self-hosted 的 RUNNER_TEMP 跨 run
+        # 复用，manifest 走 `=` 形式（空格形式在路径已存在时 rc 4，见 ci.yml 同一处的注释）。
+        # basetemp 不指定：pytest 自己给每个进程编号一个 `/tmp/pytest-of-<user>/pytest-N`
+        # （建目录是原子的，撞号就退一步再试），与从前单进程的隔离一样；本机试过把它指到
+        # 路径里含 "tavotto" 的目录，`test_sitecustomize_silently_does_nothing_under_E`
+        # 立刻因为 stderr 里出现了这个词而红——那是路径，不是并发。
+        # 合同：tests/test_merge_queue_workflows.py::TestGates::test_lab_pytest_runs_every_shard_in_one_step
+        run: |
+          set -euo pipefail
+          # `set -m`（作业控制）不是装饰：无作业控制的 shell 起 `&` 后台命令时按 POSIX 把
+          # SIGINT / SIGQUIT 置成 SIG_IGN，处置跨 exec 继承到 pytest → `tavotto run` → 用户
+          # 脚本整棵树，Python 见 SIGINT 已被忽略就不装 KeyboardInterrupt——
+          # `test_ctrl_c_reaches_the_script_and_leaves_no_orphan` 于是 90 秒超时。本机双向
+          # 验过：同一条命令 `&` 起 rc 1、`set -m` 后 `&` 起 rc 0（每片自成进程组，SIGINT
+          # 处置回到默认）。`( trap - INT; … ) &` 救不回来——进入子 shell 时已被忽略的信号
+          # 不许重置。
+          set -m
+          N=4
+          # self-hosted 的 RUNNER_TEMP 跨 run 复用：某片在 pytest 写文件之前就死掉的话，上一轮
+          # 的 junit / manifest / 日志会留在同名路径上，被 always() 的证据上传当成这一轮的。
+          # 起片之前先清干净（job 开头那一步管的是「这一步没跑到」的窗口，这里管的是「这一步
+          # 跑了」的窗口，两个窗口各一句）。
+          rm -f "$RUNNER_TEMP"/pytest-shard-*
+          pids=()
+          for k in $(seq 1 "$N"); do
+            ${{ steps.venv.outputs.python }} -m pytest -rs -p no:cacheprovider \
+              --shard="$k/$N" \
+              --shard-manifest="$RUNNER_TEMP/pytest-shard-$k-manifest.json" \
+              --junitxml="$RUNNER_TEMP/pytest-shard-$k-junit.xml" \
+              > "$RUNNER_TEMP/pytest-shard-$k.log" 2>&1 &
+            pids+=("$!")
+          done
+          fail=0
+          for i in "${!pids[@]}"; do
+            k=$((i + 1))
+            rc=0
+            wait "${pids[$i]}" || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              # 总数行（`N passed, M skipped … in Xs`），不是日志最后一行——最后一行常是
+              # 退出时的 DeprecationWarning
+              echo "片 $k/$N 绿：$(grep -E '[0-9]+ (passed|failed|error)' "$RUNNER_TEMP/pytest-shard-$k.log" | tail -n 1)"
+            else
+              fail=1
+              echo "::error::常规测试套件片 $k/$N 退出码 $rc"
+              echo "::group::片 $k/$N 日志尾巴"
+              tail -n 80 "$RUNNER_TEMP/pytest-shard-$k.log"
+              echo "::endgroup::"
+            fi
+          done
+          exit "$fail"
+
+      # 分片证据：manifest（每片分到哪些文件、估计秒数）+ junit（真实秒数）。**只作证据与
+      # 重平衡的数据，不作判定输入**——判定在上一步的退出码里。权重表从这里重算：
+      # `python tests/support/shard.py --from-junit <四份 junit>`（lab 的 VM 才是这套命令
+      # 真正跑的机器，hosted 的计时对它只是近似）。
+      - name: 常规套件分片证据
+        if: always() && steps.regular.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab-pytest-shards-${{ inputs.mode }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pytest-shard-*-junit.xml
+            ${{ runner.temp }}/pytest-shard-*-manifest.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: slow / 集成用例
+        # pytest.ini 的 addopts 是 `-m "not slow"`，所以必须显式反选。
+        # **不接受「一个都没选中」**：那说明标记被误删或改名，而门禁会
+        # 安静地报绿——正是这套 CI 要消灭的那种失效。
+        run: |
+          set -euo pipefail
+          # 判据是 pytest 的**退出码**，不是它打给人看的那段文字。
+          # 原来数的是 `--collect-only -q` 里有几行含 "::"，而 pytest 9 把这段
+          # 输出改成了按文件汇总（`tests/test_bootstrap.py: 1`，一个 "::" 都
+          # 没有）——于是 dependabot 那次 8.4.2 → 9.0.3 的升级**静默打断了这道
+          # 门禁**，症状还与真实原因毫不相干（报「标记被删」，而标记好好的）。
+          # 5 = EXIT_NOTESTSCOLLECTED，4 = 收集出错，都是 pytest 的稳定常量。
+          # 注意：文案里绝不能用反引号包 -m slow —— shell 会把它当命令替换执行。
+          set +e
+          ${{ steps.venv.outputs.python }} -m pytest -m slow --collect-only -q \
+              > slow-collect.log 2>&1
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "'-m slow' 选中了用例" ;;
+            5) echo "::error::'-m slow' 一条都没选中。要么标记被删/改名，要么 pytest.ini 的 markers 变了。"
+               echo "::error::空转的门禁比没有门禁更坏——它还在报平安。"
+               tail -20 slow-collect.log
+               exit 1 ;;
+            *) echo "::error::收集 '-m slow' 时出错（exit $rc）——原来这里 2>/dev/null 把它整个吞掉了"
+               tail -40 slow-collect.log
+               exit 1 ;;
+          esac
+          ${{ steps.venv.outputs.python }} -m pytest -m slow -q
+
+      - name: 操作序列 harness 放宽种子（仅 nightly 及以上）
+        # `tests/test_override_sequences.py` 默认 8 条种子 × 2 张图（PR / merge_group / 上面的
+        # 常规套件都是这个档，每条起两条 worker，约 1 分钟）。首批三族（#412–#414）8 条就抓到，
+        # 第四族（#423）放到 24 条才碰上：随机负责发现，发现了就最小化后钉进 `FIXED`，PR 上
+        # 不加时长——这里 32 条只在 nightly 及以上跑。首次执行（ci-infra run 35448006749，
+        # 2026-09-19）实测 12 分 43 秒（73 条：64 条随机序列 + 9 条固定，含 KNOWN 空集那条 skip；本机 3.5 分钟，runner
+        # 比本机慢三到四倍，与常规套件的比例一致）。判据是 pytest 的退出码；文件自己守着
+        # 「候选池够宽」，不会空转。
+        # 2026-09-20 起同机 4 片并行：种子按 `TAVOTTO_SEQ_SHARD=K/N` 取模切片（文件自己守着
+        # 「两两不交、并集是全集、写错或空片当场抛」，`test_seed_slice_semantics`），固定用例
+        # （FIXED / 候选池）每片各跑一遍——冗余几十秒，换来不用为「谁跑固定用例」再发明一条
+        # 规则。起片 / 收片 / 退出码的形状与上面常规套件那一步逐字相同，同一份合同看着
+        # （tests/test_merge_queue_workflows.py 的静态 + 行为两条，参数化到两个 step）。
+        if: env.LAB_MODE != 'main'
+        id: seq
+        env:
+          TAVOTTO_SEQ_SEEDS: "32"
+        run: |
+          set -euo pipefail
+          # `set -m` 的理由见常规套件那一步：`&` 起的片会继承 SIG_IGN 的 SIGINT。
+          set -m
+          N=4
+          rm -f "$RUNNER_TEMP"/seq-shard-*
+          pids=()
+          for k in $(seq 1 "$N"); do
+            TAVOTTO_SEQ_SHARD="$k/$N" ${{ steps.venv.outputs.python }} -m pytest tests/test_override_sequences.py -rs -p no:cacheprovider \
+              --junitxml="$RUNNER_TEMP/seq-shard-$k-junit.xml" \
+              > "$RUNNER_TEMP/seq-shard-$k.log" 2>&1 &
+            pids+=("$!")
+          done
+          fail=0
+          for i in "${!pids[@]}"; do
+            k=$((i + 1))
+            rc=0
+            wait "${pids[$i]}" || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo "片 $k/$N 绿：$(grep -E '[0-9]+ (passed|failed|error)' "$RUNNER_TEMP/seq-shard-$k.log" | tail -n 1)"
+            else
+              fail=1
+              echo "::error::操作序列 harness 片 $k/$N 退出码 $rc"
+              echo "::group::片 $k/$N 日志尾巴"
+              tail -n 80 "$RUNNER_TEMP/seq-shard-$k.log"
+              echo "::endgroup::"
+            fi
+          done
+          exit "$fail"
+
+      - name: 前端与 Rust（仅 nightly 及以上）
+        if: env.LAB_MODE != 'main'
+        run: |
+          set -euo pipefail
+          cd web && pnpm install --frozen-lockfile && pnpm lint && pnpm i18n:check && pnpm test && pnpm build
+          cd ..
+          cargo fmt --check --manifest-path workerd/Cargo.toml
+          cargo clippy --all-targets --manifest-path workerd/Cargo.toml -- -D warnings
+          cargo test --manifest-path workerd/Cargo.toml
+
+      # ── 包验收 ────────────────────────────────────────────────
+      # **发行档验的是调用方传进来的那一份 exact artifact**，不自己造包：
+      # 「同一个 commit 重新造一个差不多的东西」证明不了将要发出去的那份能用。
+      # 其余档位没有候选包，所以自己造一个——验的是「main 的当前状态造得出
+      # 一个装得上、跑得起来的包」。两者问的问题不同，都要有。
+      - name: 取回候选产物（发行档）
+        if: inputs.use_prebuilt_dist
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dist
+          path: dist
+          # 三个字段只在 github-token **非空**时被读（跨仓库调用）；同仓库调用时
+          # secret 不存在、token 是空串，走的仍是本 run 的内部路径——见抬头注释。
+          repository: Tavotto/Tavotto
+          run-id: ${{ inputs.source_run_id || github.run_id }}
+          github-token: ${{ secrets.TAVOTTO_PUBLIC_TOKEN }}
+
+      - name: 认领候选 wheel（发行档）
+        if: inputs.use_prebuilt_dist
+        id: candidate
+        run: |
+          set -euo pipefail
+          # 用 glob 而不是 ls|grep：文件名里出现空格或非 ASCII 时 ls 的输出
+          # 没法安全地按行切。
+          shopt -s nullglob
+          WHEELS=(dist/*.whl)
+          [ "${#WHEELS[@]}" -eq 1 ] || {
+            echo "::error::dist/ 里应有且仅有一个 wheel，实际 ${#WHEELS[@]} 个"; exit 1; }
+          echo "wheel=${WHEELS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: 造一个包用于验收（非发行档）
+        if: ${{ !inputs.use_prebuilt_dist }}
+        id: pkg
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          "${{ steps.venv.outputs.python }}" scripts/build_frontend.py
+          "${{ steps.venv.outputs.python }}" -m pip install -q build
+          "${{ steps.venv.outputs.python }}" -m build --wheel
+          shopt -s nullglob
+          WHEELS=(dist/*.whl)
+          [ "${#WHEELS[@]}" -eq 1 ] || { echo "::error::dist/ 里应有且仅有一个 wheel"; exit 1; }
+          echo "wheel=${WHEELS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: 包验收
+        run: "${{ steps.venv.outputs.python }} scripts/ci/lab_acceptance.py --dist dist"
+
+      # ── 升级 ─────────────────────────────────────────────────
+      # main 档跳过：它每次 push 都跑，而升级验收要装两个 venv 并完整跑两遍
+      # 应用，放进 main 会把「≤ 15~20 分钟」的目标直接冲垮。
+      - name: 升级验收 N-1 → 当前
+        if: env.LAB_MODE != 'main'
+        env:
+          # 候选 wheel 的来源只有两条，取决于上面走了哪一支。**不许在这里
+          # 再 glob 一次 dist/**：那会变成第三个「自己猜文件名」的地方。
+          CANDIDATE: ${{ inputs.use_prebuilt_dist
+                         && steps.candidate.outputs.wheel
+                         || steps.pkg.outputs.wheel }}
+        run: |
+          set -euo pipefail
+          [ -n "$CANDIDATE" ] || { echo "::error::拿不到候选 wheel 的路径"; exit 1; }
+          "${{ steps.venv.outputs.python }}" scripts/ci/upgrade_acceptance.py \
+            --candidate "$CANDIDATE" \
+            ${{ inputs.baseline_tag && format('--baseline-tag {0}', inputs.baseline_tag) || '' }}
+
+      # ── golden / 视觉 ─────────────────────────────────────────
+      - name: Golden 视觉回归
+        id: visual
+        # **`LAB_VISUAL_GATE` 只对非 release 档生效。**
+        # 它是仓库级变量，本意是让日常 lab run 在基线漂移期间不被视觉回归
+        # 挡住。合并两份资格定义之前，release 门禁的 Golden 步骤**永远是
+        # 阻断的**——合并之后这个仓库级开关就能顺手把发布门禁一起放倒，
+        # 而放倒它的人多半只是想让 nightly 别再刷红。
+        # 一个仓库设置不该有能力削弱发布门禁：mode == 'release' 时它无效。
+        continue-on-error: ${{ inputs.mode != 'release' && vars.LAB_VISUAL_GATE == 'false' }}
+        run: |
+          ${{ steps.venv.outputs.python }} scripts/ci/visual_regression.py \
+            --python ${{ steps.venv.outputs.python }} \
+            --out "$RUNNER_TEMP/visual"
+
+      # ── 兼容性资格（CompatBench）────────────────────────────────
+      # 与 golden 视觉回归**问的不是同一个问题**：那边比「Tavotto 今天 vs
+      # 昨天」，这边比「原生 matplotlib vs Tavotto 零 override」，并沿九级
+      # 漏斗回答「外部 matplotlib 世界我们兼容多少」。完整说明见
+      # docs/ci/matplotlib-compatibility.md。
+      #
+      # main 档只跑 must+expected 且不跑保真度（保真度要为每个脚本多起一个
+      # 进程再渲一遍图，会把「≤ 15~20 分钟」直接冲垮）；nightly 及以上跑全量
+      # + 保真度 + 桌面/浏览器语义对拍。门禁档位与运行档位同名。
+      - name: Matplotlib 兼容性资格
+        id: compat
+        run: |
+          set -euo pipefail
+          case "$LAB_MODE" in
+            main)
+              ARGS="--tier must,expected --no-fidelity --gate main" ;;
+            release)
+              ARGS="--all --fidelity --browser --gate release" ;;
+            *)
+              ARGS="--all --fidelity --browser --gate nightly" ;;
+          esac
+          # **`--python` 要显式给。** 不给的话 `compat_matrix._worker_python(None)`
+          # 会走 pool 的解释器优先级链——而这台 runner 是**持久**的：
+          # `TAVOTTO_WORKER_PYTHON` 或用户设置里存下来的解释器一旦存在，
+          # CompatBench 就会拿它去跑，而不是拿这一轮刚建好、按 runtime-lock
+          # 钉过版本的那个 venv。那时像素基线比的是另一套 matplotlib，
+          # 而报告不会说 —— 与「借一个解释器」把冒烟变成空转是同一个形状。
+          # shellcheck disable=SC2086
+          ${{ steps.venv.outputs.python }} scripts/ci/compat_matrix.py $ARGS \
+            --python ${{ steps.venv.outputs.python }} \
+            --out "$RUNNER_TEMP/compat" \
+            --json "$TAVOTTO_CI_STATE_ROOT/reports/compat.json"
+
+      # 只对**失败 case** 上传重文件（control/tavotto/diff 三张 PNG）。
+      # 成功的 100+ case 全量上传会让 artifact 直接撑爆，而它们对排查毫无帮助。
+      - name: 兼容性失败诊断
+        if: failure() && steps.compat.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-diagnostics-${{ inputs.mode }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/compat/**
+            ${{ env.TAVOTTO_CI_STATE_ROOT }}/reports/compat.json
+          retention-days: 14
+          if-no-files-found: warn
+
+      # ── soak / 泄漏 ───────────────────────────────────────────
+      - name: Soak 与泄漏检测
+        run: |
+          set -euo pipefail
+          case "$LAB_MODE" in
+            main)    N=100 ;;
+            nightly) N=500 ;;
+            release) N=800 ;;
+            weekly)  N=800 ;;
+          esac
+          ${{ steps.venv.outputs.python }} scripts/ci/soak.py \
+            --python ${{ steps.venv.outputs.python }} \
+            --iterations "$N" --json "$RUNNER_TEMP/soak-metrics.json"
+
+      # ── 性能 ─────────────────────────────────────────────────
+      - name: 性能回归
+        if: env.LAB_MODE != 'main' || github.event_name == 'push'
+        run: |
+          # **发行档不写基线**：候选版把基线覆盖掉的话，「和基线比」就变成了
+          # 「和自己比」，永远不会红。
+          ${{ steps.venv.outputs.python }} scripts/ci/benchmark.py \
+            --python ${{ steps.venv.outputs.python }} \
+            --mode "$LAB_MODE" \
+            ${{ inputs.mode == 'release' && '--no-update' || '' }}
+
+      # ── mutation（只在 weekly）──────────────────────────────────
+      - name: Mutation testing
+        if: env.LAB_MODE == 'weekly'
+        continue-on-error: ${{ vars.LAB_MUTATION_GATE != 'true' }}
+        run: |
+          ${{ steps.venv.outputs.python }} -m pip install -q "mutmut==3.3.1"
+          ${{ steps.venv.outputs.python }} scripts/ci/mutation.py \
+            --python ${{ steps.venv.outputs.python }}
+
+      # ── 收尾 ─────────────────────────────────────────────────
+      - name: 汇总
+        if: always()
+        # **解释器要有兜底。** 这一步是 `always()`，可它取的
+        # `steps.venv.outputs.python` 来自「建验证环境」——体检先失败时那一步
+        # 根本没跑，变量是空的，命令退化成直接执行脚本，而它是 100644（没有
+        # 执行位）→ `Permission denied`，退出码 126。
+        # 于是**这个「总是要跑」的汇总，恰恰在真的有失败要汇总时自己挂掉**
+        # ——2026-08-22 v0.9.1 发版时实测：体检报出遗留进程，而汇总没能把这条
+        # 结论写进 job summary，读的人只看到一个 126。
+        run: ${{ steps.venv.outputs.python || 'python3' }} scripts/ci/summarize.py --mode "$LAB_MODE"
+
+      - name: 失败诊断包
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab-diagnostics-${{ inputs.mode }}-${{ github.run_id }}
+          # 只收报告与 diff，**不收** venv / node_modules / 整个 checkout：
+          # 那些东西几百 MB 起步，而且对排查毫无帮助。
+          path: |
+            ${{ env.TAVOTTO_CI_STATE_ROOT }}/reports/*.json
+            ${{ runner.temp }}/pytest-shard-*.log
+            ${{ runner.temp }}/pytest-shard-*-junit.xml
+            ${{ runner.temp }}/pytest-shard-*-manifest.json
+            ${{ runner.temp }}/seq-shard-*.log
+            ${{ runner.temp }}/seq-shard-*-junit.xml
+            ${{ runner.temp }}/visual/**
+            ${{ runner.temp }}/compat/**
+            ${{ runner.temp }}/soak-metrics.json
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: 长期留存的指标
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab-metrics-${{ inputs.mode }}-${{ github.run_id }}
+          path: |
+            ${{ env.TAVOTTO_CI_STATE_ROOT }}/reports/benchmark.json
+            ${{ env.TAVOTTO_CI_STATE_ROOT }}/reports/soak.json
+            ${{ env.TAVOTTO_CI_STATE_ROOT }}/reports/compat.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: 回收一次性环境
+        if: always()
+        run: rm -rf "$TAVOTTO_CI_STATE_ROOT/tmp/venv-run-${GITHUB_RUN_ID}"
+

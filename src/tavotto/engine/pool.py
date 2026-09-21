@@ -1,0 +1,2351 @@
+"""Worker 池（Flask 父进程侧，纯标准库——.venv 里没有 matplotlib）。
+
+每个 (项目, 脚本) 一个常驻子进程；LRU 淘汰，超出 MAX_ALIVE 的最久未用者关停。
+
+**池键必须带项目路径**：多个标签页可以各自打开不同的图库，两个项目里
+同名的 fig1.py 是两个完全不同的脚本，只按脚本名索引会把 A 项目的会话
+交给 B 项目用（画面对不上，还会把 override 写到别人的 Figure 上）。
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import threading
+import time
+import uuid
+from pathlib import Path
+
+from . import config, envlease, execspec, patchspec, projectenv, runtime, workdir
+
+LOG = logging.getLogger("tavotto.engine")
+
+ENGINE_CACHE = config.data_dir() / "cache" / "engine"
+WORKER_PY = Path(__file__).resolve().parent / "worker.py"
+MAX_ALIVE = 3  # 同时存活的 worker 会话数（每个都端着整套 Figure 的内存）
+
+# ---- 引擎缓存治理（对照 app.prune_render_cache / prune_backups） ------------
+#: cache/engine/ 全部会话目录的总预算。比渲染缓存的 500MB 宽：这里躺着
+#: 600dpi 的导出件与预览 SVG，一个会话就顶得上一堆缩略图。
+ENGINE_CACHE_MAX_BYTES = 1024 * 1024 * 1024
+#: 会话目录数上限。光有容量上限治不了「删掉的项目 / 改过名的脚本」留下的空壳：
+#: 每个都小得可怜，加起来永远撞不到容量线，却会一直堆到几百个。
+ENGINE_CACHE_KEEP = 40
+#: 「最后使用时间」落盘的节流窗口（秒）——每次 override 都 utime 一遍纯属浪费。
+_TOUCH_INTERVAL = 60.0
+#: 两次清理之间的最小间隔（秒）：清理要遍历整棵缓存树，不能挂在每次渲染上。
+_PRUNE_INTERVAL = 3600.0
+_last_prune = 0.0
+
+#: `shutdown_all(wait=True)` 等一个 worker 优雅关停的上限（秒）。
+#: 提成常量是为了让测试能改短——真等 10 秒的用例没人愿意跑。
+_SHUTDOWN_JOIN_TIMEOUT = 10.0
+
+#: `kill()` 之后等进程**真正消失**（被 wait/reap）的上限（秒）。
+#: `Popen.kill()` 在两个平台上都只是「发出」请求：POSIX 是 SIGKILL，Windows 是
+#: TerminateProcess，调用返回都不代表进程没了，更不代表它打开的文件句柄已经
+#: 还给系统。Windows 上句柄还在，那棵 `_replay-…` 目录就删不掉。
+_REAP_TIMEOUT = 5.0
+
+#: 一次性目录删除的有限退让（秒，累计 0.35s 封顶）。进程已经 reap 过了，还删
+#: 不掉只可能是杀毒软件 / 索引器 / 资源管理器这类第三方扫描的瞬时占用——
+#: 毫秒级就过去。**不许无限重试**，更不许拿它替代 `proc.wait()`。
+_RMTREE_BACKOFF = (0.0, 0.05, 0.1, 0.2)
+
+# ---- 单次请求的超时上限（秒） ----------------------------------------------
+#: 无超时的 `readline()` 是会话级死锁的源头：脚本写了死循环（或某个 C 扩展
+#: 卡住），发出请求的线程就持着 `w.lock` 永远等下去，这个会话从此谁也用不了，
+#: 连 `shutdown()` 都抢不到锁。宁可杀掉重来——超时或状态未知的 worker 一律
+#: 不复用（kill 之后下一次 `get()` 自动重建）。
+#: 各档按「正常情况下最坏要多久」给：build 要跑用户整个脚本（heavy 分钟级），
+#: 导出是 600dpi 全质量出图，override / 预览是热态操作。
+#: 冷启动 build 的**平坦**预算。safe 档已经改用静默看门狗（见下），这个常量留给
+#: 没有看门狗的那些消费者（native 会话与 barrier，`nativesession` / `bridge`）。
+BUILD_TIMEOUT = 900.0
+
+#: **「它是卡死了还是在慢慢算」——这个问题不该由用户先回答一遍**（ADR 0050）。
+#:
+#: worker 的 stderr 直接落进 `worker.log`，而用户脚本的 stdout 也被 worker
+#: 重定向到 stderr——所以**日志文件长大了就是脚本还在往前跑**。卡死的脚本
+#: 不会再有任何输出；慢脚本（那九个 ovito 分析每 50 帧打一行）会一直打。
+#: 两者用这一条就分得开，不需要注册表里先有人把它归类。
+#:
+#: 判据换成「**多久没有任何动静**」之后：会打进度的脚本实际上不再有总时长上限，
+#: 完全静默的脚本仍有 `BUILD_IDLE_TIMEOUT` 这一档（比换掉的那个平坦 900 秒宽）。
+BUILD_IDLE_TIMEOUT = 1200.0
+#: 兜底：`while True: print(i)` 这种一直有输出的死循环，看门狗永远等不到静默。
+#: 它罕见，但不能没有头——真撞上时用户看到的仍是一条说得清的超时。
+BUILD_HARD_TIMEOUT = 4 * 3600.0
+#: 看门狗多久看一眼日志。一次 `stat`，几十微秒；给得再密也没有意义。
+_PROGRESS_POLL = 2.0
+
+#: **build 超时有自己的稳定码**：它的下一步（读脚本自己的输出）与热态操作超时
+#: 完全不同。`override` / `export` / 预览走 `REQUEST_TIMEOUT` / `EXPORT_TIMEOUT`。
+BUILD_TIMEOUT_CODE = "worker_build_timeout"
+REQUEST_TIMEOUT = 300.0  # override / render_png / preview_png
+EXPORT_TIMEOUT = 600.0
+#: 优雅关停：worker 收到就 SystemExit，等不到 5 秒说明它根本没在读 stdin。
+SHUTDOWN_TIMEOUT = 5.0
+
+# ---- worker 协议 v1（契约见 docs/adr/0003-worker-protocol-v1.md） -----------
+#: 请求信封的协议版本。worker 双栈兼容（无此字段 = legacy），父进程只发 v1。
+PROTOCOL_VERSION = 1
+
+#: 池方法名 → v1 线上命令名。`override` 这个叫法留在 Python API 上（app.py
+#: 一路这么叫），线上统一叫 `render`——v1 的命令表是给 Rust supervisor 看的，
+#: 那里没有历史包袱，不该背我们的旧名字。
+_V1_CMD = {"override": "render"}
+
+
+def build_envelope(obj: dict, *, generation: int = 0, revision: int = 0) -> dict:
+    """把 `{"cmd": …, 其余参数}` 装进 v1 信封——**调用侧的唯一出处**。
+
+    `stem` 走顶层（它是「这条请求作用在哪张图上」，与命令参数不是一回事），
+    其余参数进 `payload`。带 patches 的命令顺手算上 canonical hash——执行侧
+    会自己再算一遍对一下，两边序列化分歧当场暴露（这条自检为的是将来 Rust
+    supervisor 接手时不会静默地发出「看起来一样其实不一样」的 patch 列表）。
+
+    `EngineWorker`（stdin/stdout）与 native bridge（loopback socket）都吃这
+    一份：**换传输不换协议**（ADR 0020 §6）。在 bridge 里另拼一遍信封，
+    就是造第二套协议语义——它一开始逐字相同，然后在某次「只给 bridge 加个
+    字段」之后分叉。
+    """
+    payload = dict(obj)
+    cmd = payload.pop("cmd")
+    stem = payload.pop("stem", None)
+    env = {
+        "protocol_version": PROTOCOL_VERSION,
+        "request_id": f"r-{uuid.uuid4().hex}",
+        "worker_generation": generation,
+        "render_revision": revision,
+        "cmd": _V1_CMD.get(cmd, cmd),
+        "payload": payload,
+    }
+    if stem is not None:
+        env["stem"] = stem
+    if "patches" in payload:
+        env["canonical_patch_hash"] = patchspec.patch_hash(payload["patches"])
+    return env
+
+
+#: (项目, 脚本) → 已经起过第几代 worker。supervisor 靠 generation 分辨
+#: 「这条响应属于哪一代」：会话被超时 kill 后重建，晚到的旧响应必须能被认出来
+#: 丢弃，否则新会话会被上一代的 manifest 污染。
+_generations: dict[tuple[str, str], int] = {}
+#: 单独一把锁：`EngineWorker.__init__` 是在 `get()` 持着 `_lock` 时调用的，
+#: 在里面再抢 `_lock` 会直接自锁死（threading.Lock 不可重入）。
+_gen_lock = threading.Lock()
+
+#: 渲染解释器的环境变量覆盖。**读取端只有 `worker_python_env()` 一处**——
+#: 旧名 `MM_WORKER_PYTHON` 是 Magic Matplot 时代传下来的，改名到 Tavotto 时
+#: 一并换成新名，但它写在用户自己的 shell rc / CI 配置 / conda 环境里，
+#: 我们改不到，所以读取端两个都认（新名优先）。
+WORKER_PYTHON_ENV = "TAVOTTO_WORKER_PYTHON"
+LEGACY_WORKER_PYTHON_ENV = "MM_WORKER_PYTHON"
+
+
+def worker_python_env() -> str | None:
+    """环境变量指定的渲染解释器（新名优先，回退旧名）；都没设返回 None。
+
+    空字符串按「没设」处理：`TAVOTTO_WORKER_PYTHON=` 在 CI 里是「清掉它」的
+    惯用写法，当成一个路径去探测只会白等一轮超时。
+    """
+    import os
+
+    for name in (WORKER_PYTHON_ENV, LEGACY_WORKER_PYTHON_ENV):
+        val = os.environ.get(name)
+        if val:
+            return val
+    return None
+
+
+#: 解释器来源（环境状态 API 与诊断包都用这套字符串，别在别处另起名字）
+SOURCE_ENV = "env_override"  # TAVOTTO_WORKER_PYTHON
+SOURCE_CONFIGURED = "configured"  # 用户在设置里指定的
+SOURCE_MANAGED = "managed_venv"  # Tavotto 在源码模式下自建的 venv
+SOURCE_BUNDLED = "bundled"  # Windows 桌面版随包附带的私有 runtime
+SOURCE_CURRENT = "current_process"  # Flask 自己这个解释器（pip install tavotto[worker]）
+SOURCE_SYSTEM = "system"  # 探测到的系统 Python / Conda
+SOURCE_PROJECT_VENV = "project_venv"  # 项目自带的 .venv（内置缺依赖时自动接手）
+#: Tavotto 替**这个项目**建的隔离环境（ADR 0019 的受控依赖修复）。与
+#: `SOURCE_MANAGED` 刻意分开：那个是全局的 `worker-env/`（「这台机器上没有
+#: 科学栈」的兜底），这个是项目作用域的，两者的排障含义完全不同。
+SOURCE_MANAGED_PROJECT = "managed_project_env"
+
+#: 给人看的来源名（诊断包与日志用；前端有自己的一份文案）
+SOURCE_LABELS = {
+    SOURCE_ENV: "环境变量 TAVOTTO_WORKER_PYTHON",
+    SOURCE_CONFIGURED: "你在设置里指定的环境",
+    SOURCE_MANAGED: "Tavotto 自建的环境",
+    SOURCE_BUNDLED: "Tavotto 内置环境",
+    SOURCE_CURRENT: "Tavotto 自身的解释器",
+    SOURCE_SYSTEM: "系统 Python / Conda",
+    SOURCE_PROJECT_VENV: "项目自带的虚拟环境",
+    SOURCE_MANAGED_PROJECT: "Tavotto 为这个项目建的环境",
+}
+
+_worker_python: str | None = None
+_worker_source: str = ""
+_workers: dict[tuple[str, str], "EngineWorker"] = {}
+#: 一次性 worker（`one_shot()`）正在用的缓存目录。它们**不在池里**，
+#: `prune_engine_cache()` 却按 ENGINE_CACHE 的顶层目录清理——不登记的话，
+#: 一次写回的干净重放正跑到一半，目录可能被后台清理线程整个删掉。
+_oneshot_bases: set[str] = set()
+_lock = threading.Lock()
+
+#: 空 patch 列表的规范哈希（`last_patch_hash` 的初值：刚 build 完的 figure
+#: 就是「一条 override 都没应用」的状态）。
+_EMPTY_PATCH_HASH = patchspec.patch_hash([])
+
+
+def _runtime_of(resp: dict) -> dict | None:
+    """build 响应里的 worker 自报（ADR 0053）。不是对象就当没报。"""
+    rt = resp.get("runtime") if isinstance(resp, dict) else None
+    return dict(rt) if isinstance(rt, dict) else None
+
+
+def peek(script_name: str, figures_dir: str | Path):
+    """池里**现在**有没有这个脚本的活会话——只读，不建、不复用判定、不淘汰。
+
+    `get()` 的副作用（重建 / LRU）在这里一个都不发生；回来的可能是没 build 的
+    会话（正在冷启动）。给准备接口回答「现有 runtime 正在运行」（ADR 0053）用：
+    它要的是事实，不是一条新会话。
+    """
+    key = (_norm_dir(figures_dir), script_name)
+    with _lock:
+        w = _workers.get(key)
+        return w if w is not None and w.alive() else None
+
+
+def control_plane_of(worker) -> str:
+    """这条会话实际走的控制面（回执的 `control_plane`）。"""
+    return "workerd" if isinstance(worker, WorkerdWorker) else "python_pool"
+
+
+def stem_patch_hash(worker, stem: str) -> str:
+    """`worker` 上**这个 stem** 最后应用的那组 patches 的规范哈希。
+
+    必须按 stem 问，不能只看 worker 级的 `last_patch_hash`：池键是
+    `(figures_dir, script_name)`、**不含 stem**，一个脚本登记多个 stem 时
+    它们共用同一条会话（`examples/figures` 里的 `fig2.py` 就登记了
+    `Fig2_yield` 与 `Fig2_correlation` 两个）。只看 worker 级的话，先改完
+    A 再对 B 点「更新原图」，只要两次 patches 的哈希碰巧相同（最常见的就是
+    两边都是空列表），写回自检就会拿 **A 的热态 manifest** 去和 B 的重放
+    结果比——而那道校验正是「热态所见 == 写进文件的」这条不变式的最后一道
+    防线，比错了要么误报 409、要么把真实分歧放过去。
+
+    **账本里有记录就以它为准，不再看 `built`。** `built` 是包装对象的记账，
+    而 workerd 那条路的透明重开（`_call` 撞上 `unknown_session` → `_open()`
+    → 重试）会把它置回 False——即便重试的那次 render 成功了、这个 stem 的
+    哈希也已经记下。拿 `built` 当前置条件的话，那次成功的热态会被当成「没有
+    基准」，写回于是悄悄降级成 `fresh_only`，跳过热态与重放的分歧比对——
+    而那正是这道校验存在的全部意义。
+
+    账本里没有记录时才轮到 `built` 说话：build 过 = 这个 stem 就是脚本原样
+    （空 patch 列表）；没 build 过 = 压根没有基准（回空串）。
+    """
+    by_stem = getattr(worker, "last_patch_hash_by_stem", None)
+    if by_stem is None:  # 没有按 stem 账本的实现（假件）
+        return getattr(worker, "last_patch_hash", "")
+    if stem in by_stem:
+        return by_stem[stem]
+    return _EMPTY_PATCH_HASH if getattr(worker, "built", False) else ""
+
+
+def _merge_timings(resp: dict, queue_wait_ms: float, total_ms: float) -> dict:
+    """把控制面自己的两段计时并进 worker 回来的 `timings`。
+
+    分工：worker 的那几个数说的是「进了 worker 之后各阶段花了多少」
+    （`script_build_ms` / `patch_apply_ms` / `canvas_draw_ms` / `manifest_ms`），
+    这里补的两个是**父进程视角**——
+
+    * `queue_wait_ms`：请求发出去之前排了多久。Python 池里就是抢 `w.lock` 的
+      时间（同一会话上一次渲染没跑完，后来的全堵在这儿），workerd 那边由它
+      自己的合并队列体现（口径差异见 ADR 0004）。
+    * `total_ms`：父进程看到的整次往返。
+
+    `total_ms − queue_wait_ms −（worker 各阶段之和）` 就是协议与管道的开销——
+    没有这两个数，一次「慢」到底慢在排队、渲染还是序列化上永远说不清。
+    worker 已经给出的键**一律不覆盖**：那是它那一侧的事实。
+    """
+    got = resp.get("timings")
+    timings = dict(got) if isinstance(got, dict) else {}
+    timings.setdefault("queue_wait_ms", round(queue_wait_ms, 3))
+    timings["total_ms"] = round(total_ms, 3)
+    resp["timings"] = timings
+    return resp
+
+
+def _fold_build_timings(resp: dict, build: dict | None) -> dict:
+    """把「顺带触发的那次 build」的计时并进本次响应。
+
+    协议里 build 与 render 是两条命令（`ensure_built()` 单独发一条），但用户
+    等的是**一次**渲染：冷启动那一下的几十秒全在 build 里。不并过来的话，
+    响应里只剩十几毫秒的 apply/draw——读数与体感对不上的性能数据比没有更糟。
+
+    build 的往返总时长单列 `build_total_ms`，**不去改 render 自己的
+    `total_ms`**：后者的定义是「这条 render 请求的往返」，混进别的命令就没法
+    再和热态那些数放在一列里比。
+    """
+    if not build:
+        return resp
+    timings = resp.setdefault("timings", {})
+    for key in ("script_exec_ms", "script_build_ms"):
+        if key in build:
+            timings[key] = build[key]
+    if "total_ms" in build:
+        timings["build_total_ms"] = build["total_ms"]
+    return resp
+
+
+def _norm_dir(figures_dir: str | Path) -> str:
+    """池键里的项目标识：解析成绝对路径，大小写不敏感的**卷**上统一小写。
+
+    按卷探测而不是按 `os.name` 判（macOS 的 APFS 同样大小写不敏感）——
+    与 `app._project_id()` 共用 `config.normalize_path_identity`，两边分头
+    判断的话，一个认为是同一个项目、另一个认为是两个，池与写回基线对不上。
+    """
+    try:
+        p = str(Path(figures_dir).expanduser().resolve())
+    except OSError:
+        p = str(figures_dir)
+    return config.normalize_path_identity(p)
+
+
+#: 公开别名。`engine/project_watch.py` 的 watcher 注册表用同一个键——三处
+#: （池、watcher、`app._project_id`）分头判断的话，一个认为是同一个项目、
+#: 另一个认为是两个。
+norm_dir = _norm_dir
+
+
+def _next_generation(key: tuple[str, str]) -> int:
+    """该池键的下一代序号（从 1 开始，每重建一次 +1，进程内单调）。"""
+    with _gen_lock:
+        gen = _generations.get(key, 0) + 1
+        _generations[key] = gen
+        return gen
+
+
+def _cache_slug(figures_dir: str, script_name: str) -> str:
+    """(项目, 脚本) → 缓存子目录名。
+
+    以前是 `Path(script_name).stem`：不同项目 / 不同子目录下的同名脚本会共用
+    同一个 out/sandbox 目录，互相覆盖 SVG 与 manifest。
+    """
+    digest = hashlib.sha1(figures_dir.encode("utf-8")).hexdigest()[:8]
+    safe = re.sub(r"[^\w.-]+", "_", script_name.replace("\\", "/").rstrip("/"))
+    return f"{digest}-{safe[:60]}"
+
+
+def script_sha1(figures_dir: str, script_name: str) -> str:
+    """脚本文件当前内容的 sha1（读不到回空串）。
+
+    worker 是在 spawn 那一刻把脚本 import 进内存的，之后脚本再被改（AI 桥改图、
+    用户自己编辑）这条会话仍跑着旧代码——mtime watcher 有 2 秒轮询窗口。写回是
+    **覆盖用户原件**的动作，那个窗口必须关死：写回前重算一次，与 spawn 时记下的
+    对不上就阻断。
+    """
+    h = hashlib.sha1()
+    try:
+        with open(str(Path(figures_dir) / script_name), "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 16), b""):
+                h.update(chunk)
+    except OSError:
+        return ""
+    return h.hexdigest()
+
+
+class WorkerError(RuntimeError):
+    def __init__(self, message: str, traceback_text: str = "", code: str = "", module: str = ""):
+        super().__init__(message)
+        self.traceback_text = traceback_text
+        # 机器可读的原因；前端据此换成对应的引导界面而不是干甩一段错误文字
+        self.code = code
+        # code == "missing_dependency" 时是缺的那个模块名
+        self.module = module
+        #: 哪个脚本报的（missing_dependency 时由 `_error_of` 填）。依赖修复
+        #: 按 (项目, 脚本) 记轮次、按脚本所在目录找依赖声明，都要它。
+        self.script_name = ""
+
+
+#: 脚本跑完了、一张图都没捕获到，而调用方要的 stem 在注册表里登记过。worker
+#: 那边它只是一个普通 `unknown_stem`（`known == []`），但对用户是完全不同的
+#: 一件事：脚本自己多半已经说了为什么（「文件未找到」「没有数据，无法绘图」），
+#: 那几行就在 worker.log 里——报「stem 不存在」等于把答案藏起来。
+NO_FIGURES_CODE = "no_figures_captured"
+#: 同上，但脚本**一个字都没打印**。分成两个 code 而不是往 `traceback_text` 里塞
+#: 一句占位：占位是界面文案，得跟界面语言走；traceback 区只放脚本自己的输出。
+NO_FIGURES_SILENT_CODE = "no_figures_captured_silent"
+
+
+def _contained_log(path: Path, root: Path | None) -> str | None:
+    """worker.log 的路径钉在 `root`（默认 `ENGINE_CACHE`）之内，回 realpath；越界回 None。
+
+    路径由 (项目, 脚本) 经 `_cache_slug` 拼出来，脚本名来自 HTTP 请求：
+    `_cache_slug` 的正则已经把分隔符洗掉了，但「洗过了」与「用的是洗过的那一个」
+    是两件事——读之前按真身判一次包含（CodeQL py/path-injection 认的正是
+    realpath + 前缀这一对，与 `ai_agents.validate_executable` 同一套闸）。
+    池里的会话与 `one_shot()` 的重放目录都在 `ENGINE_CACHE` 下；单测的临时
+    目录显式传 `root`。
+    """
+    try:
+        real = os.path.realpath(path)
+        real_root = os.path.realpath(root if root is not None else ENGINE_CACHE)
+    except (OSError, ValueError):
+        return None
+    if not real.startswith(real_root + os.sep):
+        return None
+    return real
+
+
+def _log_size(path: Path, root: Path | None = None) -> int:
+    real = _contained_log(path, root)
+    if real is None:
+        return 0
+    try:
+        return os.stat(real).st_size
+    except OSError:
+        return 0
+
+
+def _log_tail_from(path: Path, offset: int, n: int = 30, *, root: Path | None = None) -> str:
+    """worker.log 里**这一代**的最后 `n` 行。
+
+    日志按 (项目, 脚本) 落在稳定目录里、两条控制面都是 append 模式：不记
+    偏移的话，这一代什么都没打印时读到的是上一代的尾巴，陈旧诊断被当成这次
+    失败的原因。按字节读、**按 UTF-8 解码**（worker 把 stderr 钉成了 UTF-8）
+    ——`read_text()` 不带 encoding 在 cp936 的 Windows 上会把中文与 `µ` 读成
+    乱码，而这段文本正是要给用户看的。
+    """
+    real = _contained_log(path, root)
+    if real is None:
+        return ""
+    try:
+        with open(real, "rb") as f:
+            data = f.read()
+    except OSError:
+        return ""
+    text = data[max(0, offset) :].decode("utf-8", errors="replace")
+    return "\n".join(text.splitlines()[-n:])
+
+
+_MISSING_RE = re.compile(r"No module named ['\"]([\w.]+)['\"]")
+
+
+def _explain_empty_capture(err: "WorkerError", script_name: str, known, log_tail: str):
+    """`unknown_stem` 且 **`known == []`** → 换成 `no_figures_captured`，带上脚本自己的输出。
+
+    只认**显式为空的列表**：`known` 缺失（老 worker / 精简错误体）分不清
+    「一张都没有」和「没告诉我」，那时维持原样——把一个普通的 stem 拼错
+    报成「脚本没出图」是另一种误导。脚本输出走 `traceback_text`：前端的
+    错误块本来就有一个折叠区显示它，不用新造一块。
+    """
+    if err.code != "unknown_stem" or not (isinstance(known, list) and not known):
+        return err
+    tail = log_tail.strip()
+    if tail:
+        out = WorkerError(
+            f"{script_name} 跑完了，但没有产生任何图：既没有 savefig，也没有留下 "
+            "pyplot Figure。展开下面的输出看它自己说了什么——多半是数据文件没找到，"
+            "或分析在画图之前就结束了。",
+            tail,
+            code=NO_FIGURES_CODE,
+        )
+    else:
+        # 一个字都没打印：没有可展开的东西，也不造一句占位塞进 traceback 区
+        out = WorkerError(
+            f"{script_name} 跑完了，但没有产生任何图，也没有任何输出：既没有 savefig，"
+            "也没有留下 pyplot Figure。",
+            "",
+            code=NO_FIGURES_SILENT_CODE,
+        )
+    out.extra = getattr(err, "extra", {}) or {}
+    out.script_name = script_name
+    return out
+
+
+def missing_module(text: str) -> str:
+    """从 traceback 里认出「缺哪个包」，认不出回空串。
+
+    内置 runtime 只带常用科学栈；用户脚本 import 了 rdkit/astropy 这类包时，
+    甩一段 ModuleNotFoundError 的 traceback 等于什么都没说。认出包名才能给出
+    「内置环境里没有 rdkit，去高级设置换成你自己的环境」这种可执行的提示。
+
+    **本阶段刻意不自动 pip install**：往内置 runtime 里随便装东西会让它不再
+    可复现，也让「重装就能修」这条退路失效。
+    """
+    m = _MISSING_RE.search(text or "")
+    return m.group(1).split(".")[0] if m else ""
+
+
+def is_frozen() -> bool:
+    """是否跑在 PyInstaller 打出的独立应用里（.app / .exe）。"""
+    return runtime.is_frozen()
+
+
+def _configured_source(path: str) -> str:
+    """用户配置里的那条解释器是「他自己挑的」还是「Tavotto 自己建的」。
+
+    两者都排在内置 runtime 前面（用户的显式选择优先），但报给界面和诊断包时
+    要分得清：managed_venv 是我们该负责的，configured 是用户自己的环境。
+    """
+    from . import bootstrap
+
+    try:
+        managed = str(bootstrap.venv_python())
+    except (OSError, ValueError):
+        return SOURCE_CONFIGURED
+    return SOURCE_MANAGED if same_python(path, managed) else SOURCE_CONFIGURED
+
+
+def _prioritized_candidates() -> list[tuple[str, str]]:
+    """(解释器路径, 来源) 按优先级排列——**解释器选择顺序的唯一出处**。
+
+    1. `TAVOTTO_WORKER_PYTHON`      —— 环境变量，最高优先级的应急/高级覆盖
+    2. 用户在设置里指定的      —— 他明确挑过的环境，任何时候都压过我们的默认
+    3. Tavotto 内置 runtime    —— Windows 桌面版随包附带（装完即用，不联网）
+    4. 自身                    —— `pip install tavotto[worker]` 单环境安装
+    5. 系统 Python / Conda     —— 兼容回退，桌面版的老行为
+
+    **打包成独立应用时必须跳过 sys.executable**：那时它是 Tavotto 自己那个
+    可执行文件，不是 Python 解释器；拿它去跑 `-c "import matplotlib"` 会以
+    莫名其妙的参数把应用再启动一次。
+
+    第 5 条留着不是摆设：用户的论文脚本可能要 import 内置 runtime 里没有的包
+    （rdkit、astropy、自家实验室的库），那时他自己那套环境才是对的。
+    """
+    import os
+    import sys
+
+    cands: list[tuple[str | None, str]] = [
+        (worker_python_env(), SOURCE_ENV),
+    ]
+    configured = config.worker_python()
+    if configured:
+        cands.append((configured, _configured_source(configured)))
+    cands.append((runtime.bundled_python(), SOURCE_BUNDLED))
+    if not is_frozen():
+        cands.append((sys.executable, SOURCE_CURRENT))
+
+    # 一律用字符串拼路径：pathlib.Path 会按 os.name 分派 Posix/Windows 实现，
+    # 在非目标平台上构造另一半会直接抛 UnsupportedOperation。
+    home = os.path.expanduser("~")
+    system: list[str | None] = []
+    if os.name == "nt":
+        system += [shutil.which("python"), shutil.which("python3")]
+        # python.org 与 conda 的常见落点。内置 runtime 缺失/损坏时全靠这里
+        # 把用户已有的环境翻出来，值得多找几个地方。
+        local = os.environ.get("LOCALAPPDATA")
+        roots = ([local + r"\Programs\Python"] if local else []) + ["C:\\"]
+        for root in roots:
+            system += _glob(root + r"\Python*\python.exe")
+        system += [f"{home}\\{n}\\python.exe" for n in ("anaconda3", "miniconda3")]
+    else:
+        system += [
+            "/opt/homebrew/opt/python@3.13/libexec/bin/python3",  # macOS Homebrew
+            "/opt/homebrew/bin/python3",
+            shutil.which("python3"),
+            "/usr/bin/python3",
+        ]
+        # python.org 的 framework 安装（新版优先）与 conda
+        system += _glob("/Library/Frameworks/Python.framework/Versions/*/bin/python3")
+        system += [f"{home}/{n}/bin/python3" for n in ("anaconda3", "miniconda3", "mambaforge")]
+    cands += [(p, SOURCE_SYSTEM) for p in system]
+    return [(p, src) for p, src in cands if p]
+
+
+def system_python_candidates() -> list[tuple[str, str]]:
+    """这台机器上已有的解释器——老链条第四、五级（自身 / 系统 Python / Conda）。
+
+    给项目环境接手的第二层用（ADR 0044）：内置 runtime 缺包、项目里又没有
+    venv 时，把这些逐个体检一遍。**不新加任何发现逻辑**：候选就是
+    `_prioritized_candidates()` 已经枚举的那些位置，只是丢掉前三级——环境变量
+    与设置里指定的那个若存在就是当前渲染环境（正是报缺包的那个），内置
+    runtime 永远不缺 matplotlib 却正因缺别的包才走到这里。
+    """
+    out: list[tuple[str, str]] = []
+    for cand, source in _prioritized_candidates():
+        if source not in (SOURCE_CURRENT, SOURCE_SYSTEM):
+            continue
+        try:
+            if not Path(cand).is_file():
+                continue
+        except OSError:
+            continue
+        out.append((cand, source))
+    return out
+
+
+def _candidate_pythons() -> list[str | None]:
+    """按优先级列出可能装了 matplotlib 的解释器（跨平台）。
+
+    只是 `_prioritized_candidates()` 丢掉来源标签的视图，保留给不关心来源的
+    调用方（bootstrap 的基础解释器探测、updater 的安装方式判断）。
+    """
+    return [p for p, _ in _prioritized_candidates()]
+
+
+def _glob(pattern: str) -> list[str]:
+    """新版优先的安全 glob：目录不存在/没权限时回空表，不把启动流程带崩。"""
+    import glob as _g
+
+    try:
+        return sorted(_g.glob(pattern), reverse=True)
+    except OSError:
+        return []
+
+
+def _has_matplotlib(python: str, *, bundled: bool = False) -> bool:
+    """真去 import 一次。manifest 说装了不算数——DLL 缺失、被杀毒软件隔离了
+    某个 .pyd，都是「文件在但 import 不了」。
+
+    **探测与真正起 worker 必须用同一套 env/args**（`bundled` 时的
+    `child_env()` / `child_args()`）。Windows 上 `._pth` 的隔离模式顺手挡住了
+    敌意环境变量，**macOS 上没有任何东西挡**：用户从终端启动 Tavotto 时，
+    shell 里为 Conda 或自家项目设的 `PYTHONHOME` / `PYTHONPATH` 会原样传给
+    内置解释器，这一句 `import matplotlib` 当场失败——于是一个完全好用的
+    内置 runtime 被判成「不可用」，退回别的 Python 甚至报「没有渲染环境」，
+    而同一个解释器在 worker 那条路上是好的。只在「从终端启动」时复现，
+    从 Finder 双击一切正常。
+    """
+    args = runtime.child_args() if bundled else []
+    env = runtime.child_env() if bundled else None
+    try:
+        # stdin 必须显式断开：桌面 sidecar 的 stdin 是「父进程死亡信号」管道，
+        # 绝不能被子进程继承（Windows 上实测继承它会让子解释器启动挂死 30s，
+        # 症状是桌面版「渲染环境不可用」而同一解释器在终端里探测秒过）
+        probe = subprocess.run(
+            [python, *args, "-c", "import matplotlib"],
+            capture_output=True,
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            creationflags=runtime.CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
+
+
+def _no_python_error() -> "WorkerError":
+    """一个可用解释器都没有时，报哪种错。
+
+    Windows 桌面版**本该**自带 runtime，所以那里的失败不是「你没装 Python」，
+    而是「安装文件不完整」——两者要给用户的动作完全不同（重装 vs 去装 Python），
+    code 也必须分开，否则前端只能给一句谁也用不上的通用提示。
+    """
+    st = runtime.status()
+    if st["code"]:
+        return WorkerError(runtime.repair_hint(), code=st["code"])
+    # 前端认这个 code，据此弹「自动安装渲染环境」而不是把这段话直接甩给用户
+    return WorkerError(
+        "找不到装有 matplotlib 的 Python。可在设置里让 Tavotto 自动装一个，"
+        "或指定你已有的解释器（环境变量 TAVOTTO_WORKER_PYTHON 同样有效）。",
+        code="no_worker_python",
+    )
+
+
+def select_worker_python() -> tuple[str, str]:
+    """挑一个装了 matplotlib 的解释器，回 (路径, 来源)。
+
+    来源是给人看的（环境状态 API / 诊断包 / 冒烟断言）：同样一条路径，
+    「内置」和「你自己的 conda」在排障时的含义天差地别。
+    """
+    global _worker_python, _worker_source
+    if _worker_python:
+        return _worker_python, _worker_source
+    seen: set[str] = set()
+    for cand, source in _prioritized_candidates():
+        if cand in seen:
+            continue
+        seen.add(cand)  # 同一个解释器不重复探测（每次探测最多 30s）
+        try:
+            if not Path(cand).exists():
+                continue
+        except OSError:
+            continue
+        if _has_matplotlib(cand, bundled=source == SOURCE_BUNDLED):
+            _worker_python, _worker_source = cand, source
+            LOG.info("渲染解释器: %s（来源 %s）", cand, source)
+            return cand, source
+    raise _no_python_error()
+
+
+def find_worker_python() -> str:
+    """找一个装了 matplotlib 的解释器（Flask 自己的 .venv 可能没有）。"""
+    return select_worker_python()[0]
+
+
+#: 项目记住的解释器**这次进程里**验过没有（避免每次 get() 都起一个 Python）。
+#: **刻意不共用 `_lock`**：worker 构造函数在 `get()` 已持有 `_lock` 时调用
+#: `resolve_worker_python()`，同一把非重入锁会当场自锁。
+_project_python_ok: dict[str, bool] = {}
+_project_python_lock = threading.Lock()
+
+
+def resolve_worker_python(figures_dir: str | Path | None = None) -> tuple[str, str]:
+    """**某个项目**该用哪个解释器，回 (路径, 来源)——项目级决策的唯一出处。
+
+    优先级（「用户显式选择 > 自动猜测」，ADR 0018 §优先级）：
+
+    1. `TAVOTTO_WORKER_PYTHON`   —— 环境变量
+    2. 用户在设置里指定的         —— 全局显式选择
+    3. **这个项目记住的解释器**   —— 自动 fallback 定下来的，或用户为该项目挑的
+    4. 内置 runtime / 自身 / 系统 —— `select_worker_python()` 的老链条
+
+    第 3 条排在内置**之前**而不是之后：一旦某个项目已经确认「内置环境缺包跑
+    不了它、项目 `.venv` 可以」，每次都先从内置重来一遍只是把同一个
+    `missing_dependency` 重演一次，用户看到的是「每次打开都先失败一下」。
+    1、2 仍然压过它——用户显式挑过的环境任何时候都不该被自动决策盖掉。
+
+    不给 `figures_dir`（无项目上下文的诊断、bootstrap）时退化成
+    `select_worker_python()`，行为一字不变。
+    """
+    if figures_dir is None:
+        return select_worker_python()
+    # **两条显式来源各自判**，不能 `env or configured` 短路：环境变量指向一条
+    # 已经不存在的路径时（改过环境、跟着别的 shell 配置进来的老值），短路会让
+    # 一条完全有效的设置里的解释器被跳过，自动决策于是压过了用户的显式选择。
+    for explicit in (worker_python_env(), config.worker_python()):
+        if not explicit:
+            continue
+        try:
+            if Path(explicit).exists():
+                # 显式选择还在：交给老链条（它会挑中这条），不做任何自动决策。
+                return select_worker_python()
+        except OSError:
+            continue
+    remembered = projectenv.remembered(figures_dir)
+    if remembered:
+        with _project_python_lock:
+            ok = _project_python_ok.get(remembered)
+        if ok is None:
+            # 轻量复检：venv 被删掉 / 被重建成另一个 Python 是常事，
+            # 记住过不等于现在还成立。每个进程每条解释器只做一次。
+            ok = _has_matplotlib(remembered)
+            with _project_python_lock:
+                _project_python_ok[remembered] = ok
+            if not ok:
+                LOG.warning("项目记住的解释器已不可用，回退默认链条: %s", remembered)
+        if ok:
+            return remembered, remembered_source(figures_dir, remembered)
+    return select_worker_python()
+
+
+def remembered_source(figures_dir: str | Path, python: str) -> str:
+    """项目记住的这条解释器**是哪一档**：项目自带的还是 Tavotto 替它建的。
+
+    两者都排在同一优先级上，但对用户与排障是两件事：项目 `.venv` 是**他的**
+    环境（我们只是用它），受管环境是**我们的**（可删可重建）。同一个标签会
+    让「重建 Tavotto 环境」这个动作显示在一个我们无权重建的环境上。
+    """
+    from . import managedenv
+
+    try:
+        managed = str(managedenv.venv_python(figures_dir))
+    except (OSError, ValueError):
+        managed = ""
+    if managed and same_python(python, managed):
+        return SOURCE_MANAGED_PROJECT
+    # 项目之外的解释器（用户为这个项目挑的 conda / 系统 Python，或从依赖
+    # 修复面板采用的系统解释器，ADR 0044）：它既不是项目自带的也不归我们管，
+    # 标成「项目自带的虚拟环境」会把一条 `/usr/bin/python3` 显示成 `.venv`。
+    if not projectenv.project_relative(figures_dir, python):
+        return SOURCE_SYSTEM
+    return SOURCE_PROJECT_VENV
+
+
+def note_project_python_ok(python: str) -> None:
+    """登记「这条解释器刚整套体检过」，省掉下一次 `get()` 的轻量复检。
+
+    `try_project_env()` 与依赖修复装完之后各调一次——两处都刚跑过比
+    `_has_matplotlib` 严得多的检查。
+    """
+    with _project_python_lock:
+        _project_python_ok[python] = True
+
+
+def same_python(a: str | None, b: str | None) -> bool:
+    """两条路径是不是同一个解释器。
+
+    Windows 上大小写不敏感且 `/` 与 `\\` 等价：
+    `C:/Users/张三/python.exe` 与 `C:\\Users\\张三\\Python.exe` 是同一个文件，
+    按字符串比会当成两个，来源标签立刻错位。
+    """
+    if not a or not b:
+        return False
+    import os
+
+    def norm(p: str) -> str:
+        try:
+            s = os.path.normpath(os.path.abspath(os.path.expanduser(p)))
+        except (OSError, ValueError):
+            s = p
+        return os.path.normcase(s)
+
+    return norm(a) == norm(b)
+
+
+def source_of(python: str) -> str:
+    """这条解释器路径**属于**哪个来源——不做任何 import 探测。
+
+    先认本次进程已经选中的那个（`select_worker_python()` 缓存了来源），
+    否则按位置归类。之所以要能脱离缓存单独判断：环境状态 API 允许上层先拿到
+    路径再问来源，而探测一次最多 30s，不能为了贴个标签再跑一遍。
+    """
+    import sys
+
+    if _worker_python and same_python(python, _worker_python) and _worker_source:
+        return _worker_source
+    if same_python(python, worker_python_env()):
+        return SOURCE_ENV
+    configured = config.worker_python()
+    if same_python(python, configured):
+        return _configured_source(python)
+    if same_python(python, runtime.bundled_python()):
+        return SOURCE_BUNDLED
+    if not is_frozen() and same_python(python, sys.executable):
+        return SOURCE_CURRENT
+    return SOURCE_SYSTEM
+
+
+def worker_source() -> str:
+    """当前解释器的来源；还没选过就现选一次（选不出来回空串）。"""
+    try:
+        return select_worker_python()[1]
+    except WorkerError:
+        return ""
+
+
+def reset_worker_python() -> None:
+    """丢弃已缓存的解释器选择——改了设置或刚装完环境后必须调用，
+    否则本次进程会一直用着旧的（或继续认为「找不到」）。
+
+    项目级那半边（`projectenv` 的解析缓存、本模块的复检结果）一并清掉：
+    用户刚把设置里的解释器改掉，项目侧还端着上一轮的结论就是两套答案。
+    """
+    global _worker_python, _worker_source
+    with _lock:
+        _worker_python = None
+        _worker_source = ""
+    with _project_python_lock:
+        _project_python_ok.clear()
+    projectenv.reset_cache()
+
+
+class EngineWorker:
+    def __init__(
+        self, script_name: str, figures_dir: str, entry: str, base_dir: Path | None = None
+    ):
+        self.script_name = script_name
+        self.figures_dir = figures_dir
+        self.entry = entry
+        # `base_dir` 只给一次性 worker（`one_shot()`）用：与热会话共用 out/
+        # 会让重放的 manifest/SVG 盖掉用户正在看的那份。池里的会话永远走
+        # `_cache_slug`，落点一个字节都没变。
+        base = base_dir or ENGINE_CACHE / _cache_slug(_norm_dir(figures_dir), script_name)
+        self.base = base
+        self.out_dir = base / "out"
+        self.sandbox = base / "sandbox"
+        self.export_dir = base / "export"
+        self.log_path = base / "worker.log"
+        base.mkdir(parents=True, exist_ok=True)
+        self._touched = 0.0
+        self._touch()  # mkdir 对已存在的目录不动 mtime，见 _touch
+        self.rev = 0  # 每次 override 递增，用于前端缓存穿透
+        # 这一代的序号：同一 (项目, 脚本) 每重建一次 +1，随每个请求发给 worker
+        # 并原样回显（worker 不理解它，校验归调用方/未来的 supervisor）。
+        self.generation = _next_generation((_norm_dir(figures_dir), script_name))
+        # spawn 那一刻脚本文件的内容指纹（写回前的「脚本变更防线」比对基准）
+        self.script_sha1 = script_sha1(figures_dir, script_name)
+        #: 这条会话上最后一次 `override()` 的规范 patch 哈希（build 之后是空列表）。
+        #: 写回时据此判断「热态手里的这份 manifest 是不是同一组 patches 出的」。
+        self.last_patch_hash = ""
+        #: **按 stem** 记的同一件事，见 `stem_patch_hash()`。
+        self.last_patch_hash_by_stem: dict[str, str] = {}
+        self.lock = threading.Lock()
+        self.built = False
+        #: 最近一次 build 响应里的 CapturedFigureDescriptor payload 列表。
+        #: RuntimeFigureAsset 的 cache 物化从这里取（app 层复制预览文件 +
+        #: 描述符即可），**不必为拿描述符再跑一次脚本**。
+        self.last_build_descriptors: list = []
+        #: 最近一次 build 响应里 worker 自报的运行时事实（`figsession.runtime_report`，
+        #: ADR 0053）；老 worker 没带就是 None——回执据此标 partial，不补不猜。
+        self.last_build_runtime: dict | None = None
+        self.last_used = time.time()
+        # 这一代从日志的哪个字节开始（append 模式，目录跨代复用）
+        self._log_offset = _log_size(self.log_path)
+        self._log = open(self.log_path, "ab", buffering=0)
+        # **项目级**解释器决策：同一台机器上 A 项目可能用内置 runtime，
+        # B 项目用它自己的 .venv（ADR 0018）。两条控制面都从这一个出处取。
+        python, self.python_source = resolve_worker_python(figures_dir)
+        self.python = python
+        # 内置 runtime 装在安装目录里（可能是 Program Files），一个字节都不往
+        # 那儿写：.pyc 与 matplotlib 字体缓存改道到数据目录。用户自己的环境
+        # 不动——那是他的地盘，我们没资格替他改 MPLCONFIGDIR。
+        bundled = self.python_source == SOURCE_BUNDLED
+        env = runtime.child_env() if bundled else None
+        # `-B`：内置 runtime 装在安装目录里（可能是 Program Files），
+        # 一个 .pyc 都不往那儿写。.pyc 已在构建期编好随包发出，`-B` 只禁写不禁读。
+        args = runtime.child_args() if bundled else []
+        # 执行语义收进唯一模型（ADR 0014 §0）：argv 由 `execspec.worker_argv`
+        # 独家产出，workerd 的 spawn 规格吃的是同一份（同源看护在
+        # `test_workerd_pool.py`）。`spec.env` 只存**增量**（序列化形态）；
+        # Python 池的 Popen 仍用全量 `child_env()`（含摘除敌意变量），
+        # 那是本控制面的机制细节，不属于执行语义。
+        self.spec = execspec.safe_spec(
+            script_name,
+            str(figures_dir),
+            entry,
+            interpreter=python,
+            sandbox=str(self.sandbox),
+            env=runtime.child_env(base={}) if bundled else None,
+            # 项目级「在脚本目录里运行」（ADR 0047）：两条控制面与 one_shot 都从
+            # 这一个出处取——写回的重放必须和热态用同一个 cwd。
+            cwd_mode=workdir.mode_for(figures_dir),
+        )
+        LOG.info(
+            "worker 启动: %s（entry=%s，解释器来源=%s）", script_name, entry, self.python_source
+        )
+        self.proc = subprocess.Popen(
+            execspec.worker_argv(
+                self.spec, worker_py=WORKER_PY, out_dir=self.out_dir, runtime_args=args
+            ),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=self._log,
+            env=env,
+            text=True,
+            bufsize=1,
+            # 显式 UTF-8：text=True 默认跟随系统区域编码，Windows 上是 cp1252/
+            # cp936，读 worker 回来的中文/µ/⁻¹ 会解码失败。worker 侧同样钉死。
+            encoding="utf-8",
+            errors="replace",
+            creationflags=runtime.CREATE_NO_WINDOW,
+        )
+
+    #: 逻辑死标记。**`poll()` 一个人说了不算**：`Popen.kill()` 只发信号，不等
+    #: 进程真的退出，紧接着的 `poll()` 完全可能还回 None。那个窗口里别的线程
+    #: 调 `get()` 会把这条已经判死的 worker 当成可用的复用掉——正是这条标记要
+    #: 消除的竞态。workerd 那侧的会话本来就用逻辑标记（`alive() → not _dead`），
+    #: 两条控制面在「还活着吗」这件事上必须给出同一个答案。
+    _dead = False
+
+    def alive(self) -> bool:
+        return not self._dead and self.proc.poll() is None
+
+    def _touch(self) -> None:
+        """把「最后使用时间」落到缓存根目录的 mtime 上（节流 _TOUCH_INTERVAL）。
+
+        `last_used` 只活在内存里，进程一退就没了；而 `mkdir(exist_ok=True)` 对
+        已存在的目录是空操作，**不更新 mtime**——不落盘的话目录 mtime 永远停在
+        第一次创建那一刻，`prune_engine_cache()` 会把用了几个月的高频项目判成
+        「最久未用」优先删掉，比不清理更糟。
+        写不进去（只读介质 / 权限）就算了：清理是治理手段，不值得让渲染失败。
+        """
+        import os
+
+        now = time.time()
+        if now - self._touched < _TOUCH_INTERVAL:
+            return
+        self._touched = now
+        try:
+            os.utime(self.base, None)
+        except OSError:
+            pass
+
+    def _log_tail(self, n: int = 30) -> str:
+        # 偏移带默认值：协议用例用 `__new__` 绕过构造器造 worker
+        return _log_tail_from(self.log_path, getattr(self, "_log_offset", 0), n)
+
+    def _readline(self, timeout: float, *, idle: float | None = None) -> str:
+        """带超时读一行回应；超时即杀掉 worker 并抛错。
+
+        两种判死方式：
+
+        * `idle=None`（热态操作）——平坦上限，等满 `timeout` 就判死；
+        * `idle=<秒>`（build，ADR 0050）——**静默看门狗**：只要 `worker.log`
+          还在长，就一直等下去；连着 `idle` 秒一个字节都没多出来才判死。
+          `timeout` 退化成兜底上限（拦一直打印的死循环）。
+
+        超时用「读线程 + join」而不是 `select`：Windows 的 select 只接受 socket，
+        对管道直接 WinError 10038，而这条路径必须跨平台一致。
+
+        kill 之后读线程会立刻读到 EOF 退出，不会泄漏；被杀的 worker 留在池里
+        也无妨——下一次 `get()` 看到它已死就地重建（状态未知的会话绝不复用）。
+        """
+        box: list[str] = []
+
+        def read() -> None:
+            try:
+                box.append(self.proc.stdout.readline())
+            except (OSError, ValueError):  # 进程被杀后管道关闭
+                box.append("")
+
+        t = threading.Thread(target=read, daemon=True, name="mm-worker-read")
+        t.start()
+        waited, silent_for = self._wait_with_watchdog(t, timeout, idle)
+        if t.is_alive():
+            LOG.warning(
+                "worker 请求超时（等了 %.0fs，静默 %.0fs），强制 kill: %s",
+                waited,
+                silent_for,
+                self.script_name,
+            )
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=_SHUTDOWN_JOIN_TIMEOUT)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            raise self._timeout_error(waited, silent_for, idle is not None)
+        return box[0] if box else ""
+
+    def _wait_with_watchdog(
+        self, t: threading.Thread, timeout: float, idle: float | None
+    ) -> tuple[float, float]:
+        """等这条读线程；回 (总共等了多久, 最后一次有输出到现在多久)。
+
+        `idle` 给了就分片等，每片看一眼日志大小——**长大了就把静默计时清零**。
+        没给就一次 `join(timeout)`，与看门狗登场之前逐字节相同。
+        """
+        started = time.monotonic()
+        if idle is None:
+            t.join(timeout)
+            return time.monotonic() - started, 0.0
+        size = _log_size(self.log_path)
+        last_progress = started
+        while True:
+            now = time.monotonic()
+            silent_for = now - last_progress
+            if not t.is_alive() or silent_for >= idle or (now - started) >= timeout:
+                return now - started, silent_for
+            t.join(min(_PROGRESS_POLL, idle - silent_for, timeout - (now - started)))
+            grown = _log_size(self.log_path)
+            if grown != size:
+                # 脚本还在往前跑（worker 的 stderr 与脚本的 stdout 都落在这里）
+                size, last_progress = grown, time.monotonic()
+
+    def _timeout_error(self, waited: float, silent_for: float, is_build: bool) -> "WorkerError":
+        """超时的用户可读形态。**说的是判据本身**，不是一个抽象的秒数上限。
+
+        看门狗判死时，用户下一步要做的事写在错误里：展开输出看它最后停在哪。
+        日志尾部本来就随 `traceback_text` 一起给了。
+        """
+        if not is_build:
+            return WorkerError(
+                f"渲染超时（等了 {int(waited)} 秒）。脚本可能陷入死循环，"
+                f"或这一步本身极慢；渲染会话已重启，可以重试。"
+                f"若每次都卡在同一步，请检查 {self.script_name} 里的耗时代码。",
+                self._log_tail(),
+                code="worker_timeout",
+            )
+        if silent_for >= BUILD_IDLE_TIMEOUT:
+            return WorkerError(
+                f"{self.script_name} 连着 {int(silent_for / 60)} 分钟没有任何输出，"
+                f"当作卡住处理，渲染会话已重启。展开下面的输出看它最后停在哪一步；"
+                f"如果它本来就要静默算很久，在那一段里打一行进度输出，"
+                f"Tavotto 就会一直等下去。",
+                self._log_tail(),
+                code=BUILD_TIMEOUT_CODE,
+            )
+        return WorkerError(
+            f"{self.script_name} 已经跑了 {int(waited / 3600)} 小时还没结束，到了上限，"
+            f"渲染会话已重启。它一直有输出，所以不是卡死——多半是循环停不下来。"
+            f"展开下面的输出看它在重复什么。",
+            self._log_tail(),
+            code=BUILD_TIMEOUT_CODE,
+        )
+
+    def _envelope(self, obj: dict) -> dict:
+        return build_envelope(obj, generation=self.generation, revision=self.rev)
+
+    def _kill_now(self) -> None:
+        """状态未知的会话立即杀掉（与超时同纪律，绝不复用）。"""
+        try:
+            self.proc.kill()
+            self.proc.wait(timeout=_SHUTDOWN_JOIN_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    def _check_envelope(self, resp: dict, rid: str) -> None:
+        """响应必须是对这条请求的回答，否则这个会话已经错位了。
+
+        管道是串行的，回显对不上只有两种可能：worker 少回/多回了一条，
+        或者对面根本不是我们以为的那个实现。两种都意味着**后续所有响应都
+        对不上号**——继续用下去，用户会看到 A 图的 manifest 落到 B 图上。
+        杀掉重建是唯一安全的处置（下一次 `get()` 自动起新的）。
+        """
+        got = resp.get("request_id")
+        ver = resp.get("protocol_version")
+        if got == rid and ver == PROTOCOL_VERSION:
+            return
+        self._kill_now()
+        detail = f"protocol_version={ver!r}" if got == rid else f"request_id={got!r}，期待 {rid!r}"
+        raise WorkerError(
+            f"渲染会话协议错乱（{detail}）。会话已重启，可以重试。",
+            self._log_tail(),
+            code="protocol_mismatch",
+        )
+
+    def _error_of(self, resp: dict) -> WorkerError:
+        """v1 错误信封 → WorkerError（legacy 的扁平形状一并兼容）。"""
+        err = resp.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message") or "worker 错误"
+            tb = err.get("traceback", "")
+            code = err.get("code", "")
+        else:
+            msg = err or "worker 错误"
+            tb = resp.get("traceback", "")
+            code = ""
+        # missing_dependency 优先于协议 code：worker 那边它只是一个普通的
+        # script_error，但对用户来说「缺包」是完全不同的一件事（有可执行出口）。
+        mod = missing_module(f"{msg}\n{tb}")
+        if mod:
+            exc = WorkerError(
+                f"脚本用到的 {mod} 在当前渲染环境里没有。"
+                f"可以在设置 →「渲染环境」里改用你自己那套装了 {mod} 的 "
+                f"Python / Conda 环境。",
+                tb,
+                code="missing_dependency",
+                module=mod,
+            )
+            # **谁的脚本缺这个包**：依赖修复要按 (项目, 脚本) 记轮次、按脚本
+            # 所在目录找依赖声明。异常一路抛到 app 层时那边只剩下 exc。
+            exc.script_name = self.script_name
+            return exc
+        out = WorkerError(msg, tb, code=code)
+        # v1 信封把 `extra` 平铺进 error 对象（`wireproto`：`err.update(exc.extra)`），
+        # legacy 的扁平形状则在响应顶层。
+        known = err.get("known") if isinstance(err, dict) else resp.get("known")
+        return _explain_empty_capture(out, self.script_name, known, self._log_tail())
+
+    def request(self, obj: dict, timeout: float | None = None) -> dict:
+        # None → 取模块常量的**当前**值（默认参数会在 def 时定死，测试改不动）
+        timeout = REQUEST_TIMEOUT if timeout is None else timeout
+        self.last_used = time.time()
+        # 所有命令（build/override/export/render_png/preview_png）都经这里，
+        # 是「这个会话真的被用了」覆盖面最全的一个点。
+        self._touch()
+        env = self._envelope(obj)
+        rid = env["request_id"]
+        t_req = time.perf_counter()
+        with self.lock:
+            # 拿到锁的那一刻 = 这条请求真正开始被处理。Python 池没有队列，
+            # 「排队」全表现为在这把锁上等——所以它就是 queue_wait 的量法。
+            t_lock = time.perf_counter()
+            if not self.alive():
+                raise WorkerError("worker 进程已退出", self._log_tail())
+            self.proc.stdin.write(json.dumps(env, ensure_ascii=False) + "\n")
+            self.proc.stdin.flush()
+            # build 跑的是用户整个脚本 → 静默看门狗；热态操作走平坦上限。
+            is_build = obj.get("cmd") == "build"
+            line = self._readline(timeout, idle=BUILD_IDLE_TIMEOUT if is_build else None)
+            if not line:
+                # **判死要在锁内、且是同步的。**
+                #
+                # 管道 EOF 就是「这个 worker 没了」的判定。第一版只在锁**外**
+                # 调 `self.proc.kill()`——两个问题：① 锁一放，别的线程就能挤进
+                # `get()`；② `kill()` 只发信号、**不等进程退出**，紧接着的
+                # `poll()` 完全可能还回 None。两条合起来，那条已经判死的 worker
+                # 会被当成可用的复用掉，下一次请求写进死管道、等满整个超时——
+                # 正是这一支本该消除的竞态。
+                #
+                # 这里**故意只 kill 不 wait**：现在还持着 `self.lock`，等一个
+                # 不肯死的子进程就是把整条会话冻在锁里。收尸交给关停路径
+                # （`_terminate_and_reap()`）——`shutdown()` / `force_kill()`
+                # 都会走到它，那里才是「等到进程真的没了」的地方。
+                # 别照着这一句去写别处的 kill：除了这个持锁窗口，
+                # **kill 之后必须 wait**。
+                self._dead = True
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+        if not line:
+            # （EOF 的判死已在锁内完成，见上。）
+            #
+            # workerd 那侧是同一个坑，同一天修的（`session.rs` 的 EOF 分支就地
+            # 摘掉进程）。**两条控制面必须给出同一个答案**——pool 是 workerd 的
+            # 参考实现，判据分叉就等于有两套语义。
+            raise WorkerError("worker 进程崩溃（无响应）", self._log_tail())
+        resp = json.loads(line)
+        self._check_envelope(resp, rid)
+        if resp.get("hash_mismatch"):
+            # 不影响本次结果（worker 照常执行了），但两侧的规范化实现已经分叉
+            LOG.warning(
+                "worker 报告 patch 哈希不一致: %s → %s（%s）",
+                env.get("canonical_patch_hash"),
+                resp.get("worker_patch_hash"),
+                self.script_name,
+            )
+        if not resp.get("ok"):
+            raise self._error_of(resp)
+        return _merge_timings(
+            resp, (t_lock - t_req) * 1000.0, (time.perf_counter() - t_req) * 1000.0
+        )
+
+    def ensure_built(self) -> dict:
+        # build 要跑用户整个脚本。传的是**兜底上限**——真正判死的是静默看门狗
+        # （ADR 0050），所以这里不再需要先知道这个脚本有多慢。
+        resp = self.request({"cmd": "build"}, BUILD_HARD_TIMEOUT)
+        self.built = True
+        self.last_build_descriptors = list(resp.get("descriptors") or [])
+        self.last_build_runtime = _runtime_of(resp)
+        self.last_patch_hash = _EMPTY_PATCH_HASH
+        self.last_patch_hash_by_stem.clear()  # 每个 stem 都回到脚本原样
+        return resp
+
+    def override(
+        self, stem: str, patches: list, preview_dpi: int | None = None, inline_svg: bool = False
+    ) -> dict:
+        build = self.ensure_built().get("timings") if not self.built else None
+        payload = {"cmd": "override", "stem": stem, "patches": patches}
+        # 不给就**一个字段都不加**：信封形状对既有调用方一字不变
+        if preview_dpi:
+            payload["preview_dpi"] = int(preview_dpi)
+        if inline_svg:
+            payload["inline_svg"] = True
+        resp = self.request(payload, REQUEST_TIMEOUT)
+        self.rev += 1
+        self.last_patch_hash = patchspec.patch_hash(patches)
+        self.last_patch_hash_by_stem[stem] = self.last_patch_hash
+        return _fold_build_timings(resp, build)
+
+    def export(self, stem: str, patches: list, path: str, fmt: str = "pdf", dpi: int = 600) -> dict:
+        build = self.ensure_built().get("timings") if not self.built else None
+        resp = self.request(
+            {
+                "cmd": "export",
+                "stem": stem,
+                "patches": patches,
+                "path": path,
+                "format": fmt,
+                "dpi": dpi,
+            },
+            EXPORT_TIMEOUT,
+        )
+        return _fold_build_timings(resp, build)
+
+    def svg_path(self, stem: str) -> Path:
+        return self.out_dir / f"{stem}.svg"
+
+    def render_png(self, stem: str, width_px: int) -> Path:
+        if not self.built:
+            self.ensure_built()
+        resp = self.request({"cmd": "render_png", "stem": stem, "width": width_px}, REQUEST_TIMEOUT)
+        return Path(resp["path"])
+
+    def preview_png(self, stem: str, patches: list, width_px: int, tag: str) -> Path:
+        if not self.built:
+            self.ensure_built()
+        resp = self.request(
+            {"cmd": "preview_png", "stem": stem, "patches": patches, "width": width_px, "tag": tag},
+            REQUEST_TIMEOUT,
+        )
+        return Path(resp["path"])
+
+    def _wait_until_exited(self, timeout: float) -> bool:
+        """有界地等子进程真正退出（被 reap）；返回它现在是否已经退出。
+
+        `poll()` 与 `kill()` 都答不了这个问题：前者只是问一次，后者只是发出
+        终止请求。**只有 `wait()` 回来了，进程才真的没了、它的文件句柄才真的
+        还给了系统**——Windows 上这正是 `_replay-…` 目录删得掉与删不掉的分界。
+
+        上限是硬的：退出流程不许被一个不肯死的子进程无限挂住。
+        """
+        try:
+            self.proc.wait(timeout=timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+        except (OSError, ValueError):
+            # 进程对象已经不可用（多半是被别的线程收过了）——当它已经退出
+            return True
+
+    def _close_handles(self) -> None:
+        """关掉**父进程**手里的 stdin / stdout / log 句柄（幂等，绝不抛）。
+
+        必须排在 reap 之后：子进程那份句柄要等它真的退出才由内核还回来
+        （worker 的 stderr 就直接绑在 `self._log` 上，它继承了 worker.log）。
+        少关任何一个，Windows 上那棵目录都删不掉。
+        """
+        for fh in (
+            getattr(self.proc, "stdin", None),
+            getattr(self.proc, "stdout", None),
+            getattr(self.proc, "stderr", None),
+            self._log,
+        ):
+            if fh is None:
+                continue
+            try:
+                fh.close()
+            except (OSError, ValueError):  # 已经关过 / 管道早断了
+                pass
+
+    def _terminate_and_reap(self, *, graceful: bool) -> None:
+        """把这条会话关到底，并**确认进程已经消失**，最后关掉父进程的句柄。
+
+        无论从哪条路径进来，结局都一样：
+
+            发 shutdown（可选）→ 等自然退出 → 超时就 kill → **再等一次**
+            → 关 stdin/stdout/log
+
+        幂等且绝不抛：进程早退了、管道早断了、已经收过一次，都照常走完。
+        全程**不碰模块级 `_lock`**——等子进程退出时把全局锁攥在手里，
+        等于让一个卡住的脚本冻结整个池。
+        """
+        if graceful and self.alive():
+            try:
+                self.request({"cmd": "shutdown"}, SHUTDOWN_TIMEOUT)
+            except (WorkerError, OSError, ValueError):
+                # worker 收到 shutdown 就 `raise SystemExit(0)`，协议上**不回**
+                # 普通成功信封：父进程在这里读到 EOF 是预期现象，不是故障。
+                # （`request()` 的 EOF 分支只 kill 不 wait，收尸由下面这段负责。）
+                pass
+        # 判死排在等待之前：关停中的会话绝不许被 `get()` 捡回去复用。
+        self._dead = True
+        if not self._wait_until_exited(SHUTDOWN_TIMEOUT if graceful else 0.0):
+            try:
+                self.proc.kill()
+            except (OSError, ValueError):
+                pass
+            if not self._wait_until_exited(_REAP_TIMEOUT):
+                # 到这一步只剩「内核也收不掉」这一种可能（Windows 上多半是
+                # 挂在某个不可中断的内核调用里）。不许静默：这条日志是后面
+                # 目录删不掉时唯一能对上号的线索。
+                LOG.warning(
+                    "worker 进程 kill 后 %.0fs 内仍未退出（pid=%s）: %s",
+                    _REAP_TIMEOUT,
+                    getattr(self.proc, "pid", "?"),
+                    self.script_name,
+                )
+        self._close_handles()
+
+    def shutdown(self) -> None:
+        """优雅关停，并**确认进程已被回收、句柄已经关掉**（幂等，绝不抛）。
+
+        老写法只做到 `kill()` 就返回。`kill()` ≠「进程已经退出并释放了文件」：
+        正常路径上连 `kill()` 都走不到——shutdown 命令导致的 EOF 让
+        `request()` 先把 `_dead` 置上，`finally` 里的 `if self.alive()` 于是
+        恒假。整条路径一次 `proc.wait()` 都没有，Windows 上后脚的
+        `rmtree` 必然撞 sharing violation（run 32937999297）。
+        """
+        self._terminate_and_reap(graceful=True)
+
+    def force_kill(self) -> None:
+        """兜底硬杀（`shutdown_all(wait=True)` 在优雅关停超时后调）——**同样等到收尸**。
+
+        只发 kill 不 reap 会让 `wait=True` 名不副实：函数返回了，用户机器上
+        python.exe 还在，Popen 没回收，句柄还占着目录。
+        """
+        self._terminate_and_reap(graceful=False)
+
+
+# ============================================================================
+# Rust supervisor 路由（tavotto-workerd，契约见 docs/adr/0004-workerd-supervisor.md）
+#
+# 找得到二进制就把**生命周期**交给它（队列合并、超时强杀、取消、代序隔离），
+# 找不到 / 显式禁用就原路走上面那套 Python 实现——那条路径**一行都没动**，
+# 它同时还是 workerd 行为的参考实现（reference oracle）。
+#
+# 分工不许含糊：**Rust 是机制层，Python 是策略层**。解释器优先级
+# （`_prioritized_candidates()`）、内置 runtime 的 env/args、超时档位、会话上限，
+# 全部在这里算完再装进 spawn 规格交过去。把它们搬进 Rust 就是制造第二个权威。
+# ============================================================================
+
+#: 握手（v1 ping）期限：解释器冷启动 + import matplotlib 在慢盘上真能到十几秒。
+HANDSHAKE_TIMEOUT = 60.0
+
+#: 单会话队列上限（workerd 的有界队列）。排队无上限时一次卡顿会攒出几百条早就
+#: 没人要的渲染，之后逐条跑完——用户看到的是「越用越慢」。
+MAX_QUEUE = 32
+
+#: 这些 code 意味着**这条会话的状态已经不可知**，与 Python 池里「超时/错乱就
+#: kill，下一次 get() 原地重建」是同一条纪律：标记死亡 → `alive()` 回 False →
+#: `get()` 建新的。
+_FATAL_CODES = frozenset(
+    {
+        "session_dead",
+        "spawn_failed",
+        "handshake_timeout",
+        "protocol_mismatch",
+        "worker_timeout",
+        BUILD_TIMEOUT_CODE,
+        "workerd_dead",
+        "workerd_unavailable",
+    }
+)
+
+
+def _spawn_spec(
+    script_name: str,
+    figures_dir: str,
+    entry: str,
+    out_dir: Path,
+    sandbox: Path,
+    log_path: Path,
+    python: str,
+    source: str,
+    extra_env: dict | None = None,
+) -> dict:
+    """交给 workerd 的**完整** spawn 规格。
+
+    与 `EngineWorker.__init__` 严格同源：两条路径的 argv 都由
+    `execspec.worker_argv` 独家产出（ADR 0014 §0——2026-08-25 之前这里是
+    第二份手拼的命令行，同源只靠人肉），`test_workerd_pool.py` 的对拍用例
+    继续钉着「交给 workerd 的 argv == Python 池自己 Popen 的」。
+    """
+    bundled = source == SOURCE_BUNDLED
+    args = runtime.child_args() if bundled else []
+    spec = execspec.safe_spec(
+        script_name,
+        str(figures_dir),
+        entry,
+        interpreter=python,
+        sandbox=str(sandbox),
+        env=runtime.child_env(base={}) if bundled else None,
+        cwd_mode=workdir.mode_for(figures_dir),
+    )
+    # 只给**增量**：workerd 继承的本来就是 Flask 自己的环境，整份传过去没有意义
+    env = dict(spec.env or {})
+    if extra_env:
+        # env 参与 workerd 的 spec 哈希（`SpawnSpec::hash`），所以一个一次性
+        # 的 salt 就足以拿到一条**必然独立**的会话，绕开「同规格复用 + 引用计数」。
+        env = {**env, **extra_env}
+    return {
+        "argv": execspec.worker_argv(spec, worker_py=WORKER_PY, out_dir=out_dir, runtime_args=args),
+        "env": env,
+        "log_path": str(log_path),
+        "handshake_timeout_ms": int(HANDSHAKE_TIMEOUT * 1000),
+        "label": f"{script_name}::{entry}",
+    }
+
+
+def _worker_error(
+    message: str, code: str, traceback_text: str, extra: dict | None = None
+) -> WorkerError:
+    """错误三元组 → `WorkerError`，**`missing_dependency` 优先于协议 code**。
+
+    判据与 `EngineWorker._error_of` 一致：脚本 `import rdkit` 而渲染环境没有，
+    在 worker 那里只是一个普通 `script_error`，但对用户是完全不同的一件事
+    （有可执行出口：换成自己的环境）。前端认的是这个 code，不能因为换了控制面
+    就变成一段没人能用的通用错误。
+    """
+    mod = missing_module(f"{message}\n{traceback_text}")
+    if mod:
+        return WorkerError(
+            f"脚本用到的 {mod} 在当前渲染环境里没有。"
+            f"可以在设置 →「渲染环境」里改用你自己那套装了 {mod} 的 "
+            f"Python / Conda 环境。",
+            traceback_text,
+            code="missing_dependency",
+            module=mod,
+        )
+    err = WorkerError(message, traceback_text, code=code)
+    if extra:
+        # worker 多带的字段（unknown_stem 的 `known` 之类）留给上层
+        err.extra = extra
+    return err
+
+
+class WorkerdWorker:
+    """`EngineWorker` 的等价物，但生命周期由 tavotto-workerd 管。
+
+    **对 `app.py` 完全同形**：`ensure_built` / `override` / `export` /
+    `render_png` / `preview_png` / `svg_path` / `out_dir` / `rev` 的签名与返回
+    结构一字不差，切控制面对上层透明。
+    """
+
+    def __init__(
+        self,
+        script_name: str,
+        figures_dir: str,
+        entry: str,
+        client=None,
+        base_dir: Path | None = None,
+        extra_env: dict | None = None,
+    ):
+        from . import workerd_client
+
+        self.script_name = script_name
+        self.figures_dir = figures_dir
+        self.entry = entry
+        # 目录布局与 EngineWorker 完全一致：prune_engine_cache 按 base 走，
+        # 换个控制面就换个落点的话，清理会把正在用的会话目录当成垃圾删掉。
+        base = base_dir or ENGINE_CACHE / _cache_slug(_norm_dir(figures_dir), script_name)
+        self.base = base
+        self._extra_env = dict(extra_env or {})
+        self.out_dir = base / "out"
+        self.sandbox = base / "sandbox"
+        self.export_dir = base / "export"
+        self.log_path = base / "worker.log"
+        self._log_offset = 0
+        base.mkdir(parents=True, exist_ok=True)
+        self._touched = 0.0
+        self._touch()
+        self.rev = 0
+        self.generation = _next_generation((_norm_dir(figures_dir), script_name))
+        # 与 EngineWorker 同源：spawn 时的脚本指纹 + 最后应用的 patch 哈希
+        self.script_sha1 = script_sha1(figures_dir, script_name)
+        self.last_patch_hash = ""
+        self.last_patch_hash_by_stem: dict[str, str] = {}
+        # workerd 自己排队，这把锁只是为了与 EngineWorker 同形（调用方不该关心
+        # 是哪条路径）。**绝不拿它包住一次请求**——那会把 workerd 好不容易解开的
+        # 「一个慢请求占死整条会话」重新绑回来。
+        self.lock = threading.Lock()
+        self.built = False
+        self.last_build_descriptors: list = []
+        self.last_build_runtime: dict | None = None
+        self.last_used = time.time()
+        self._dead = False
+        self._client = client or workerd_client.client()
+        if self._client is None:
+            raise WorkerdUnavailable("workerd 不可用")
+        # 与 EngineWorker 同源：项目级解释器决策的唯一出处是
+        # `resolve_worker_python`，换控制面不换答案。
+        python, self.python_source = resolve_worker_python(figures_dir)
+        self.python = python
+        # 与 EngineWorker 同形：两条控制面都持一份 ExecutionSpec（唯一权威
+        # 构造函数 `execspec.safe_spec`；argv 由 `_spec()` → `_spawn_spec`
+        # 按同一份 spec 语义产出）。
+        self.spec = execspec.safe_spec(
+            script_name,
+            str(figures_dir),
+            entry,
+            interpreter=python,
+            sandbox=str(self.sandbox),
+            env=(runtime.child_env(base={}) if self.python_source == SOURCE_BUNDLED else None),
+            # 与 `_spawn_spec()` 同一个出处：这份属性是 ExecutionReceipt 的
+            # LaunchContext 来源（ADR 0053），漏了 cwd_mode 就会在 project 模式下
+            # 把「脚本目录」报成「沙盒」——而真正 spawn 的 argv 早就带着 `--cwd`。
+            cwd_mode=workdir.mode_for(figures_dir),
+        )
+        self._session_id = ""
+        self._open()
+
+    # ---------------------------------------------------------------- 会话
+    def _spec(self) -> dict:
+        return _spawn_spec(
+            self.script_name,
+            self.figures_dir,
+            self.entry,
+            self.out_dir,
+            self.sandbox,
+            self.log_path,
+            self.python,
+            self.python_source,
+            self._extra_env,
+        )
+
+    def _open(self) -> None:
+        from . import workerd_client
+
+        LOG.info(
+            "workerd 会话打开: %s（entry=%s，解释器来源=%s）",
+            self.script_name,
+            self.entry,
+            self.python_source,
+        )
+        # 这一代从日志的哪个字节开始：workerd 也是 append 到同一个文件
+        self._log_offset = _log_size(self.log_path)
+        try:
+            resp = self._client.call(
+                "open_session", payload=self._spec(), timeout=HANDSHAKE_TIMEOUT
+            )
+        except workerd_client.WorkerdError as exc:
+            self._dead = True
+            # **失败也要认领 session_id 并把它关掉。**
+            # workerd 在 open 的那一刻就把会话记进了 sessions / by_hash，
+            # 握手或 spawn 失败时那条记录不会自己消失；而失败响应里的
+            # session_id 是唯一的线索，不认领的话它就成了谁也够不着的幽灵：
+            # refs 停在 1，只能等超出 max_sessions 时被淘汰——被挤掉的往往是
+            # **真正在用**的那条会话。
+            # 关不掉就算了（workerd 可能已经整个没了），绝不让清理动作把
+            # 真正的失败原因盖过去。
+            if exc.session_id:
+                try:
+                    self._client.call(
+                        "close_session",
+                        session_id=exc.session_id,
+                        payload={"force": True},
+                        timeout=5.0,
+                    )
+                except workerd_client.WorkerdError:
+                    LOG.debug("open 失败后清理会话 %s 也没成功", exc.session_id)
+            raise self._to_worker_error(exc) from exc
+        self._session_id = resp.get("session_id", "")
+        self.built = False
+        self.last_build_descriptors = []
+
+    def _log_tail(self, n: int = 30) -> str:
+        # 偏移带默认值：协议用例用 `__new__` 绕过构造器造 worker
+        return _log_tail_from(self.log_path, getattr(self, "_log_offset", 0), n)
+
+    def _to_worker_error(self, exc, *, is_build: bool = False) -> WorkerError:
+        code = exc.code or ""
+        if is_build and code == "worker_timeout":
+            # 两条控制面同一个答案：workerd 只知道「超时」，是不是 build 只有
+            # 这边知道（ADR 0048）。
+            code = BUILD_TIMEOUT_CODE
+        if code in _FATAL_CODES:
+            # 状态未知的会话绝不复用（与 Python 池的超时/错乱路径同纪律）
+            self._dead = True
+        tb = exc.traceback_text or ""
+        if not tb and code in _FATAL_CODES:
+            tb = self._log_tail()  # 进程级失败时 worker 的 traceback 全在日志里
+        err = _worker_error(str(exc), code, tb, exc.extra)
+        # 两条控制面在「缺包时上层拿得到哪些事实」上必须给同一个答案
+        err.script_name = self.script_name
+        # ……「脚本跑完没出图」也是同一条纪律：workerd 把 `known` 透传在 extra 里
+        return _explain_empty_capture(
+            err, self.script_name, (exc.extra or {}).get("known"), self._log_tail()
+        )
+
+    def _call(
+        self,
+        op: str,
+        timeout: float,
+        *,
+        stem: str | None = None,
+        payload: dict | None = None,
+        idle_timeout: float | None = None,
+    ) -> dict:
+        from . import workerd_client
+
+        self.last_used = time.time()
+        self._touch()
+        t_req = time.perf_counter()
+        for attempt in (0, 1):
+            t_call = time.perf_counter()
+            try:
+                resp = self._client.call(
+                    op,
+                    session_id=self._session_id,
+                    stem=stem,
+                    payload=payload or {},
+                    timeout=timeout,
+                    idle_timeout=idle_timeout,
+                )
+            except workerd_client.WorkerdError as exc:
+                # workerd 重启过 → session_id 作废。这条**透明重开一次**：
+                # 对上层来说这只是一次稍慢的渲染，没有任何语义变化。
+                if exc.code == "unknown_session" and attempt == 0:
+                    LOG.warning("workerd 会话已失效，重开: %s", self.script_name)
+                    self._open()
+                    continue
+                raise self._to_worker_error(exc, is_build=op == "build") from exc
+            if resp.get("hash_mismatch"):
+                # 本次结果照常可用（worker 执行了），但两侧的规范化实现已经分叉
+                LOG.warning(
+                    "worker 报告 patch 哈希不一致: %s → %s（%s）",
+                    resp.get("canonical_patch_hash"),
+                    resp.get("worker_patch_hash"),
+                    self.script_name,
+                )
+            # queue_wait 的口径与 Python 池**不一样，这里如实标注**：真正的排队
+            # 发生在 workerd 的合并队列里（Rust 侧），workerd 自报就透传它；
+            # 没自报时只能给 Python 侧那段（≈0，本进程不排队），别把它当成
+            # 「没排队」。差异见 ADR 0004 §6。
+            reported = resp.get("queue_wait_ms")
+            wait_ms = (
+                float(reported)
+                if isinstance(reported, (int, float)) and not isinstance(reported, bool)
+                else (t_call - t_req) * 1000.0
+            )
+            return _merge_timings(resp, wait_ms, (time.perf_counter() - t_req) * 1000.0)
+        raise WorkerError("workerd 会话重开后仍不可用", self._log_tail(), code="session_dead")
+
+    # ---------------------------------------------------------------- 同 EngineWorker
+    def alive(self) -> bool:
+        return not self._dead
+
+    def _touch(self) -> None:
+        import os
+
+        now = time.time()
+        if now - self._touched < _TOUCH_INTERVAL:
+            return
+        self._touched = now
+        try:
+            os.utime(self.base, None)
+        except OSError:
+            pass
+
+    def ensure_built(self) -> dict:
+        # 与 Python 池同一条判据（ADR 0050）：兜底上限 + 静默看门狗，
+        # 看门狗由 workerd 那侧执行（它 stat 的是同一个 worker.log）。
+        resp = self._call("build", BUILD_HARD_TIMEOUT, idle_timeout=BUILD_IDLE_TIMEOUT)
+        self.built = True
+        self.last_build_descriptors = list(resp.get("descriptors") or [])
+        self.last_build_runtime = _runtime_of(resp)
+        self.last_patch_hash = _EMPTY_PATCH_HASH
+        self.last_patch_hash_by_stem.clear()  # 每个 stem 都回到脚本原样
+        return resp
+
+    def override(
+        self, stem: str, patches: list, preview_dpi: int | None = None, inline_svg: bool = False
+    ) -> dict:
+        build = self.ensure_built().get("timings") if not self.built else None
+        payload: dict = {"patches": patches}
+        if preview_dpi:
+            payload["preview_dpi"] = int(preview_dpi)
+        if inline_svg:
+            payload["inline_svg"] = True
+        resp = self._call("render", REQUEST_TIMEOUT, stem=stem, payload=payload)
+        self.rev += 1
+        self.last_patch_hash = patchspec.patch_hash(patches)
+        self.last_patch_hash_by_stem[stem] = self.last_patch_hash
+        return _fold_build_timings(resp, build)
+
+    def export(self, stem: str, patches: list, path: str, fmt: str = "pdf", dpi: int = 600) -> dict:
+        build = self.ensure_built().get("timings") if not self.built else None
+        resp = self._call(
+            "export",
+            EXPORT_TIMEOUT,
+            stem=stem,
+            payload={"patches": patches, "path": path, "format": fmt, "dpi": dpi},
+        )
+        return _fold_build_timings(resp, build)
+
+    def svg_path(self, stem: str) -> Path:
+        return self.out_dir / f"{stem}.svg"
+
+    def render_png(self, stem: str, width_px: int) -> Path:
+        if not self.built:
+            self.ensure_built()
+        resp = self._call("render_png", REQUEST_TIMEOUT, stem=stem, payload={"width": width_px})
+        return Path(resp["path"])
+
+    def preview_png(self, stem: str, patches: list, width_px: int, tag: str) -> Path:
+        if not self.built:
+            self.ensure_built()
+        resp = self._call(
+            "preview_png",
+            REQUEST_TIMEOUT,
+            stem=stem,
+            payload={"patches": patches, "width": width_px, "tag": tag},
+        )
+        return Path(resp["path"])
+
+    def shutdown(self) -> None:
+        """优雅关会话；workerd 收不到就当它已经没了（不许把退出流程挂住）。"""
+        from . import workerd_client
+
+        if not self._session_id:
+            return
+        try:
+            # 退出路径不许被一个卡住的 supervisor 拖住：余量收到 5 秒
+            self._client.call(
+                "close_session", session_id=self._session_id, timeout=SHUTDOWN_TIMEOUT, slack=5.0
+            )
+        except workerd_client.WorkerdError:
+            pass
+        finally:
+            self._dead = True
+
+    def force_kill(self) -> None:
+        """硬关：workerd 当场杀掉 worker，不等在飞的活跑完。"""
+        from . import workerd_client
+
+        if not self._session_id:
+            return
+        try:
+            self._client.call(
+                "close_session",
+                session_id=self._session_id,
+                payload={"force": True},
+                timeout=SHUTDOWN_TIMEOUT,
+                slack=2.0,
+            )
+        except workerd_client.WorkerdError:
+            pass
+        finally:
+            self._dead = True
+
+
+class WorkerdUnavailable(RuntimeError):
+    """workerd 这条路走不通（没装 / 禁用 / 起不来）——调用方回退 Python 池。"""
+
+
+def workerd_path() -> str | None:
+    """本次进程实际会用的 workerd 可执行文件（禁用或找不到回 None）。"""
+    from . import workerd_client
+
+    return workerd_client.find_workerd()
+
+
+def control_plane() -> dict:
+    """当前渲染控制面：**下一条会话会走谁** + 池里活着的会话**实际走的谁**。
+
+    两个字段缺一不可。`_new_worker()` 在 workerd 建会话失败时会**静默回退**到
+    Python 池（那是刻意的：加速件起不来不该让渲染整个不可用），所以只报
+    `selected` 会把「打进去了但一直没用上」说成一切正常——而那正是「功能全在、
+    只是慢」这一类最难被发现的失灵。冒烟脚本与诊断包都据此判定。
+    """
+    path = workerd_path()
+    with _lock:
+        sessions = [
+            "workerd" if isinstance(w, WorkerdWorker) else "python" for w in _workers.values()
+        ]
+    return {"selected": "workerd" if path else "python", "path": path, "sessions": sessions}
+
+
+def _new_worker(script_name: str, figures_dir: str, entry: str):
+    """按可用性挑控制面。**任何失败都回退 Python 池**——渲染不能因为一个
+    可选的加速件起不来就整个不可用。"""
+    from . import workerd_client
+
+    if workerd_client.find_workerd():
+        try:
+            return WorkerdWorker(script_name, figures_dir, entry)
+        except (WorkerdUnavailable, WorkerError, OSError) as exc:
+            LOG.warning("workerd 会话建立失败，回退到 Python 渲染池: %s", exc)
+    return EngineWorker(script_name, figures_dir, entry)
+
+
+def one_shot(script_name: str, figures_dir: str, entry: str):
+    """一次性 worker：**不进池、目录独立、用完即毁**。写回前的干净重放用。
+
+    热会话是长期活着的：build 之后经历过任意多次 override / 还原，applied 与
+    originals 两表就是一份增量历史。写回要保证的是「重开这个项目、按这组
+    patches 全量重放一次，得到的图与热态所见一模一样」——那就必须真的**从零
+    起一个 worker 跑一遍脚本**，拿它的产物去覆盖用户原件（FigS3 那次文字全体
+    错位，症状正是热会话状态 ≠ 全量重放）。
+
+    两条控制面各有一处必须绕开的复用：
+
+    * Python 池按 `(项目, 脚本)` 索引 —— 这里干脆不登记，调用方拿着引用用完
+      `discard()`；
+    * workerd 按 spawn 规格哈希复用会话（引用计数，见 ADR 0004）—— 目录不同
+      argv 就不同，再加一个一次性 salt env 双保险，拿到的必然是独立会话。
+
+    目录放在 ENGINE_CACHE 顶层（`_replay-…`）而不是数据目录别处：进程在写回
+    途中被杀时，留下的空壳会被 `prune_engine_cache()` 当成最久未用的会话目录
+    正常回收，不需要另写一套清理。
+    """
+    from . import workerd_client
+
+    nonce = uuid.uuid4().hex
+    slug = _cache_slug(_norm_dir(figures_dir), script_name)
+    base = ENGINE_CACHE / f"_replay-{nonce[:8]}-{slug}"
+    with _lock:
+        _oneshot_bases.add(str(base))
+    try:
+        if workerd_client.find_workerd():
+            try:
+                return WorkerdWorker(
+                    script_name,
+                    figures_dir,
+                    entry,
+                    base_dir=base,
+                    extra_env={"TAVOTTO_REPLAY_NONCE": nonce},
+                )
+            except (WorkerdUnavailable, WorkerError, OSError) as exc:
+                LOG.warning("workerd 一次性会话建立失败，回退到 Python 渲染池: %s", exc)
+        return EngineWorker(script_name, figures_dir, entry, base_dir=base)
+    except BaseException:
+        # 构造失败与正常 discard 走**同一套**删除：两条路径各有一套 Windows
+        # 行为的话，只有一条会被用例覆盖到，另一条迟早悄悄回到 ignore_errors。
+        _remove_oneshot_tree(base, script_name=script_name)
+        with _lock:
+            _oneshot_bases.discard(str(base))
+        raise
+
+
+def _remove_oneshot_tree(path: Path, *, script_name: str = "") -> bool:
+    """删掉一次性 worker 的目录；返回**是否真的删掉了**。
+
+    **不用 `ignore_errors=True`**：那个参数把 Windows 上的 sharing violation
+    变成静默的空操作——调用方以为删干净了，ENGINE_CACHE 里却留着一棵谁也不
+    认领的 `_replay-…`，然后在**别的**用例的全局断言里炸出来
+    （run 32937999297 的 `_replay-…-fig_cbar.py` 就是这么来的）。
+
+    正常情况只删一次。撞上 PermissionError / OSError 才做很短的有限退让
+    （`_RMTREE_BACKOFF`，累计 0.35 秒封顶）：调用方已经 reap 过子进程，
+    剩下的只可能是第三方扫描的瞬时占用。最终仍失败就**如实记日志**
+    （exact path + 异常 + 尝试次数 + 脚本名）并返回 False——此时重放产物早已
+    落盘，缓存收尾不值得让写回失败。
+    """
+    last: OSError | None = None
+    for delay in _RMTREE_BACKOFF:
+        if delay:
+            time.sleep(delay)
+        try:
+            shutil.rmtree(path)
+            return True
+        except FileNotFoundError:
+            return True  # 已经不在了 = 目标达成
+        except OSError as exc:  # PermissionError 是它的子类
+            last = exc
+    LOG.warning(
+        "一次性 worker 目录删除失败（%d 次尝试后放弃）: path=%s script=%s error=%r",
+        len(_RMTREE_BACKOFF),
+        path,
+        script_name or "?",
+        last,
+    )
+    return False
+
+
+def discard(worker) -> None:
+    """关掉一次性 worker 并删掉它的目录。**绝不抛**——写回的成败与它无关。
+
+    返回时的不变量（Windows 上尤其要紧）：
+
+      1. 这条一次性 worker 已经不再运行；
+      2. 子进程已经被 `wait()` 回收（不是「kill 发出去了」）；
+      3. 父进程手里的 stdin / stdout / log 句柄已经关掉；
+      4. `worker.base` 已被删除；
+      5. 该 base 已从 `_oneshot_bases` 注销；
+      6. 若最终仍删不掉，日志里有 exact path + 异常（绝不静默）。
+
+    注销**排在删除之后**：退让重试期间目录仍算 active，免得后台
+    `prune_engine_cache()` 与这里同时动同一棵树。最终删不掉也照样注销——
+    留在集合里等于给那棵孤儿目录发了永久豁免，再没人回收得了它。
+    """
+    base = Path(worker.base)
+    script_name = getattr(worker, "script_name", "")
+    try:
+        worker.shutdown()
+    except Exception:  # noqa: BLE001 — 收尾动作不许连累主流程
+        LOG.warning("一次性 worker 关停失败: %s", script_name, exc_info=True)
+    try:
+        _remove_oneshot_tree(base, script_name=script_name)
+    finally:
+        with _lock:
+            _oneshot_bases.discard(str(base))
+
+
+def _dir_size(path: Path) -> int:
+    """目录占用字节数；读不动的条目跳过（宁可少算也不能把清理带崩）。"""
+    import os
+
+    total = 0
+    for root, _dirs, files in os.walk(str(path)):
+        for name in files:
+            try:
+                total += os.stat(os.path.join(root, name)).st_size
+            except OSError:
+                continue
+    return total
+
+
+def prune_engine_cache(
+    max_bytes: int = ENGINE_CACHE_MAX_BYTES, keep: int = ENGINE_CACHE_KEEP
+) -> int:
+    """会话缓存目录按最后使用时间从旧到新删至预算内，返回删除数。
+
+    口径与 `app.prune_render_cache()`（容量）+ `app.prune_backups()`（份数）
+    一致，两条线谁先触发算谁的。排序依据是 `_touch()` 落盘的 mtime，不是创建
+    时间——两者在这里差着几个月。
+
+    **池里挂着的 worker 用的目录一律豁免**：删掉它正在写的 out/sandbox，下一次
+    override 会以「文件不存在」的形式炸在用户脸上。豁免目录同样占着目录名额
+    （它们本来就是最近用过的），但不计入容量账——按它们算容量只会让可删的那些
+    被多删几个，白删。
+    """
+    with _lock:
+        # 池里挂着的一律豁免，不筛 alive()：崩掉的那个键还留在池里，下一次
+        # 请求会**原地重建**（`get()`），期间把目录删了正好撞上重建的 mkdir。
+        # 一次性 worker（写回的干净重放）不在池里，但它的目录正在被写
+        busy = {str(w.base) for w in _workers.values()} | set(_oneshot_bases)
+    try:
+        entries = [p for p in ENGINE_CACHE.iterdir() if p.is_dir()]
+    except OSError:  # 缓存目录还没建起来
+        return 0
+    items = []
+    for p in entries:
+        if str(p) in busy:
+            continue
+        try:
+            items.append((p.stat().st_mtime, p, _dir_size(p)))
+        except OSError:
+            continue
+    items.sort(key=lambda it: it[0])  # 最久未用的排前面
+    total = sum(size for _, _, size in items)
+    count = len(entries)
+    removed = 0
+    for _mtime, path, size in items:
+        if total <= max_bytes and count <= keep:
+            break
+        try:
+            shutil.rmtree(path)
+        except OSError:  # Windows 上被占用/无权限：跳过这一个，别中断整体
+            LOG.warning("引擎缓存目录删除失败，跳过: %s", path)
+            continue
+        total -= size
+        count -= 1
+        removed += 1
+    if removed:
+        LOG.info(
+            "引擎缓存清理: 删除 %d 个会话目录（预算 %dMB / %d 个）",
+            removed,
+            max_bytes // (1024 * 1024),
+            keep,
+        )
+    return removed
+
+
+def _schedule_prune() -> None:
+    """后台清一次引擎缓存（最多每 _PRUNE_INTERVAL 一次）。
+
+    挂在「新建了一个会话目录」上——与 `prune_render_cache()` 挂在「刚写了一个
+    新缓存文件」上同一个道理：只有增量出现时才值得回收。放后台线程是因为
+    要遍历整棵缓存树，不能让用户的第一次渲染多等这一趟磁盘。
+    """
+    global _last_prune
+    now = time.time()
+    if now - _last_prune < _PRUNE_INTERVAL:
+        return
+    _last_prune = now
+    threading.Thread(target=prune_engine_cache, daemon=True, name="mm-engine-cache-prune").start()
+
+
+#: 环境占用的**唯一一张表**在 `envlease`（ADR 0021 §6）。本模块从 2026-08-28
+#: 起是它的消费者：`_mutating` 曾经住在这里，而 native 会话不经过池，那把锁
+#: 对它**机制上不可见**——不是漏了一个分支，是实现方式决定的。搬走之后
+#: safe worker / native 会话 / pip 安装问的是同一张表。
+#:
+#: 下面这几个名字是**兼容外壳**，语义逐条不变（`tests/test_dependency_repair.py`
+#: 的既有用例一个字没改就该继续绿）。
+EnvironmentBusy = envlease.EnvironmentBusy
+ENVIRONMENT_MUTATING = envlease.ENVIRONMENT_MUTATING
+env_key_of = envlease.env_key_of
+is_mutating = envlease.is_mutating
+note_mutating_python = envlease.note_mutating_python
+
+
+def shutdown_workers_using(python: str) -> int:
+    """把用这条解释器的会话全部关掉；回关了几个。
+
+    安装开始前必须做：磁盘上的 site-packages 正在变，而一个已经起来的
+    worker 的 `sys.modules`、已加载的动态库、import 缓存**都不会**跟着变。
+    让它继续接渲染请求，用户看到的是「装完了还是老错误」或者更糟——半新
+    半旧的一次 import。
+
+    **只收得掉池里的**。native 会话的进程属主是 `tavotto run` CLI，不是
+    sidecar——它由 `envlease` 那条反方向的拒绝挡住（有活跃 native 会话时
+    根本不允许开始安装），而不是被这里杀掉。杀用户正在跑的脚本从来不是
+    一个可以由"我要装个包"触发的动作。
+    """
+    with _lock:
+        keys = [k for k, w in _workers.items() if same_python(w.python, python)]
+        victims = [_workers.pop(k) for k in keys]
+    for w in victims:
+        threading.Thread(target=w.shutdown, daemon=True).start()
+    return len(victims)
+
+
+@contextlib.contextmanager
+def mutating_environment(key: str, python: str = ""):
+    """安装期间独占一个环境：挡住新会话、先把旧会话收掉。
+
+    独占语义整个在 `envlease.mutating()`（三方共用的那一份）；本函数只多做
+    池自己的那件事——**把池里用这个解释器的 worker 收掉**。
+    """
+    with envlease.mutating(key, python):
+        if python:
+            shutdown_workers_using(python)
+        yield
+
+
+def safe_workers_using(python: str) -> int:
+    """池里有几个 worker 在用这条解释器（`envlease.state_of` 的输入）。"""
+    with _lock:
+        return sum(1 for w in _workers.values() if same_python(w.python, python))
+
+
+def get(script_name: str, figures_dir: str, entry: str) -> EngineWorker:
+    """取（或重建）某脚本的 worker；崩溃的自动换新；超出 MAX_ALIVE 按 LRU 淘汰。"""
+    return acquire(script_name, figures_dir, entry)[0]
+
+
+def acquire(script_name: str, figures_dir: str, entry: str) -> tuple[EngineWorker, bool]:
+    """`get()` + 「这条会话是不是**这次调用**建的」——所有权在 `_lock` 里一并给出。
+
+    调用方要判「谁拥有这条会话」时不许拿 `peek()` 的快照去猜：两个调用方都在建
+    会话之前看到「没有」，都会以为自己是主人，而池里只建了一条（Codex #451 P1）。
+    `created` 只有一次调用拿到 True。
+    """
+    key = (_norm_dir(figures_dir), script_name)
+    created = False
+    # **在锁外**算这个项目现在该用哪个解释器：worker 构造函数自己也会调它，
+    # 在 `_lock` 里再调一次就是自锁。缓存命中时这是一次字典查询。
+    want_python = resolve_worker_python(figures_dir)[0]
+    if is_mutating(want_python):
+        # 这个环境的 site-packages 正在被写。**不起新会话**——半装完的包
+        # import 到一半是最难解释的一档失败（有时成功、有时缺一个子模块）。
+        raise WorkerError("这个 Python 环境正在安装依赖，请稍候再试。", code=ENVIRONMENT_MUTATING)
+    with _lock:
+        w = _workers.get(key)
+        why = ""
+        if w is not None:
+            if not w.alive():
+                why = "已死"
+            elif w.entry != entry:
+                why = "入口已变"
+            elif not same_python(w.python, want_python):
+                # **worker 身份包含解释器**（ADR 0018）：项目自动切到 .venv 之后
+                # 还复用那条内置 runtime 起的会话，用户看到的就是「明明切了环境，
+                # 还是报缺包」。判据与 `entry` 那条同形，不另起一套 key。
+                why = "渲染解释器已变"
+        if why:
+            LOG.warning("worker %s，重建: %s", why, script_name)
+            w.shutdown()
+            w = None
+        if w is None:
+            w = _new_worker(script_name, figures_dir, entry)
+            _workers[key] = w
+            created = True
+        w.last_used = time.time()
+        alive = [(k, x) for k, x in _workers.items() if x.alive()]
+        if len(alive) > MAX_ALIVE:
+            stale = sorted(alive, key=lambda kv: kv[1].last_used)
+            for vkey, victim in stale[: len(alive) - MAX_ALIVE]:
+                if victim is not w:
+                    LOG.info("worker LRU 淘汰: %s", victim.script_name)
+                    _workers.pop(vkey, None)
+                    threading.Thread(target=victim.shutdown, daemon=True).start()
+    if created:  # 出锁再清：prune 要遍历磁盘，不能占着 _lock
+        _schedule_prune()
+    return w, created
+
+
+#: 自动切换被重试上限挡下时的 code（不是失败，是「这一轮已经切过了」）。
+PROJECT_ENV_ALREADY_ATTEMPTED = "project_env_already_attempted"
+
+
+def should_try_project_env(exc) -> bool:
+    """这个错误值不值得为它换个环境重跑——**判据的唯一出处**。
+
+    只有 `missing_dependency`。脚本自己的 `ValueError` / `TypeError` /
+    `FileNotFoundError` 换个解释器一样错：为它们切环境既要多跑一遍脚本，
+    又把真正的代码错误伪装成了环境问题（用户于是去折腾环境，而 bug 在第 12 行）。
+
+    `pool.build()` 与 `app._switched_to_project_env()` 都是它的消费者。两处
+    各写一份 `exc.code == …` 的话，其中一处迟早会放宽，而只有另一处有用例
+    看着——门禁抽掉不红正是这么来的。
+    """
+    return getattr(exc, "code", "") == "missing_dependency"
+
+
+def try_project_env(figures_dir: str, script_name: str, module: str) -> dict:
+    """内置环境缺 `module` 时，改用这个项目自己的 `.venv`（成功则作废旧会话）。
+
+    回 `projectenv.resolve_for_missing_dependency` 的结构，成功时已经：
+    记住决策（项目级，不写全局设置）→ 作废该脚本的旧 worker。调用方只需
+    重新 `get()` 一次，新会话就是用项目解释器起的。
+
+    **一次 build 最多自动切一次**（`projectenv.mark_attempted`）：没有这条，
+    「内置缺包 → 切 venv → venv 也缺 → 切回内置」会来回打转，用户看到的是
+    界面卡在「正在运行」而后台在反复起 Python。用户手动重试走
+    `projectenv.reset_cache()`，可以重新来一轮。
+    """
+    if not module or not projectenv.valid_module_name(module):
+        # 认不出缺的是哪个包（或名字不合形状）就没有可验证的目标：
+        # 找到一个 .venv 也无从判断它到底解不解决问题，不切。
+        return {"ok": False, "code": projectenv.ERROR_NOT_FOUND, "module": module}
+    if not projectenv.mark_attempted(figures_dir, script_name):
+        return {"ok": False, "code": PROJECT_ENV_ALREADY_ATTEMPTED, "module": module}
+    # 报缺包的那个解释器：第二层体检时跳过它——它就是失败的起点。
+    try:
+        failing = resolve_worker_python(figures_dir)[0]
+    except WorkerError:
+        failing = ""
+    outcome = projectenv.resolve_for_missing_dependency(
+        figures_dir,
+        script_name,
+        module,
+        system_candidates=system_python_candidates(),
+        exclude_python=failing,
+    )
+    if not outcome.get("ok"):
+        system = outcome.get("system") or []
+        found = projectenv.healthy_system_candidate(system)
+        LOG.info(
+            "项目环境自动接手失败（%s）: %s（体检了 %d 个系统解释器%s）",
+            outcome.get("code"),
+            script_name,
+            len(system),
+            f"，{found['python']} 可用、等用户确认" if found else "",
+        )
+        return outcome
+    python = outcome["python"]
+    projectenv.remember(
+        figures_dir,
+        python,
+        automatic=True,
+        trigger="missing_dependency",
+        module=module,
+        health=outcome.get("health"),
+    )
+    # 刚刚整套体检过（比 `_has_matplotlib` 严得多），不必再验一遍。
+    note_project_python_ok(python)
+    invalidate(script_name, figures_dir)
+    LOG.info("项目环境自动接手: %s → %s（缺 %s）", script_name, python, module)
+    return outcome
+
+
+def build(script_name: str, figures_dir: str, entry: str, *, allow_project_env: bool = True):
+    """取会话并确保脚本已 build——**带一次项目环境自动 fallback**。
+
+    回 `(worker, build 响应)`。所有会真正跑用户脚本的入口都该走这里，而不是
+    自己 `get()` + `ensure_built()`：自动 fallback 只有一份实现，漏掉一个入口
+    就是「素材库里能打开、CLI 打不开」这类两个入口两个答案的老问题。
+
+    只有 `missing_dependency` 触发 fallback。`ValueError` / `TypeError` /
+    `FileNotFoundError` 这些是用户代码自己的问题，换个解释器一样错——为它们
+    切环境等于把真正的代码错误伪装成环境问题，而且要多跑一遍脚本。
+
+    fallback 没成功时，把结构化结果挂在异常的 `project_env` 上再抛出去，
+    上层据此渲染恢复引导（找不到 venv / venv 也缺这个包 / 没有 matplotlib /
+    Python 版本不支持），而不是干甩一段 traceback。
+
+    会话经 **`get()`** 取（不是 `acquire()`）：老调用方与用例只认这一个名字来
+    替换会话（monkeypatch `pool.get`），改走别的入口它们会静默拿到真池。
+    """
+    worker, resp, _created = _build_with(
+        lambda: (get(script_name, figures_dir, entry), False),
+        script_name,
+        figures_dir,
+        allow_project_env=allow_project_env,
+    )
+    return worker, resp
+
+
+def build_owned(script_name: str, figures_dir: str, entry: str, *, allow_project_env: bool = True):
+    """`build()` + 所有权：回 `(worker, build 响应, created)`。
+
+    `created` 来自 `acquire()`（池里那把锁），两次取会话（自动切环境重试）任一次建了
+    会话就算这次调用的。准备接口据此决定取消时能不能关这条会话（ADR 0053 §四）。
+    再来一次 `build_owned()` 只是一次往返：worker 侧对已 build 的会话早返回，用户脚本
+    不重跑（`test_worker_runtime_report` 用脚本自己的副作用计数钉着）。
+    """
+    return _build_with(
+        lambda: acquire(script_name, figures_dir, entry),
+        script_name,
+        figures_dir,
+        allow_project_env=allow_project_env,
+    )
+
+
+def _build_with(take, script_name: str, figures_dir: str, *, allow_project_env: bool):
+    """`build` / `build_owned` 共用的编排：`take()` 回 `(worker, created)`。"""
+    worker, created = take()
+    try:
+        return worker, worker.ensure_built(), created
+    except WorkerError as exc:
+        if not allow_project_env or not should_try_project_env(exc):
+            raise
+        outcome = try_project_env(figures_dir, script_name, exc.module)
+        if not outcome.get("ok"):
+            exc.project_env = outcome
+            raise
+    worker, created_again = take()
+    return worker, worker.ensure_built(), created or created_again
+
+
+def invalidate(script_name: str, figures_dir: str | None = None) -> None:
+    """脚本文件变更后作废其会话（下次请求自动重建）。
+
+    不给 figures_dir 就作废所有项目里的同名脚本——watcher 回调走这条路，
+    宁可多关一个也不能让某个项目留着过期会话。
+    """
+    with _lock:
+        if figures_dir is None:
+            keys = [k for k in _workers if k[1] == script_name]
+        else:
+            keys = [k for k in ((_norm_dir(figures_dir), script_name),) if k in _workers]
+        victims = [_workers.pop(k) for k in keys]
+    for w in victims:
+        threading.Thread(target=w.shutdown, daemon=True).start()
+
+
+def invalidate_project(figures_dir: str | Path) -> None:
+    """作废**一个项目**的全部会话（共享样式模块变更走这条路）。
+
+    与 `shutdown_all(figures_dir)` 的差别在语义而不在实现：那个是"这个项目
+    要关了"，这个是"它们装着的代码过期了，下次请求自动重建"。差别会在日志
+    和以后的指标上显出来，别把两件事合成一个函数。
+
+    `_workers` 的键是 `(项目, 脚本)`，所以"只动本项目"是结构性的——
+    另一个图库里同名的 `fig1.py` 不会被顺手打掉。
+    """
+    target = _norm_dir(figures_dir)
+    with _lock:
+        keys = [k for k in _workers if k[0] == target]
+        victims = [_workers.pop(k) for k in keys]
+    for w in victims:
+        threading.Thread(target=w.shutdown, daemon=True).start()
+
+
+def force_cancel(script_name: str, figures_dir: str) -> bool:
+    """当场硬杀该脚本的在跑会话（探测取消的机制面）；返回是否真的杀了。
+
+    与 `invalidate` 的差别：invalidate 的 shutdown 是优雅关停，要抢
+    `w.lock`——被一个正在 build 的慢脚本占着时要等到超时才走到 kill，
+    「取消」等于没取消。这里直接 `force_kill()`（两条控制面都有：Python
+    池是 `proc.kill()`，workerd 是当场关会话），被阻塞在 `request()` 里的
+    调用方立刻收到 EOF → WorkerError；worker 先从表里摘掉，别的线程不会
+    再复用一个正在死的会话。
+    """
+    key = (_norm_dir(figures_dir), script_name)
+    with _lock:
+        w = _workers.pop(key, None)
+    if w is None:
+        return False
+    LOG.info("强制取消 worker 会话: %s", script_name)
+    w.force_kill()
+    return True
+
+
+def shutdown_all(figures_dir: str | None = None, wait: bool = False) -> None:
+    """关闭 worker（进程退出前；给 figures_dir 则只收某个项目的）。
+    异步优雅关停 + 兜底 kill。
+
+    `wait=True` 用于**本进程即将退出**的场合：关停跑在 daemon 线程里，
+    父进程一走它们就没了，worker 子进程会变成用户机器上的僵尸 python.exe。
+
+    脚本写了死循环时优雅关停根本走不通：`request()` 持着 `w.lock` 等回应
+    （现在有超时了，但 build 那一档就是 15 分钟），`shutdown()` 抢同一把锁
+    要一直等到它超时，永远走不到 finally 里的 `proc.kill()`。join 超时只是
+    不再等，子进程照样活着——所以 `wait=True` 这条「进程即将退出」的路径
+    必须硬杀一次兜底。
+    （LRU 淘汰路径不动：那里 worker 还可能是正常在跑的慢脚本。）
+    """
+    with _lock:
+        if figures_dir is None:
+            victims = list(_workers.values())
+            _workers.clear()
+        else:
+            target = _norm_dir(figures_dir)
+            keys = [k for k in _workers if k[0] == target]
+            victims = [_workers.pop(k) for k in keys]
+    threads = [threading.Thread(target=w.shutdown, daemon=True) for w in victims]
+    for t in threads:
+        t.start()
+    if wait:
+        for t, w in zip(threads, victims):
+            t.join(timeout=_SHUTDOWN_JOIN_TIMEOUT)
+            if t.is_alive():
+                LOG.warning("worker 关停超时（可能卡在死循环脚本里），强制 kill: %s", w.script_name)
+                # `force_kill()` 两条控制面都有：Python 池是 `proc.kill()`，
+                # workerd 是「当场关掉会话、不等在飞的活」。
+                w.force_kill()
+    if wait and figures_dir is None:
+        # 「本进程即将退出」这条路径顺手把 supervisor 也收掉。不收也不会留孤儿
+        # （父进程一走它的 stdin 就 EOF，workerd 自己会退），但那要等到父进程真的
+        # 消失；显式关掉能让退出是**可观测**的，冒烟脚本才断言得出来。
+        try:
+            from . import workerd_client
+
+            workerd_client.reset_client()
+        except Exception:  # noqa: BLE001 — 退出路径不许因为收尾动作抛出而中断
+            pass

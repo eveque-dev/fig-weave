@@ -1,0 +1,50 @@
+# 会被**逐字节 / 逐指纹比对**的生成物一律钉成 LF。
+#
+# 为什么需要这条：Git for Windows 默认 `core.autocrlf=true`，检出时把文本文件
+# 换成 CRLF。这些文件是生成器写出来的（写的是 LF），而 CI 会拿磁盘上那份与
+# 新生成的一份逐字节比——内容一个字都没错，只是换行符被 git 改了，于是
+# **只有 Windows 那条腿红**，ubuntu / macOS 一路绿，本机怎么也复现不了。
+#
+# 撞过一次：`i18next-cli types --ci` 在 package(windows) 与 windows-exe-smoke
+# 上同时报「TypeScript definitions are out of date」。
+# 看护在 tests/test_windows_regressions.py 的 test_byte_compared_artifacts_are_pinned_to_lf
+# ——新增这类生成物时，那张表和这里都要加一行。
+
+# `pnpm i18n:check` 的第一步就是 `i18next-cli types --ci`
+web/src/i18n/resources.d.ts text eol=lf
+
+# CLA 正文的 SHA-256 记在 .github/cla-policy.json 里，判据逐字节核对
+# （tests/test_legal_contribution_policy.py 的 test_recorded_hash_matches_the_document）。
+# 这两份**不是生成物**，是人写的法律文本，但落在同一类需求上：字节必须确定。
+# 2026-08-28 在合并队列里红过一次——policy 记的是 LF 哈希，Windows 检出成
+# CRLF，判据于是报「改了正文就必须走版本流程」，而正文一个字都没动。
+# 那是个假结论：它量的是工作区字节，不是内容。
+# 顺带：cla_gate.py 在 CI 上经 GitHub API 取 blob，拿到的本来就是 LF——
+# 钉住磁盘字节才让两个读取点真正一致。
+docs/legal/CLA_INDIVIDUAL.md text eol=lf
+docs/legal/CLA_CORPORATE.md text eol=lf
+
+# U00 合成夹具（tests/fixtures/foundation/pdf_png_assets/）：`page.pdf` 是标准库手写的最小
+# PDF，**没有 NUL 字节**，git 的文本启发式把它当文本——Windows 检出成 CRLF 后
+# `test_pdf_png_assets_are_reproducible_from_the_generator` 逐字节比对必红
+# （PR #446 backend-platforms windows 片 1）。PNG 有 NUL 字节本来就按二进制走，这里一并写明。
+tests/fixtures/foundation/pdf_png_assets/page.pdf binary
+tests/fixtures/foundation/pdf_png_assets/*.png binary
+
+# 统一实施包的来源归档：`sources_manifest.json` 记每份的 sha256 + 字节数，
+# `tools/validate_plan.py` 按 `read_bytes()` 逐字节核对（PR #446 windows 片 2：
+# `source integrity mismatch: rendercore_requirements`）。逐个文件列出而不写 glob：
+# 看护用例按精确路径匹配这张表。
+docs/implementation/tavotto-foundation/archive/README.md text eol=lf
+docs/implementation/tavotto-foundation/archive/compatibility_full.md text eol=lf
+docs/implementation/tavotto-foundation/archive/compatibility_requirements.json text eol=lf
+docs/implementation/tavotto-foundation/archive/firstopen_cases.json text eol=lf
+docs/implementation/tavotto-foundation/archive/firstopen_full.md text eol=lf
+docs/implementation/tavotto-foundation/archive/original_proposal text eol=lf
+docs/implementation/tavotto-foundation/archive/rendercore_assessment.md text eol=lf
+docs/implementation/tavotto-foundation/archive/rendercore_full.md text eol=lf
+docs/implementation/tavotto-foundation/archive/rendercore_requirements.json text eol=lf
+# 统一实施包的 case enrollment 台账（ADR 0053 §五）：`tools/generate_enrollment.py --check`
+# 拿派生 md 与按 json 现渲染的文本逐字符比；两份都钉 LF，换行符不进比对。
+docs/implementation/tavotto-foundation/enrollment.json text eol=lf
+docs/implementation/tavotto-foundation/ENROLLMENT.md text eol=lf

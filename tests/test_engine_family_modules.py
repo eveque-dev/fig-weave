@@ -1,0 +1,184 @@
+"""从 `overrides.py` 按 artist family 切出来的模块，各自守着切割配方的三条判据。
+
+2026-09-17 审计任务书 PR D 第二步（`docs/architecture/figstate-dependencies.md`）：每切出一族，
+那个模块**只依赖标准库 + matplotlib + axestraversal**，不 import `overrides` 也不 import
+`manifest`（否则 manifest ↔ overrides 那个环只是换了个名字回来）；`overrides` 里不再有同名
+定义（遍历权威那条「只迁移一份、不复制」的纪律推广到每一族）；`overrides.HANDLERS` 里那一族
+的条目全部来自模块导出的表（登记在一处，别处不许再手写一条同 key 的 handler）。
+
+纯 `ast`，不 import 产品模块，任何环境都跑得起来。新切一族：把它加进 `FAMILIES`。
+"""
+
+from __future__ import annotations
+
+import ast
+import os
+
+import pytest
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ENGINE = os.path.join(REPO, "src", "tavotto", "engine")
+
+#: 模块名 → 它导出的、会被 `overrides.HANDLERS` 展开进去的表名。**顺序就是分层**：一族只许
+#: import 排在它前面的族（colorbar 翻方向要 `tickmodel.invalidate_tick_cfg`，随行表要
+#: `axestraversal.ordered_axes`），反过来不行——族与族之间和族与 overrides 之间一样，不许成环。
+FAMILIES: dict[str, tuple[str, ...]] = {
+    "pathgeom": (),
+    "axestraversal": (),
+    "spinemodel": ("HANDLERS_STYLE", "HANDLERS_VISIBILITY"),
+    "tickmodel": ("HANDLERS_TEXT", "HANDLERS_SIDES", "HANDLERS_MARKS"),
+    "colorbarmodel": ("HANDLERS",),
+    "legendmodel": ("HANDLERS_BASIC", "HANDLERS_LAYOUT"),
+}
+
+#: 族模块允许 import 的第三方顶层名字（标准库与更早的族之外）。
+ALLOWED_THIRD_PARTY = {"matplotlib", "mpl_toolkits", "numpy"}
+
+
+def _allowed_for(name: str) -> set[str]:
+    """`name` 这一族能 import 的仓库模块 = `FAMILIES` 里排在它前面的族。"""
+    earlier = list(FAMILIES)[: list(FAMILIES).index(name)]
+    return ALLOWED_THIRD_PARTY | set(earlier)
+
+
+def _parse(name: str) -> ast.Module:
+    with open(os.path.join(ENGINE, f"{name}.py"), encoding="utf-8") as f:
+        return ast.parse(f.read())
+
+
+def _imports(tree: ast.Module) -> set[str]:
+    out: set[str] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            out |= {a.name.split(".")[0] for a in n.names}
+        elif isinstance(n, ast.ImportFrom) and n.module:
+            out.add(n.module.split(".")[0])
+    return out
+
+
+def _is_stdlib(name: str) -> bool:
+    import sys
+
+    return name in sys.stdlib_module_names or name == "__future__"
+
+
+@pytest.mark.parametrize("name", sorted(FAMILIES))
+def test_family_module_is_a_leaf(name: str):
+    """族模块不 import overrides / manifest，也不 import 排在它后面（或与它同层）的族。"""
+    allowed = _allowed_for(name)
+    bad = sorted(m for m in _imports(_parse(name)) if not _is_stdlib(m) and m not in allowed)
+    assert bad == [], (
+        f"{name}.py 不该 import 这些：{bad}（族模块是 overrides 与 manifest 共同的底层；"
+        f"族之间只许依赖 FAMILIES 里排在自己前面的）"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(FAMILIES))
+def test_overrides_keeps_no_copy_of_the_family(name: str):
+    """族模块顶层定义的函数 / 类 / 常量，overrides.py 里不许再有同名定义。"""
+    family = {
+        n.name for n in _parse(name).body if isinstance(n, (ast.FunctionDef, ast.ClassDef))
+    } | {
+        t.id
+        for n in _parse(name).body
+        if isinstance(n, ast.Assign)
+        for t in n.targets
+        if isinstance(t, ast.Name)
+    }
+    assert family, f"{name}.py 顶层什么都没定义——判据量在空集合上"
+    overrides = _parse("overrides")
+    dup = sorted(
+        n.name
+        for n in overrides.body
+        if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name in family
+    ) + sorted(
+        t.id
+        for n in overrides.body
+        if isinstance(n, ast.Assign)
+        for t in n.targets
+        if isinstance(t, ast.Name) and t.id in family
+    )
+    assert dup == [], f"overrides.py 里还留着 {name} 那一族的同名定义：{dup}（只迁移一份，不复制）"
+
+
+def _handlers_literal(tree: ast.Module) -> ast.Dict:
+    for n in tree.body:
+        if (
+            isinstance(n, ast.AnnAssign)
+            and isinstance(n.target, ast.Name)
+            and n.target.id == "HANDLERS"
+        ):
+            assert isinstance(n.value, ast.Dict)
+            return n.value
+    raise AssertionError("overrides.py 里找不到 HANDLERS 字面量")
+
+
+def test_handlers_take_family_tables_by_unpacking_and_never_handwrite_a_family_key():
+    """`overrides.HANDLERS` 里，族的条目只能以 `**<module>.<TABLE>` 展开进来。
+
+    手写一条 `("axes", "spine_top_color")` 会把同一 key 登记两遍，后写的静默盖掉前面的——
+    界面上什么都看不出来，只有那条 prop 的行为变了。
+    """
+    handlers = _handlers_literal(_parse("overrides"))
+    unpacked = set()
+    for key, value in zip(handlers.keys, handlers.values):
+        if key is None and isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+            unpacked.add(f"{value.value.id}.{value.attr}")
+    expected = {f"{mod}.{table}" for mod, tables in FAMILIES.items() for table in tables}
+    assert expected <= unpacked, f"HANDLERS 没有展开这些族表：{sorted(expected - unpacked)}"
+    # 族表里的 key 不许在 HANDLERS 字面量里再手写一遍
+    family_keys: set[tuple[str, str]] = set()
+    for mod, tables in FAMILIES.items():
+        tree = _parse(mod)
+        for n in tree.body:
+            if (
+                isinstance(n, ast.AnnAssign)
+                and isinstance(n.target, ast.Name)
+                and n.target.id in tables
+            ):
+                assert isinstance(n.value, ast.Dict)
+                for k in n.value.keys:
+                    if isinstance(k, ast.Tuple):
+                        family_keys.add(
+                            tuple(e.value for e in k.elts if isinstance(e, ast.Constant))
+                        )
+    assert family_keys, "族表里一条 key 都没读到——判据量在空集合上"
+    handwritten = sorted(
+        tuple(e.value for e in k.elts if isinstance(e, ast.Constant))
+        for k in handlers.keys
+        if isinstance(k, ast.Tuple)
+    )
+    dup = sorted(set(handwritten) & family_keys)
+    assert dup == [], f"这些 key 在 HANDLERS 里手写了一遍、族表里又登记了一遍：{dup}"
+
+
+@pytest.mark.parametrize("name", sorted(FAMILIES))
+def test_family_restore_table_is_merged_into_overrides(name: str):
+    """族模块导出了 `RESTORE`，overrides 就必须有一句 `_RESTORE.update(<module>.RESTORE)`。
+
+    漏掉这一句不会红在任何结构门禁上：撤销那几条 prop 静默退回「setter(artist, 原值)」
+    那条通用路，只在撤销那一刻才与搬出前分岔（第四刀就漏过一次，靠 _RESTORE 键数对拍抓到）。
+    """
+    tree = _parse(name)
+    exports_restore = any(
+        isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.target.id == "RESTORE"
+        for n in tree.body
+    )
+    if not exports_restore:
+        pytest.skip(f"{name} 没有 RESTORE 表")
+    merged = {
+        f"{n.value.func.value.id}.{n.value.func.attr}:{n.value.args[0].value.id}.{n.value.args[0].attr}"
+        for n in _parse("overrides").body
+        if isinstance(n, ast.Expr)
+        and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Attribute)
+        and isinstance(n.value.func.value, ast.Name)
+        and n.value.func.value.id == "_RESTORE"
+        and n.value.func.attr == "update"
+        and len(n.value.args) == 1
+        and isinstance(n.value.args[0], ast.Attribute)
+        and isinstance(n.value.args[0].value, ast.Name)
+    }
+    assert f"_RESTORE.update:{name}.RESTORE" in merged, (
+        f"overrides.py 里没有 `_RESTORE.update({name}.RESTORE)`——那一族的撤销登记没并进来"
+    )

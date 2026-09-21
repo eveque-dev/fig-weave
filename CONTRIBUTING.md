@@ -1,0 +1,276 @@
+# Contributing to Tavotto
+
+Thanks for taking the time. Issues and pull requests are both welcome — a good
+bug report is worth as much as a patch.
+
+## Reporting a bug
+
+The most useful thing you can attach is the **diagnostics bundle**: in the app,
+**Settings → Privacy, diagnostics and About → Download diagnostics bundle**. It
+collects the version, your platform and encoding, how Tavotto was installed,
+which Python interpreter is doing the rendering and what matplotlib it has, the
+last errors and the log. Keys and personal paths are redacted before it is
+written, so it is safe to attach to a public issue.
+
+If the problem involves a specific figure, the *script* is usually more useful
+than the PDF — and a cut-down script that still shows the problem is best of all.
+Please don't attach unpublished research data; a minimal reproduction with fake
+numbers is what we can actually work with.
+
+## Getting set up
+
+```sh
+git clone https://github.com/Tavotto/Tavotto.git && cd Tavotto
+python -m venv .venv && .venv/bin/pip install -e ".[worker,dev]"
+python scripts/build_frontend.py     # needs node + pnpm
+.venv/bin/tavotto
+```
+
+`run.sh` does the same thing in one step. Note that there is **no `app.py` at the
+repository root** — the entry point is `tavotto` (`src/tavotto/app.py`).
+
+The frontend lives in `web/` (Vite + React 19 + TypeScript + Tailwind v4). While
+working on it, `pnpm dev` is faster than rebuilding; just remember that a built
+`src/tavotto/web/` takes priority over `web/dist`, so after running
+`scripts/build_frontend.py` you should either re-run it or delete that directory
+to get back to development mode.
+
+## Verifying a change
+
+```sh
+ruff check . --fix && ruff format .   # while working: fix, sort, format
+ruff check . && ruff format --check . # before pushing: exactly what CI runs
+.venv/bin/python -m pytest        # backend
+cd web && pnpm test               # frontend (vitest)
+cd web && pnpm build              # type-check + bundle
+```
+
+**Run `ruff check .` before pytest.** It comes back in about 20 ms for the whole
+repository and catches the things that are cheap to find and expensive to wait
+for — a misspelled name, an import left behind after a refactor, a local variable
+nobody reads. `ruff check . --fix` applies the safe fixes; `--unsafe-fixes` can
+change behaviour, so read those one at a time rather than applying them in bulk.
+Ruff comes with `pip install -e ".[dev]"`.
+
+The rule set lives in `[tool.ruff]` in `pyproject.toml` — deliberately a small,
+high-signal one (`E4`, `E7`, `E9`, `F`, `I`) that is meant to stay green rather
+than accumulate suppressions. Don't pass `--select` or `--ignore` on the command
+line: that would make your run differ from CI's.
+
+Current state: **lint, import sorting and the formatter are all on.**
+While working, let Ruff fix things: `ruff check . --fix && ruff format .`.
+Before pushing, run the read-only pair `ruff check . && ruff format --check .` —
+that is character-for-character what CI runs, so a green local run won't come
+back red on formatting. CI never rewrites the tree.
+
+The example gallery, the playground examples and the CompatBench corpus are
+**excluded from formatting**: their layout is product content, not our code
+style.
+`ruff check . --fix` sorts imports for you. First-party packages are recognised
+by directory via `[tool.ruff]`'s `src`, which lists the source roots that really
+get pushed onto `sys.path` at runtime — if you add a *new* such root, review that
+list; adding a module under an existing root needs no config change. See
+[docs/ci/ruff.md](docs/ci/ruff.md) for why the formatter is still queued. CI runs the same `ruff check .` as the
+`Python lint (Ruff)` job, which feeds the `CI fast gate`.
+
+**Use `pnpm build`, not `tsc --noEmit`, for type checking.** The root `tsconfig.json`
+is a solution file (`files: []` + project references); `--noEmit` doesn't follow
+project references, compiles nothing, and passes unconditionally. The `tsc -b`
+inside `pnpm build` is the real check.
+
+Bigger changes have their own gates:
+
+| Area | How to verify |
+|---|---|
+| Render engine | `tests/test_equivalence_matrix.py` — hot edit, full replay, fresh worker and reopen-after-write-back must all agree |
+| End to end | `python scripts/smoke_app.py --python .venv/bin/python` |
+| Desktop build | `python scripts/build_desktop.py`, then `python scripts/smoke_desktop.py --sidecar dist/Tavotto/Tavotto` |
+| Golden path in a real browser | `cd web && pnpm e2e` (build the frontend first) |
+| Rust supervisor | `cd workerd && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check` |
+| Telemetry / analytics | `pytest tests/test_telemetry.py tests/test_telemetry_api.py tests/test_telemetry_invariants.py tests/test_telemetry_proxy.py tests/test_distribution_metrics.py` — no test makes a real network request; `tests/conftest.py` pins `TAVOTTO_NO_TELEMETRY=1` |
+| Distribution collector | `python scripts/collect_distribution_metrics.py --dry-run` |
+
+Tests that need matplotlib spawn their own interpreter and skip cleanly if there
+isn't one, so a `.venv` without the scientific stack still runs most of the suite.
+
+### Working on telemetry
+
+Nothing here needs a PostHog account. The test suites never make a real request:
+`tests/conftest.py` pins `TAVOTTO_NO_TELEMETRY=1` for every test, and the telemetry
+tests replace the transport with a collector.
+
+```sh
+# A local proxy instead of the production one. Validation and rejection paths work
+# without a PostHog key; only the final forward needs one.
+cd services/telemetry_proxy && python3 -m tavotto_telemetry_proxy.wsgi   # :8787
+
+# Point a dev client at it, then opt in when the first-run prompt appears.
+TAVOTTO_TELEMETRY_ENDPOINT=http://127.0.0.1:8787/v1/events tavotto
+
+# Or make sure nothing is ever sent, whatever the saved setting says.
+TAVOTTO_NO_TELEMETRY=1 tavotto
+
+# Preview the distribution collector without transmitting anything.
+python scripts/collect_distribution_metrics.py --dry-run
+```
+
+`TAVOTTO_NO_TELEMETRY` and `TAVOTTO_NO_UPDATE_CHECK` are independent switches; neither
+covers the other. The event contract is in
+[docs/analytics/telemetry-events.md](docs/analytics/telemetry-events.md) — it is
+duplicated on purpose between client and proxy, with a parity test holding the two
+copies together. Deployment steps live in
+[services/telemetry_proxy/README.md](services/telemetry_proxy/README.md).
+
+## Things that will get a PR sent back
+
+These aren't style preferences — each one is a boundary that took a real bug to
+establish. `CLAUDE.md` has the full list with the reasoning.
+
+- **`import pymupdf` outside `src/tavotto/pdfbackend/`.** That package is the only
+  module allowed to touch the PDF library; everything above it goes through the
+  contract layer in `pdfbackend/__init__.py`. This is what makes the backend
+  replaceable, and it matters for licensing.
+- **Anything imported by Flask that isn't pure standard library.** `engine/registry.py`,
+  `pool.py`, `ai_bridge.py`, `config.py`, `updater.py` and `runtime.py` run in a
+  virtualenv that deliberately has no matplotlib. The scientific stack exists only
+  in the worker process.
+- **Writing to the package directory or the repository root at runtime.** Everything
+  writable goes through `engine/config.data_dir()`. Installed as a wheel, site-packages
+  isn't writable and this crashes outright.
+- **Changing one side of a dual-source pair.** `engine/patchspec.py` ↔
+  `workerd/src/patchspec.rs` (byte-identical, pinned by `tests/golden/patch_vectors.json`),
+  `web/src/lib/richText.ts` ↔ `src/tavotto/richtext.py`, `web/src/lib/shapeGeometry.ts` ↔
+  the geometry in `pdfbackend/pymupdf_backend.py`. Change both, or neither.
+- **Adding a Tauri command without updating all three places** — `build.rs`, the
+  capability file, and `generate_handler`. Miss the first two and the call is
+  **silently** rejected at runtime.
+- **`pathlib` in code that reasons about another platform's paths.** `Path()`
+  dispatches on `os.name`, so constructing a Windows path on macOS raises. The
+  runtime-location logic uses string operations throughout for exactly this reason.
+
+## Two working habits
+
+**A bug that only happens on someone else's computer becomes a test first.**
+Encoding (cp936/cp1252), file locking, drive letters and backslashes, non-ASCII
+paths, port conflicts, CLI shims — these go into `tests/test_windows_regressions.py`
+as a *failing* test before the fix, because macOS and Linux will never reproduce them.
+
+**Measure before optimising.** `docs/perf-baseline.md` holds the numbers and the
+method (`python scripts/bench_render.py`). If a change is about performance, point
+at a number in there. Two plausible-sounding optimisations are already recorded as
+*rejected by measurement* — please don't re-litigate them without new data.
+
+## Pull requests
+
+Branch off `main` and open a PR; CI runs the backend matrix (Linux/macOS/Windows,
+Python 3.10 and 3.13), the frontend, packaging, and a real Windows `.exe` smoke test.
+
+The PR template opens with a short "baseline and risk" block — base/head, a risk
+tier with its reason, the one thing the PR does, what it deliberately leaves out,
+and which contracts it touches. The tier decides how the PR lands; the rules are in
+[docs/ci/pr-review-tiers.md](docs/ci/pr-review-tiers.md).
+
+Commit messages and code comments in this repository are written in Chinese;
+user-facing text — the README, release notes, the interface — is English first,
+with a Simplified Chinese README alongside. Either language is fine in a PR
+description. What matters more is that the message says *why*, and that a fix
+names the symptom a user would have seen.
+
+## Licence and contributor agreement
+
+**Tavotto is licensed under [AGPL-3.0-only](LICENSE), and that is not changing.**
+
+**You keep the copyright in your contribution.** The Tavotto Contributor License
+Agreement gives Tavotto the additional rights needed to keep the community
+edition open under AGPL while preserving the option to offer separately licensed
+editions.
+
+### What the CLA actually does
+
+You grant Tavotto a perpetual, worldwide, non-exclusive, royalty-free,
+irrevocable licence to use, modify and distribute your contribution, including
+the right to sublicense it. In return Tavotto is bound to keep licensing your
+contribution under the licence in force when you submitted it — so the community
+edition cannot be closed behind your back.
+
+You keep every right you had before signing, including using and licensing your
+own code anywhere else.
+
+### Why it exists
+
+Without it, a contribution accepted only under AGPL-3.0-only can be
+redistributed by the project only under AGPL-3.0-only — the maintainers cannot
+unilaterally offer it under other terms, because it is your copyright, not
+theirs. The CLA lets them continue distributing the same contribution in the
+AGPL community edition while retaining the ability to offer separately licensed
+editions.
+
+It does not promise that such an edition will exist, that contributors will be
+paid, or that any contribution will be merged.
+
+### When it applies
+
+| | CLA needed? |
+|---|---|
+| Issues, bug reports, feature requests, discussion | **No** |
+| Pull requests — code, documentation, design, anything | **Yes** |
+
+Every pull request goes through the CLA process. There is deliberately no
+"trivial change" exemption: whether a given diff attracts copyright is a legal
+question, and a CI check that tried to guess would be both unreliable and a
+constant source of argument. One rule is easier to follow than a boundary
+nobody can locate.
+
+A `Contributor licence (CLA)` check enforces this in CI. It qualifies
+**everyone in the PR** — the author, every commit author, and every
+`Co-authored-by` trailer — not just whoever opened it, and it reports through the
+existing `CI fast gate` rather than adding a new required check.
+
+The check reads its policy and agreement texts from the default branch on
+purpose — a pull request must not be able to supply the rules that judge it.
+
+### If your employer owns the work
+
+If you are contributing work created in the course of employment, your employer
+probably owns the copyright, and you cannot grant these rights on your own. Use
+the [Corporate CLA](docs/legal/CLA_CORPORATE.md) instead, which is signed by
+someone authorised to bind the company. Corporate agreements are reviewed by a
+person, not by CI.
+
+### The agreements
+
+- [Individual CLA](docs/legal/CLA_INDIVIDUAL.md)
+- [Corporate CLA](docs/legal/CLA_CORPORATE.md)
+- [Why it is versioned and hashed](docs/legal/CLA_VERSIONING.md)
+- [The full picture](docs/legal/LICENSING.md)
+
+Both are derived from the [Harmony Agreements](https://www.harmonyagreements.org/)
+1.0 templates rather than written from scratch.
+The counterparty is **Jiaqi Wan**, a natural person; the governing law is that
+of the Hong Kong SAR.
+
+**Current status: the agreements are final at version `1.0`, but no signature
+service is connected yet.** That is a deliberate deferral rather than an
+omission — there have been no external contributions so far, so there is nothing
+for one to collect. Until one is connected, the check qualifies only the rights
+holder and two named bots, and blocks everyone else **with an explanation**
+rather than pretending they signed. See
+[docs/legal/CLA_AUTOMATION_SETUP.md](docs/legal/CLA_AUTOMATION_SETUP.md).
+
+**So if you want to contribute, please open an issue first** — this is a door
+that opens by hand at the moment, not a closed one, and it will be sorted out
+with you.
+
+### Not a DCO
+
+Tavotto does not use a Developer Certificate of Origin. A DCO certifies
+*provenance* — that you had the right to submit the code under the project's
+existing licence. It is not a copyright grant and cannot support separately
+licensed editions, so it is not a substitute for a CLA and is not treated as
+one here.
+
+## Trademark
+
+The AGPL covers copyright, not the name. See [TRADEMARKS.md](TRADEMARKS.md) —
+forks are welcome and may say they are based on Tavotto; what they should not do
+is present themselves as the official one.

@@ -1,0 +1,985 @@
+"""文档落盘的唯一实现（engine/atomicio + engine/documents）与它在 HTTP 层的出口。
+
+覆盖 Prompt 02 §七/§八 的四件事：写入是原子的、非有限数进不去、
+收纳目录里 Tavotto 自己的文件不是用户文档、修订号能给外部修改检测当基线。
+"""
+
+import json
+import os
+import stat
+from pathlib import Path
+
+import pytest
+
+from tavotto import app as m
+from tavotto.engine import atomicio, documents
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    # 这份夹具的前提是**没有项目开着**（`project_layout_dir` 未开项目才退回
+    # `LAYOUT_DIR`）。前提要自己立，不能赌上一个用例文件收拾干净了：
+    # `test_bundled_runtime` / `test_compat_capture_parity` 各有一条 `open_project`
+    # 之后不 reset 的用例，同一进程里排在本文件前面时，画布会存进那个项目的
+    # `tavottofile/`，这里四条用例按 `tmp_path/<名字>.json` 找就 FileNotFoundError
+    # （2026-09-17 本地按文件分片时撞到；CI 的分片恰好把它们隔开了）。
+    m.reset_projects()
+    monkeypatch.setattr(m, "LAYOUT_DIR", tmp_path)
+    monkeypatch.setattr(m, "AUTOSAVE_DIR", tmp_path / documents.AUTOSAVE_DIRNAME)
+    monkeypatch.setattr(m, "VERSIONS_DIR", tmp_path / documents.VERSIONS_DIRNAME)
+    # 样式/规范清单已经搬去用户数据目录（ADR 0029）：把数据目录也指到
+    # tmp_path，免得用例写到真实的 ~/Library/Application Support/Tavotto
+    monkeypatch.setenv("TAVOTTO_DATA_DIR", str(tmp_path / "userdata"))
+    m.app.config["TESTING"] = True
+    yield m.app.test_client()
+    m.reset_projects()
+
+
+PD = {
+    "schema": 3,
+    "project": {"id": "p", "name": "n"},
+    "canvases": [
+        {"id": "c1", "name": "Fig 1", "page": {"w": 10, "h": 10}, "objects": [], "guides": []}
+    ],
+    "activeCanvasId": "c1",
+    "createdAt": 0,
+    "updatedAt": 1,
+}
+
+
+# --------------------------- atomicio：写入本身 ------------------------------
+
+
+def test_write_json_replaces_atomically_and_leaves_no_tmp(tmp_path):
+    target = tmp_path / "sub" / "doc.json"
+    atomicio.write_json(target, {"a": 1})
+    assert json.loads(target.read_text(encoding="utf-8")) == {"a": 1}
+    assert not list(target.parent.glob("*.tmp"))
+
+
+def test_write_json_fsyncs_the_file_before_replacing(tmp_path, monkeypatch):
+    """`os.replace` 只保证「要么旧要么新」，不保证新内容已经离开页缓存。
+
+    掉电时少了这一步，replace 出来的会是一个**空文件**——比旧内容还糟。
+    """
+    # **判据要说清主语。** 只断言「有人被 fsync 了」是空的：写完之后还会
+    # fsync 一次目录，所以哪怕把文件那次删掉，计数照样非零（本判据第一版
+    # 正是这么写的，变异跑完全绿）。这里量的是「被 fsync 的里面有一个是
+    # 普通文件」。
+    regular: list[bool] = []
+    real_fsync = os.fsync
+
+    def spy(fd):
+        regular.append(stat.S_ISREG(os.fstat(fd).st_mode))
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", spy)
+    atomicio.write_json(tmp_path / "doc.json", {"a": 1})
+    assert any(regular), "落盘的文件本身没有被 fsync（只 fsync 了目录不算）"
+
+
+def test_write_json_rejects_non_finite_before_touching_disk(tmp_path):
+    """NaN / ∞ 不是 JSON。写出去的文件浏览器 `JSON.parse` 读不动，
+    表现是「这份文档打不开」而磁盘上看起来好端端的。"""
+    target = tmp_path / "doc.json"
+    atomicio.write_json(target, {"w": 1})
+
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(atomicio.AtomicWriteError) as e:
+            atomicio.write_json(target, {"w": bad})
+        assert e.value.code == "non_finite_number"
+
+    # 原文件一字未动，也没有半成品
+    assert json.loads(target.read_text(encoding="utf-8")) == {"w": 1}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_replace_failure_keeps_the_old_file_and_cleans_up(tmp_path, monkeypatch):
+    target = tmp_path / "doc.json"
+    atomicio.write_json(target, {"v": "old"})
+
+    def boom(_src, _dst):
+        raise OSError(13, "permission denied")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(atomicio.AtomicWriteError) as e:
+        atomicio.write_json(target, {"v": "new"})
+    assert e.value.code == "replace_failed"
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {"v": "old"}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_content_revision_tracks_content_not_mtime(tmp_path):
+    """修订号回答「内容变了没有」。掺进 mtime 的话，一次 touch、一次从备份
+    原样恢复都会变出新修订号，外部修改检测就会对着逐字节相同的文件报冲突。"""
+    target = tmp_path / "doc.json"
+    atomicio.write_json(target, {"a": 1})
+    first = atomicio.content_revision(target)
+
+    os.utime(target, (0, 0))
+    assert atomicio.content_revision(target) == first
+
+    atomicio.write_json(target, {"a": 2})
+    assert atomicio.content_revision(target) != first
+
+    assert atomicio.content_revision(tmp_path / "nope.json") is None
+
+
+# --------------------------- documents：格式判据 ------------------------------
+
+
+def test_validate_rejects_future_schema_with_its_own_code():
+    """更新版本写出的文档不能「尽力打开」——那是用旧规则重写用户的新数据。"""
+    with pytest.raises(documents.DocumentError) as e:
+        documents.validate_document({"schema": documents.SCHEMA_CURRENT + 1})
+    assert e.value.code == "schema_too_new"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        [1, 2],
+        {"schema": 1},
+        {"schema": 3},  # 项目文档没有画布
+        {"schema": 3, "canvases": []},
+    ],
+)
+def test_validate_rejects_non_documents(raw):
+    with pytest.raises(documents.DocumentError) as e:
+        documents.validate_document(raw)
+    assert e.value.code == "invalid_document"
+
+
+def test_reserved_stems_are_derived_from_the_real_filenames():
+    """枚举而不是前缀规则：画布名净化后可能以 `_` 开头（`（图一）` → `_图一_`），
+    前缀规则会把用户的文档藏起来。"""
+    assert not documents.is_user_document_stem("_styles")
+    assert documents.is_user_document_stem("_图一_")
+    assert documents.is_user_document_stem("主图")
+
+
+# --------------------------- HTTP 出口 ---------------------------------------
+
+
+def test_autosave_put_rejects_non_finite_and_keeps_disk(client, tmp_path):
+    assert client.put("/api/autosave/d1", json=PD).status_code == 200
+    saved = (tmp_path / documents.AUTOSAVE_DIRNAME / "d1.json").read_text(encoding="utf-8")
+
+    bad = json.dumps({**PD, "updatedAt": 2}).replace('"updatedAt": 2', '"updatedAt": NaN')
+    resp = client.put("/api/autosave/d1", data=bad, content_type="application/json")
+    assert resp.status_code == 400
+    assert resp.get_json()["code"] == "non_finite_number"
+    assert (tmp_path / documents.AUTOSAVE_DIRNAME / "d1.json").read_text(encoding="utf-8") == saved
+
+
+def test_autosave_exposes_revision_on_write_and_read(client):
+    put = client.put("/api/autosave/d2", json=PD).get_json()
+    assert put["revision"]
+    get = client.get("/api/autosave/d2")
+    assert get.headers["X-Tavotto-Revision"] == put["revision"]
+
+    same = client.put("/api/autosave/d2", json=PD).get_json()
+    assert same["revision"] == put["revision"]
+    changed = client.put("/api/autosave/d2", json={**PD, "updatedAt": 99}).get_json()
+    assert changed["revision"] != put["revision"]
+
+
+def test_autosave_put_reports_future_schema(client):
+    resp = client.put("/api/autosave/d3", json={**PD, "schema": documents.SCHEMA_CURRENT + 1})
+    assert resp.status_code == 400
+    assert resp.get_json()["code"] == "schema_too_new"
+
+
+def test_layout_save_is_atomic(client, tmp_path, monkeypatch):
+    """用户的「另存为」。改成原子写之前，这里是 `write_text` 直接盖：
+    写到一半失败留下截断文件，而好的那一份已经被顶掉了。"""
+    assert client.post("/api/layouts/主图", json={"schema": 2, "objects": []}).status_code == 200
+    good = (tmp_path / "主图.json").read_text(encoding="utf-8")
+
+    def boom(_src, _dst):
+        raise OSError(28, "no space left on device")
+
+    monkeypatch.setattr(os, "replace", boom)
+    resp = client.post("/api/layouts/主图", json={"schema": 2, "objects": [{"type": "text"}]})
+    assert resp.status_code == 500
+    assert resp.get_json()["code"] == "replace_failed"
+
+    assert (tmp_path / "主图.json").read_text(encoding="utf-8") == good
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_layout_save_rejects_non_finite(client, tmp_path):
+    bad = '{"schema": 2, "page": {"w": Infinity}}'
+    resp = client.post("/api/layouts/坏图", data=bad, content_type="application/json")
+    assert resp.status_code == 400 and resp.get_json()["code"] == "non_finite_number"
+    assert not (tmp_path / "坏图.json").exists()
+
+
+def test_layout_save_round_trips_a_project_document(client, tmp_path):
+    """「另存为」写下去的就是读回来的（ADR 0023 §5a 的 round-trip 用例）。"""
+    assert client.post("/api/layouts/主图", json=PD).status_code == 200
+    got = client.get("/api/layouts/主图").get_json()
+    assert got == PD
+    assert "主图" in client.get("/api/layouts").get_json()["layouts"]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"doc": {"schema": 2, "objects": []}},  # 包一层的旧验收脚本形状
+        {"objects": []},  # 没有 schema
+        [1, 2],  # 不是对象
+        {"schema": 3, "canvases": []},  # 项目文档没有画布
+    ],
+)
+def test_layout_save_rejects_things_that_are_not_documents(client, tmp_path, raw):
+    """另存为与自动保存同一份判据：不是文档的载荷落不了盘（以前这条路一个字段都不查）。"""
+    resp = client.post("/api/layouts/坏图", json=raw)
+    assert resp.status_code == 400
+    assert resp.get_json()["code"] == "invalid_document"
+    assert not list(tmp_path.glob("*.json")) and not list(tmp_path.rglob("坏图*"))
+
+
+def test_layout_save_reports_future_schema_and_keeps_the_old_file(client, tmp_path):
+    """来自更新版本的文档不许经「另存为」进 tavottofile/：写进去之后每一次打开都会被拒，
+    而且它会顶掉同名的那份好文件。"""
+    assert client.post("/api/layouts/主图", json={"schema": 2, "objects": []}).status_code == 200
+    resp = client.post("/api/layouts/主图", json={"schema": 99, "canvases": [{}]})
+    assert resp.status_code == 400
+    assert resp.get_json()["code"] == "schema_too_new"
+    assert client.get("/api/layouts/主图").get_json() == {"schema": 2, "objects": []}
+
+
+def test_legacy_styles_file_is_not_listed_as_a_document(client, tmp_path):
+    """老装机的 `LAYOUT_DIR/_styles.json` 可能还躺在那儿（ADR 0029 之后新装
+    机不再往这里写），而画布列表是对同一个目录 `glob("*.json")`——不剔掉的话
+    「打开画布」里会多出一条叫 `_styles` 的东西。"""
+    (tmp_path / documents.STYLES_FILENAME).write_text('{"styles": []}', encoding="utf-8")
+    assert client.post("/api/layouts/主图", json={"schema": 2}).status_code == 200
+
+    names = client.get("/api/layouts").get_json()["layouts"]
+    assert "主图" in names
+    assert "_styles" not in names
+
+
+def test_reserved_name_is_not_reachable_through_the_document_api(client, tmp_path):
+    """否则一份画布能把老装机上那份样式表整个盖掉。"""
+    legacy = tmp_path / documents.STYLES_FILENAME
+    legacy.write_text('{"styles": [{"id": "s1", "name": "S1"}]}', encoding="utf-8")
+    before = legacy.read_text(encoding="utf-8")
+
+    resp = client.post("/api/layouts/_styles", json={"schema": 2, "objects": []})
+    assert resp.status_code == 409 and resp.get_json()["code"] == "reserved_name"
+    assert client.get("/api/layouts/_styles").status_code == 409
+    assert legacy.read_text(encoding="utf-8") == before
+
+
+# ------------------- 外部修改检测（Prompt 03 / R-08） ------------------------
+
+
+def test_revision_baseline_blocks_a_write_over_someone_elses_content(client, tmp_path):
+    """外部工具改过磁盘上那份之后，带旧修订号来的整份 PUT 必须被挡下。
+
+    这是 `base`（updatedAt 比较）看不见的那一类：外部工具改完文档往往一个
+    字节的 updatedAt 都不动，甚至写回一个更小的值。
+    """
+    first = client.put("/api/autosave/d1", json=PD).get_json()
+    slot = tmp_path / documents.AUTOSAVE_DIRNAME / "d1.json"
+
+    # 编辑器外的改动：内容变了，**updatedAt 反而更旧**
+    theirs = {**PD, "updatedAt": 0, "project": {"id": "p", "name": "theirs"}}
+    slot.write_text(json.dumps(theirs), encoding="utf-8")
+
+    r = client.put(f"/api/autosave/d1?base_revision={first['revision']}", json=PD)
+    assert r.status_code == 409
+    body = r.get_json()
+    assert body["code"] == "external_change"
+    # 磁盘上对方那份一个字节没动
+    assert json.loads(slot.read_text(encoding="utf-8"))["project"]["name"] == "theirs"
+    # 摘要要能回答「那边现在是什么」，并带上当下的修订号（显式覆盖拿它当基线）
+    assert body["summary"]["objects"] == 0
+    assert body["summary"]["name"] == "theirs"
+    assert body["revision"] == body["summary"]["revision"] != first["revision"]
+
+    # 拿 409 里回的那个修订号再写一次 = 明确覆盖，放行
+    ok = client.put(f"/api/autosave/d1?base_revision={body['revision']}", json=PD)
+    assert ok.status_code == 200
+    assert json.loads(slot.read_text(encoding="utf-8"))["project"]["name"] == "n"
+
+
+def test_matching_revision_passes_and_advances(client):
+    put = client.put("/api/autosave/d1", json=PD).get_json()
+    again = client.put(f"/api/autosave/d1?base_revision={put['revision']}", json=PD)
+    assert again.status_code == 200
+    # 内容一样 → 修订号一样；基线因此不需要额外推进
+    assert again.get_json()["revision"] == put["revision"]
+
+
+def test_absent_sentinel_blocks_the_second_tab_creating_the_same_document(client, tmp_path):
+    """两个标签页同时新建同一份文档：后写的那个不许整份盖掉先写的。
+
+    这是判据的**另一条边**。少了 `absent` 哨兵，双方都拿不出修订号，
+    后端一律放行——而这正是这条判据要挡的事。
+    """
+    client.put("/api/autosave/dup", json={**PD, "project": {"id": "p", "name": "first"}})
+    r = client.put(
+        f"/api/autosave/dup?base_revision={m.REVISION_ABSENT}",
+        json={**PD, "project": {"id": "p", "name": "second"}},
+    )
+    assert r.status_code == 409
+    assert r.get_json()["code"] == "external_change"
+    slot = tmp_path / documents.AUTOSAVE_DIRNAME / "dup.json"
+    assert json.loads(slot.read_text(encoding="utf-8"))["project"]["name"] == "first"
+
+
+def test_absent_sentinel_passes_when_the_slot_really_is_empty(client):
+    r = client.put(f"/api/autosave/fresh?base_revision={m.REVISION_ABSENT}", json=PD)
+    assert r.status_code == 200
+
+
+def test_a_hash_baseline_still_recreates_a_file_deleted_outside(client, tmp_path):
+    """两侧故意不对称：挡的是「覆盖别人的内容」，不是「重建被删掉的文件」。
+
+    此刻磁盘上没有任何内容会因为这次写入而消失，而内存里那份是用户真实的工作。
+    """
+    put = client.put("/api/autosave/d1", json=PD).get_json()
+    (tmp_path / documents.AUTOSAVE_DIRNAME / "d1.json").unlink()
+    r = client.put(f"/api/autosave/d1?base_revision={put['revision']}", json=PD)
+    assert r.status_code == 200
+
+
+def test_base_revision_wins_over_base_when_both_are_sent(client, tmp_path):
+    """两个基线同时带来时以修订号为准：它强，且两条判据不该各判各的。"""
+    put = client.put("/api/autosave/d1", json=PD).get_json()
+    slot = tmp_path / documents.AUTOSAVE_DIRNAME / "d1.json"
+    # 磁盘上被外部改成 updatedAt 更小的一份：`base` 放行，`base_revision` 挡下
+    slot.write_text(json.dumps({**PD, "updatedAt": 0, "createdAt": 7}), encoding="utf-8")
+    r = client.put(f"/api/autosave/d1?base=1&base_revision={put['revision']}", json=PD)
+    assert r.status_code == 409
+    assert r.get_json()["code"] == "external_change"
+
+
+def test_stale_write_still_guards_clients_that_send_no_revision(client):
+    """不发修订号的调用方（旧前端）仍然走 updatedAt 那条判据。"""
+    client.put("/api/autosave/d1", json={**PD, "updatedAt": 500})
+    r = client.put("/api/autosave/d1?base=100", json={**PD, "updatedAt": 200})
+    assert r.status_code == 409
+    assert r.get_json()["code"] == "stale_write"
+
+
+def test_document_summary_reports_two_time_dimensions_and_none_when_unreadable(client, tmp_path):
+    client.put("/api/autosave/d1", json={**PD, "updatedAt": 4242})
+    slot = tmp_path / documents.AUTOSAVE_DIRNAME / "d1.json"
+    summary = client.get("/api/autosave/d1/summary").get_json()
+    assert summary["updatedAt"] == 4242  # 文档自报的编辑时刻
+    assert summary["mtime"] >= 0 and summary["mtime"] != 4242  # 文件系统记的写入时刻
+    assert (summary["schema"], summary["canvases"], summary["objects"]) == (3, 1, 0)
+
+    # 读不出来 = 「磁盘上没有可比较的东西」，不是「各项为 0」
+    slot.write_text("{ not json", encoding="utf-8")
+    assert m.document_summary(slot) is None
+    assert client.get("/api/autosave/d1/summary").status_code == 404
+
+
+# ------------------- 版本检查点的画布身份（Prompt 03 / R-03） -----------------
+
+
+def _version_doc(name, objects=()):
+    return {
+        "schema": 2,
+        "name": name,
+        "page": {"w": 10, "h": 10},
+        "objects": list(objects),
+        "guides": [],
+    }
+
+
+def test_version_records_canvas_identity_and_omits_it_when_absent(client):
+    with_id = client.post(
+        "/api/versions/dv",
+        json={"doc": _version_doc("Fig 2"), "canvasId": "c2", "canvasName": "Fig 2"},
+    ).get_json()["version"]
+    assert (with_id["canvasId"], with_id["canvasName"]) == ("c2", "Fig 2")
+
+    # 没给身份就**不填**：缺席的含义是「不知道来自哪张画布」，
+    # 补一个默认值等于替它编一个身份出来
+    without = client.post("/api/versions/dv", json={"doc": _version_doc("x")}).get_json()
+    assert "canvasId" not in without["version"]
+    assert "canvasName" not in without["version"]
+
+    listed = client.get("/api/versions/dv").get_json()["versions"]
+    assert [v.get("canvasId") for v in listed] == ["c2", None]
+
+
+def test_auto_checkpoint_dedup_is_per_canvas(client):
+    """内容相同但来自另一张画布，不是「与最近一版相同」。
+
+    复制一张画布之后两张内容逐字节相同：只比 doc 的话，第二张画布的检查点
+    会被判成重复而跳过，于是它在时间线上一个检查点都没有。
+    """
+    doc = _version_doc("Fig 1", [{"id": "t1", "type": "text"}])
+    first = client.post(
+        "/api/versions/dv", json={"doc": doc, "auto": True, "canvasId": "c1"}
+    ).get_json()
+    assert not first.get("skipped")
+
+    same_canvas = client.post(
+        "/api/versions/dv", json={"doc": doc, "auto": True, "canvasId": "c1"}
+    ).get_json()
+    assert same_canvas["skipped"] is True
+
+    other_canvas = client.post(
+        "/api/versions/dv", json={"doc": doc, "auto": True, "canvasId": "c2"}
+    ).get_json()
+    assert not other_canvas.get("skipped")
+    assert other_canvas["version"]["canvasId"] == "c2"
+
+
+# ------------------- 评审 P1/P2（PR #201）：判据与写入之间的缝 -------------
+
+
+#: 目录 fsync 这一步在 **Windows 上根本不存在**：`os.open(目录, O_RDONLY)` 直接
+#: 报错，`_fsync_dir` 当场返回。下面两条注入的都是「目录 fd 的 fsync 失败 /
+#: 不被支持」，在那里**一条都执行不到**——不标出来的话正向那条会红
+#: （DID NOT RAISE），反向那条会**恒真地绿**，而绿得毫无内容比红更坏。
+#: Windows 上真正该被钉住的是「打不开目录就跳过」，那条单独在下面量。
+posix_dir_fsync = pytest.mark.skipif(
+    os.name == "nt", reason="Windows 打不开目录 fd，没有目录 fsync 这一步"
+)
+
+
+@posix_dir_fsync
+def test_directory_fsync_failure_is_not_swallowed(tmp_path, monkeypatch):
+    """目录项落不了盘要**响亮地失败**。
+
+    以前这里连同 Windows「打不开目录」一起 `pass` 掉了：调用方于是收到一个
+    成功，而前端拿到成功就会把本机兜底副本删掉——用户手上从此只剩这一份
+    可能撑不过掉电的文件。ADR 0023 与 `src/tavotto/AGENTS.md` 写的是
+    「失败清 tmp + 抛 AtomicWriteError」。
+    """
+    import errno
+
+    real_fsync = os.fsync
+    target = tmp_path / "doc.json"
+
+    def boom(fd):
+        # 只让**目录** fd 的 fsync 失败：文件那一步照常，否则测的就成了另一件事
+        if os.fstat(fd).st_mode & stat.S_IFDIR:
+            raise OSError(errno.EIO, "模拟目录项落盘时的 I/O 错误")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", boom)
+    with pytest.raises(atomicio.AtomicWriteError) as exc:
+        atomicio.write_json(target, {"a": 1})
+    assert exc.value.code == "dir_fsync_failed"
+
+
+@posix_dir_fsync
+def test_directory_fsync_unsupported_is_still_ignored(tmp_path, monkeypatch):
+    """「这个文件系统没有目录 fsync 这一步」不是失败。
+
+    部分网络盘 / 旧 FAT 家族对目录 fd 直接回 EINVAL。把它也当成 I/O 错误的话，
+    那些机器上**每一次保存都会报错**——判据比它要守的东西宽了。
+    """
+    import errno
+
+    real_fsync = os.fsync
+    target = tmp_path / "doc.json"
+
+    def unsupported(fd):
+        if os.fstat(fd).st_mode & stat.S_IFDIR:
+            raise OSError(errno.EINVAL, "该文件系统不支持目录 fsync")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", unsupported)
+    atomicio.write_json(target, {"a": 1})  # 不抛
+    assert json.loads(target.read_text(encoding="utf-8")) == {"a": 1}
+
+
+def test_a_directory_that_cannot_be_opened_is_not_a_failure(tmp_path, monkeypatch):
+    """**打不开目录 fd ≠ 落盘失败**，两个平台都要成立。
+
+    Windows 上这是常态（`os.open(目录)` 直接报错），上面那两条在那里一条都跑
+    不到；这一条是它们在 Windows 上唯一的替身，所以它不许带平台标记。
+    """
+    real_open = os.open
+    target = tmp_path / "doc.json"
+
+    def refuse(path, flags, *args, **kwargs):
+        if Path(path).is_dir():
+            raise OSError(13, "这个平台不让打开目录 fd")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", refuse)
+    atomicio.write_json(target, {"a": 1})
+    assert json.loads(target.read_text(encoding="utf-8")) == {"a": 1}
+
+
+def test_autosave_get_does_not_hand_out_an_open_file_handle(client):
+    """自动保存的 GET **不许把文件句柄交出去**。
+
+    `send_file` 的响应是 direct passthrough：句柄要等响应被消费完才关。POSIX
+    上换掉一个开着的文件完全合法，所以这条只在别人电脑上现形——Windows 的
+    `os.replace` 撞见一个还开着的目标就是 `[WinError 5] Access is denied`，
+    用户读过一次这份自动保存之后，**下一次保存写不进去**。
+
+    同一类问题仓库里早有一份处方（`_publish_render_cache` 的退让重试 +
+    `tests/test_windows_regressions.py`），但那条处方只适合渲染缓存：同键的
+    字节逐字节相同，退让是安全的。用户的文档不能退让——那就别拿句柄。
+
+    判据直接看**原始响应**（经过测试客户端一层包装之后这一维就看不见了）：
+    这是「测那段逻辑本身」而不是假装在 Windows 上跑。
+    """
+    client.put("/api/autosave/dw", json=PD)
+    with m.app.test_request_context():
+        resp = m.api_autosave_get("dw")
+    assert resp.status_code == 200
+    assert not resp.direct_passthrough
+
+
+def test_the_revision_header_describes_the_bytes_it_just_served(client, monkeypatch):
+    """`X-Tavotto-Revision` 是**前端下一次写入的基线**，它必须描述 body 里这一份。
+
+    端点读一次文件、再单独读第二遍去算 hash 的话，两次读之间被别人改过时
+    header 描述的是**另一份内容**——前端拿着它去写，外部修改检测会放行一次
+    真正的覆盖。判据把那道缝撑开：第一次读完之后当场改掉磁盘上那份。
+    """
+    client.put("/api/autosave/dh", json=PD)
+    target = m._autosave_path("dh")
+    real_read = Path.read_bytes
+    raced = {"done": False}
+
+    def racing(self):
+        data = real_read(self)
+        if self == target and not raced["done"]:
+            raced["done"] = True
+            atomicio.write_json(target, {**PD, "updatedAt": 999})
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", racing)
+    resp = client.get("/api/autosave/dh")
+    assert raced["done"], "判据没撑开那道缝：端点根本没读这个文件"
+    assert resp.headers["X-Tavotto-Revision"] == atomicio.revision_of(resp.data)
+
+
+def test_two_concurrent_creates_cannot_both_win(client, monkeypatch):
+    """两个标签页同时**新建**同一份文档：只有一个能落盘，另一个必须拿到 409。
+
+    `absent` 哨兵本来就是为这个场景加的，但判据与写入之间放开一瞬就绕过去了
+    ——双方都在对方落盘之前读到「磁盘上没有」，双方都判「没冲突」，后写的把
+    先写的整份盖掉，**而两边都收到 200**。
+
+    判据把缝**撑开**：让第一个请求在读完修订号之后、写之前停住，等第二个请求
+    整个跑完。串行执行下这个交错根本不会发生，所以不撑开就等于没测。
+    """
+    import threading
+
+    first_checked, second_done = threading.Event(), threading.Event()
+    real_revision = m.engine_atomicio.content_revision
+    calls = {"n": 0}
+
+    def slow_revision(path):
+        value = real_revision(path)
+        calls["n"] += 1
+        if calls["n"] == 1:  # 只掰开第一个请求的那条缝
+            first_checked.set()
+            second_done.wait(10)
+        return value
+
+    monkeypatch.setattr(m.engine_atomicio, "content_revision", slow_revision)
+
+    results: list[int] = []
+
+    def put(doc):
+        results.append(client.put("/api/autosave/race?base_revision=absent", json=doc).status_code)
+
+    a = threading.Thread(target=put, args=({**PD, "updatedAt": 1},), daemon=True)
+    a.start()
+    assert first_checked.wait(5), "第一个请求没能停在读完修订号之后"
+    put({**PD, "updatedAt": 2})  # 第二个请求整个跑完
+    second_done.set()
+    a.join(10)
+
+    assert sorted(results) == [200, 409], f"两个新建都成功了 = 有一份被静默盖掉：{results}"
+
+
+def test_the_returned_revision_is_read_while_we_still_hold_the_lock(client, monkeypatch):
+    """交回去的修订号必须是**在锁里**读的。
+
+    挪到锁外的话，A 读到的可能是 B 刚写下的那份的 hash——而 A 的下一次写会
+    带着它当基线，后端一比「和磁盘一致」就放行：判据看起来完全成立，实际是
+    拿着别人的内容当自己的起点，于是 A 能**静默**盖掉 B。
+
+    这条只能白盒量：黑盒看到的两种实现在单个请求下完全一样，差别只在一个
+    交错窗口里，而那个窗口正好是锁的存在与否决定的。
+    """
+    import threading
+
+    path = m._autosave_path("held")
+    lock = m._document_lock(path)
+    real = m.engine_atomicio.content_revision
+    held: list[bool] = []
+
+    def spy(target):
+        held.append(lock.locked())
+        return real(target)
+
+    monkeypatch.setattr(m.engine_atomicio, "content_revision", spy)
+    assert client.put("/api/autosave/held", json=PD).status_code == 200
+    assert held, "这次请求根本没读修订号"
+    assert held[-1], "交回去的那个修订号是在锁外读的"
+    assert isinstance(lock, threading.Lock().__class__)
+
+
+# ------------------------- 严格同源：schema 版本 -----------------------------
+
+
+def test_frontend_and_backend_agree_on_the_current_schema():
+    """`documents.SCHEMA_CURRENT` ↔ `web/src/types/document.ts` 的同名常量。
+
+    两侧对「当前 schema 是几」意见不一时，后端会拒绝前端刚写出来的文档，
+    或者前端会默默打开一份自己读不懂的。看护放在这里而不是靠人记得。
+    """
+    import re
+
+    src = Path(__file__).resolve().parents[1] / "web" / "src" / "types" / "document.ts"
+    match = re.search(r"export const SCHEMA_CURRENT = (\d+)", src.read_text(encoding="utf-8"))
+    assert match, "web/src/types/document.ts 里找不到 SCHEMA_CURRENT"
+    assert int(match.group(1)) == documents.SCHEMA_CURRENT
+
+
+# ------------------- 「另存为」的外部修改检测（issue #222 §1） ----------------
+#
+# 改造前 `POST /api/layouts/<name>` 只有 `validate_document` + 原子写：两个窗口
+# 对同名画布各「另存为」一次，后写的整份盖掉先写的，**而两边都收到 200**。
+# 自动保存那条路早就有 `base_revision` 判据——缺的不是判据，是**把这条路接上
+# 那一份判据**（单一权威：这个仓库里"会不会盖掉别人的内容"只能有一个答案）。
+
+
+def _save_as(client, name, doc=None, **params):
+    qs = "&".join(f"{k}={v}" for k, v in params.items())
+    return client.post(f"/api/layouts/{name}{'?' + qs if qs else ''}", json=doc or PD)
+
+
+def test_save_as_exposes_the_revision_of_the_bytes_it_served(client, tmp_path):
+    """另存为要能带基线，前提是读的时候拿得到基线。
+
+    顺带钉住第二件事：这条 GET 以前是 `send_file`，句柄留在响应里——Windows 上
+    下一次 `os.replace` 撞见它就是 `[WinError 5]`（同一条缺陷在自动保存那条路
+    上修过一次，这里是它的第二个消费点）。
+    """
+    assert _save_as(client, "fig_a").status_code == 200
+    with m.app.test_request_context():
+        resp = m.api_layout_get("fig_a")
+    assert resp.status_code == 200
+    assert not resp.direct_passthrough, "另存为的读取把文件句柄交出去了"
+    assert resp.headers["X-Tavotto-Revision"] == atomicio.revision_of(resp.get_data())
+
+
+def test_save_as_without_a_baseline_still_writes(client, tmp_path):
+    """不带 `base_revision` 的调用方（旧前端、`scripts/ci/upgrade_acceptance.py`）
+    照旧放行——判据是**新增一条出口**，不是把这条路关掉。"""
+    assert _save_as(client, "fig_b").status_code == 200
+    assert _save_as(client, "fig_b", doc={**PD, "updatedAt": 2}).status_code == 200
+    assert (tmp_path / "fig_b.json").is_file()
+
+
+def test_save_as_absent_sentinel_blocks_overwriting_a_file_i_never_read(client, tmp_path):
+    """`absent` = 「我读过，那时磁盘上没有这份文件」。磁盘上有 = 那份内容不是
+    我的，整份 POST 就是把它删掉——两个窗口同时另存为同名画布的正是这一档。"""
+    assert _save_as(client, "fig_c", doc={**PD, "updatedAt": 1}).status_code == 200
+    mine = (tmp_path / "fig_c.json").read_bytes()
+
+    r = _save_as(client, "fig_c", doc={**PD, "updatedAt": 2}, base_revision=m.REVISION_ABSENT)
+    assert r.status_code == 409
+    body = r.get_json()
+    assert body["code"] == "external_change"
+    assert body["revision"] == atomicio.revision_of(mine)
+    assert body["summary"]["updatedAt"] == 1, "冲突里要说清磁盘上那份是什么"
+    assert (tmp_path / "fig_c.json").read_bytes() == mine, "被拒的那次写还是动了磁盘"
+
+
+def test_save_as_with_the_current_revision_passes_and_advances(client, tmp_path):
+    """拿 409 里回的 hash 当基线再来一次 = ADR 0024 §3c 的「明确覆盖」。"""
+    assert _save_as(client, "fig_d", doc={**PD, "updatedAt": 1}).status_code == 200
+    current = client.get("/api/layouts/fig_d").headers["X-Tavotto-Revision"]
+
+    r = _save_as(client, "fig_d", doc={**PD, "updatedAt": 2}, base_revision=current)
+    assert r.status_code == 200
+    assert r.get_json()["revision"] != current, "写完没有交回新的基线"
+    assert (
+        r.get_json()["revision"] == client.get("/api/layouts/fig_d").headers["X-Tavotto-Revision"]
+    )
+
+
+def test_save_as_reuses_the_one_conflict_predicate(client, monkeypatch, tmp_path):
+    """**单一权威**：另存为不许有第二份「会不会盖掉别人」的判据。
+
+    黑盒看不见这一维——一份抄过去的判据在今天的用例上表现完全一样，而它会在
+    下一次只有一侧被改的时候分叉（`absent` 哨兵当初就是补的那种漏）。
+    """
+    seen: list[tuple] = []
+    real = m._revision_conflict
+
+    def spy(base_revision, current):
+        seen.append((base_revision, current))
+        return real(base_revision, current)
+
+    monkeypatch.setattr(m, "_revision_conflict", spy)
+    _save_as(client, "fig_e", base_revision="deadbeef")
+    assert seen, "另存为没有走 `_revision_conflict`（多半是自己又写了一份判据）"
+
+
+def test_two_concurrent_save_as_cannot_both_win(client, monkeypatch, tmp_path):
+    """issue #222 §1 的原场景：两个窗口对同名画布各「另存为」一次。
+
+    判据与写入之间放开一瞬就绕过去了——双方都在对方落盘之前读到「磁盘上没有」，
+    双方都判「没冲突」。串行执行下这个交错根本不会发生，所以判据要把缝**撑开**。
+    """
+    import threading
+
+    first_checked, second_done = threading.Event(), threading.Event()
+    real_revision = m.engine_atomicio.content_revision
+    calls = {"n": 0}
+
+    def slow_revision(path):
+        value = real_revision(path)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            first_checked.set()
+            second_done.wait(10)
+        return value
+
+    monkeypatch.setattr(m.engine_atomicio, "content_revision", slow_revision)
+    results: list[int] = []
+
+    def save(doc):
+        results.append(
+            _save_as(client, "race", doc=doc, base_revision=m.REVISION_ABSENT).status_code
+        )
+
+    a = threading.Thread(target=save, args=({**PD, "updatedAt": 1},), daemon=True)
+    a.start()
+    assert first_checked.wait(5), "第一个请求没能停在读完修订号之后"
+    save({**PD, "updatedAt": 2})
+    second_done.set()
+    a.join(10)
+    assert sorted(results) == [200, 409], f"两次另存为都成功了 = 有一份被静默盖掉：{results}"
+
+
+# ------------------- 读侧的非有限数闸（issue #222 §2） ------------------------
+#
+# 写侧 `atomicio.dumps_json(allow_nan=False)` 早就挡住了 NaN / Infinity，读侧
+# 却是裸 `json.loads` + `send_file`：外部工具写进来的那份**后端读得动、浏览器
+# `JSON.parse` 读不动**。这是「共享判据修一处不算修完」的形状，所以消费点要
+# 点名点全：命名画布文件的 GET / 自动保存的 GET / 版本时间线 / 项目包里的
+# layout.json，外加两处**有意**只当"读不出来"处理的（见各自的用例）。
+
+NAN_DOC = '{"schema": 3, "project": {"id": "p", "name": "n"}, "canvases": [{"id": "c1", "objects": [{"x": NaN}]}]}'  # noqa: E501
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_loads_document_rejects_every_non_finite_literal(literal):
+    """三个字面量都不是 JSON。只挡 NaN 的判据会从另外两个漏过去。"""
+    with pytest.raises(documents.DocumentError) as e:
+        documents.loads_document('{"w": %s}' % literal)
+    assert e.value.code == "non_finite_on_disk"
+
+
+def test_loads_document_still_reads_ordinary_documents():
+    """判据不能顺手把好文档也挡了（恒假的闸和恒真的闸一样坏）。"""
+    assert documents.loads_document(json.dumps(PD)) == PD
+
+
+def test_layout_get_refuses_to_hand_out_a_document_the_browser_cannot_parse(client, tmp_path):
+    (tmp_path / "poisoned.json").write_text(NAN_DOC, encoding="utf-8")
+    r = client.get("/api/layouts/poisoned")
+    assert r.status_code == 400
+    assert r.get_json()["code"] == "non_finite_on_disk"
+
+
+def test_autosave_get_refuses_to_hand_out_a_poisoned_slot(client, tmp_path):
+    slot = tmp_path / documents.AUTOSAVE_DIRNAME / "np.json"
+    slot.parent.mkdir(parents=True, exist_ok=True)
+    slot.write_text(NAN_DOC, encoding="utf-8")
+    r = client.get("/api/autosave/np")
+    assert r.status_code == 400
+    assert r.get_json()["code"] == "non_finite_on_disk"
+
+
+def test_a_poisoned_timeline_is_not_silently_reported_as_no_versions(client, tmp_path):
+    """**这一处不许吞。** `DocumentError` 是 `ValueError` 的子类，跟着
+    `_load_versions` 原来那个 `except (OSError, ValueError): return []` 走的话，
+    时间线会显示成"没有版本"，而下一次创建检查点会在这个空列表上追加并整份
+    写回——**用户全部的检查点当场没了**。
+    """
+    poisoned = tmp_path / documents.VERSIONS_DIRNAME / "dv.json"
+    poisoned.parent.mkdir(parents=True, exist_ok=True)
+    poisoned.write_text('{"versions": [{"id": "v1", "doc": {"x": NaN}}]}', encoding="utf-8")
+    before = poisoned.read_bytes()
+
+    assert client.get("/api/versions/dv").status_code == 400
+    r = client.post("/api/versions/dv", json={"doc": PD})
+    assert r.status_code == 400
+    assert r.get_json()["code"] == "non_finite_on_disk"
+    assert poisoned.read_bytes() == before, "被拒的那次创建把旧时间线整份盖掉了"
+
+
+def test_package_open_rejects_a_layout_the_browser_cannot_parse(client, tmp_path):
+    """项目包里的 layout.json 是**第二个**会被原样交回浏览器的文档读取点：
+    这个端点把 doc 直接 `jsonify` 回去，NaN 在那一步又被写回响应里。"""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("layout.json", NAN_DOC)
+        z.writestr("package_manifest.json", '{"assets": []}')
+    r = client.post(
+        "/api/package/open",
+        data={"package": (io.BytesIO(buf.getvalue()), "p.tavopkg")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 400
+    assert r.get_json()["code"] == "package_invalid"
+    assert "NaN" in r.get_json()["error"], "报了个不带原因的失败，用户无从下手"
+
+
+def test_the_two_deliberately_permissive_readers_stay_permissive(client, tmp_path):
+    """点名剩下的两个读取点，说清它们**有意**只把 NaN 当"读不出来"。
+
+    * `document_summary` 的契约就是"读不出来 → None"，而它的两个调用方都不能
+      抛（一个是 409 冲突响应的一部分，一个是 `/summary` 的 404）；
+    * `_autosave_newer_than` 是给不发修订号的旧前端兜底的，它的既定纪律是
+      「不能因为一个坏掉的旧槽位把用户锁死」——放行的结果正是拿一份好内容
+      换掉那个坏文件。
+
+    原因由 `GET /api/autosave/<id>` 那条路说清（上面两条用例）。
+    """
+    slot = tmp_path / documents.AUTOSAVE_DIRNAME / "perm.json"
+    slot.parent.mkdir(parents=True, exist_ok=True)
+    slot.write_text(NAN_DOC, encoding="utf-8")
+
+    assert m.document_summary(slot) is None
+    assert client.get("/api/autosave/perm/summary").status_code == 404
+    # 带 base（不带 base_revision）的写入照常放行，坏文件被换掉
+    assert client.put("/api/autosave/perm?base=1", json=PD).status_code == 200
+    assert documents.loads_document(slot.read_bytes()) == PD
+
+
+# ------------------- 自动保存槽位的磁盘上限（issue #221 §2） ------------------
+#
+# `layouts/_autosave/` 的删除路径只有 `DELETE /api/autosave/<id>` 与教程重置
+# 两条：前端每次落盘会把被 `tavotto.docIndex`（12 条）挤出去的槽位 DELETE 掉，
+# 但那条路只在"同一个浏览器 profile 的索引还在"时有效。清过站点数据 / 换浏览器 /
+# 换机器共用数据目录 / 那次 DELETE 失败，槽位就成了没人认领的孤儿，而**没有
+# 任何一条路会回收它们**。
+
+
+def _slot_names(tmp_path):
+    d = tmp_path / documents.AUTOSAVE_DIRNAME
+    return sorted(p.name for p in d.glob("*.json")) if d.is_dir() else []
+
+
+def test_autosave_slots_are_capped_by_count_oldest_first(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(m, "AUTOSAVE_KEEP_SLOTS", 3)
+    for i in range(6):
+        assert client.put(f"/api/autosave/d{i}", json=PD).status_code == 200
+        os.utime(tmp_path / documents.AUTOSAVE_DIRNAME / f"d{i}.json", ns=(0, (i + 1) * 10**9))
+    client.put("/api/autosave/d5", json=PD)  # 触发一次清理（d5 的 mtime 回到现在）
+    kept = _slot_names(tmp_path)
+    assert len(kept) == 3, f"条数上限没生效：{kept}"
+    assert "d5.json" in kept and "d0.json" not in kept, f"删的不是最旧的那几个：{kept}"
+
+
+def test_autosave_slots_are_capped_by_bytes(client, tmp_path, monkeypatch):
+    """两条上限谁先咬到算谁的：条数够用、字节超了也要裁。"""
+    monkeypatch.setattr(m, "AUTOSAVE_KEEP_SLOTS", 100)
+    monkeypatch.setattr(m, "AUTOSAVE_MIN_SLOTS", 0)  # 保底另有一条用例，这里量的是字节这一档
+    for i in range(5):
+        client.put(f"/api/autosave/b{i}", json=PD)
+        os.utime(tmp_path / documents.AUTOSAVE_DIRNAME / f"b{i}.json", ns=(0, (i + 1) * 10**9))
+    one = (tmp_path / documents.AUTOSAVE_DIRNAME / "b0.json").stat().st_size
+    monkeypatch.setattr(m, "AUTOSAVE_KEEP_BYTES", one * 3 + 1)
+    client.put("/api/autosave/b4", json=PD)
+    kept = _slot_names(tmp_path)
+    assert len(kept) == 3, f"字节上限没生效（条数上限是 100）：{kept}"
+    assert "b4.json" in kept and "b0.json" not in kept
+
+
+def test_the_slot_just_written_is_never_pruned(client, tmp_path, monkeypatch):
+    """上限压到 0 也不能删掉这次刚写的那一份——它是用户此刻正在编辑的内容，
+    而这个清理的整个存在理由是回收**没人认领**的旧槽位。"""
+    monkeypatch.setattr(m, "AUTOSAVE_KEEP_SLOTS", 0)
+    client.put("/api/autosave/keepme", json=PD)
+    client.put("/api/autosave/other", json=PD)
+    assert client.put("/api/autosave/keepme", json=PD).status_code == 200
+    assert _slot_names(tmp_path) == ["keepme.json"]
+
+
+def test_pruning_skips_a_slot_rewritten_since_the_scan(client, tmp_path, monkeypatch):
+    """扫描到删除之间那道缝：并发保存写过的槽位不能被这条清理路径删掉。
+
+    黑盒看不见这一维（串行跑的话那道缝根本不存在），所以在**取锁那一刻**
+    重写受害者——那正是并发保存会做的事。
+    """
+    client.put("/api/autosave/old", json=PD)
+    client.put("/api/autosave/new", json=PD)
+    victim = tmp_path / documents.AUTOSAVE_DIRNAME / "old.json"
+    os.utime(victim, ns=(0, 10**9))
+    monkeypatch.setattr(m, "AUTOSAVE_KEEP_SLOTS", 1)  # 摆好状态之后才收紧上限
+
+    from contextlib import contextmanager
+
+    real_lock = m._document_lock
+
+    @contextmanager
+    def racing(path):
+        if path == victim:
+            atomicio.write_json(victim, {**PD, "updatedAt": 99})
+        with real_lock(path):
+            yield
+
+    monkeypatch.setattr(m, "_document_lock", racing)
+    assert m._prune_autosave_slots(tmp_path / documents.AUTOSAVE_DIRNAME / "new.json") == []
+    assert victim.is_file(), "清理删掉了一份刚刚被写过的槽位"
+
+
+def test_the_byte_cap_never_cuts_autosave_below_the_slot_floor(client, tmp_path, monkeypatch):
+    """字节上限**不许**把槽位数压到保底之下。
+
+    自动保存槽位不是缓存，是没另存过的文档的**主副本**（写盘成功之后前端就把
+    localStorage 那份删了）。而字节上限按大小算：一份 10 MB 的文档下 64 MB 只够
+    6 个槽——比前端索引里还认领着的 12 个还少，用户点开「最近文档」就是 404。
+    一个会删掉用户唯一一份副本的上限，比一个不设上限的目录坏得多。
+    """
+    monkeypatch.setattr(m, "AUTOSAVE_MIN_SLOTS", 3)
+    monkeypatch.setattr(m, "AUTOSAVE_KEEP_BYTES", 1)  # 字节上限压到极限
+    for i in range(5):
+        client.put(f"/api/autosave/f{i}", json=PD)
+        os.utime(tmp_path / documents.AUTOSAVE_DIRNAME / f"f{i}.json", ns=(0, (i + 1) * 10**9))
+    client.put("/api/autosave/f4", json=PD)
+    kept = _slot_names(tmp_path)
+    assert len(kept) == 3, f"字节上限吃掉了保底槽位：{kept}"
+
+
+def test_no_response_ever_carries_a_bare_infinity(client, tmp_path):
+    """**第三个边界：响应。**
+
+    读侧闸挡的是磁盘上写着 `NaN` 字面量那一档。另一条来路是磁盘上写着合法的
+    `1e400`：Python 读成 `inf`，而版本时间线那条 GET 交给浏览器的不是磁盘上
+    那份字节，是**后端重新序列化出来的响应**——Flask 默认 `allow_nan=True`，
+    实测 `jsonify({"x": float("inf")})` 回 `{"x":Infinity}`，浏览器
+    `JSON.parse` 当场拒收。
+
+    判据的主语因此是**响应体**，不是磁盘上那份：拿浏览器那一侧的解析规则去读
+    它，读得动才算数。
+    """
+    poisoned = tmp_path / documents.VERSIONS_DIRNAME / "dinf.json"
+    poisoned.parent.mkdir(parents=True, exist_ok=True)
+    poisoned.write_text('{"versions": [{"id": "v1", "doc": {"x": 1e400}}]}', encoding="utf-8")
+
+    r = client.get("/api/versions/dinf/v1")
+    assert r.status_code == 500, "非有限数悄悄地被发出去了"
+    documents.loads_document(r.get_data())  # 浏览器那一侧必须解析得动这份错误响应

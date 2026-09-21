@@ -1,0 +1,141 @@
+{
+  "r_abi": "4.6",
+  "packages": [
+    {
+      "name": "R6",
+      "version": "2.6.1",
+      "filename": "R6_2.6.1.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/R6_2.6.1.tgz",
+      "sha256": "134d30277b1c64afe9ae31a4a52857822bc21d32db46479eb3ea2f3a7397c8d6",
+      "dcf": "Package: R6\nVersion: 2.6.1\nDepends: R (>= 3.6)\nSuggests: lobstr, testthat (>= 3.0.0)\nLicense: MIT + file LICENSE\nMD5sum: 2e7090562ea49b1d39c450c6377b6977\nBuilt: R 4.6.0; ; 2026-05-13 22:00:12 UTC; unix\nFile: R6_2.6.1.tgz"
+    },
+    {
+      "name": "RColorBrewer",
+      "version": "1.1-3",
+      "filename": "RColorBrewer_1.1-3.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/RColorBrewer_1.1-3.tgz",
+      "sha256": "cf5564fee1b54d547dd5656afbea17e34d48f74ef97b376e495dd4e223ecafc9",
+      "dcf": "Package: RColorBrewer\nVersion: 1.1-3\nDepends: R (>= 2.0.0)\nLicense: Apache License 2.0\nMD5sum: 504f10e0d20f54951e847f0b5d53e145\nBuilt: R 4.6.0; ; 2026-05-13 22:52:51 UTC; unix\nFile: RColorBrewer_1.1-3.tgz"
+    },
+    {
+      "name": "S7",
+      "version": "0.2.2",
+      "filename": "S7_0.2.2.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/S7_0.2.2.tgz",
+      "sha256": "76b7d1dcbab977c592a2d951a07336f509243c34fa0d56f6c2c56f2b71c3aec4",
+      "dcf": "Package: S7\nVersion: 0.2.2\nDepends: R (>= 3.5.0)\nImports: utils\nSuggests: bench, callr, covr, knitr, methods, rmarkdown, testthat (>=\n        3.2.0), tibble\nLicense: MIT + file LICENSE\nMD5sum: d5ae73c0b21af2b5fba3fd0be60007a7\nBuilt: R 4.6.0; wasm32-unknown-emscripten; 2026-05-14 02:35:52 UTC;\n        unix\nFile: S7_0.2.2.tgz"
+    },
+    {
+      "name": "cli",
+      "version": "3.6.6",
+      "filename": "cli_3.6.6.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/cli_3.6.6.tgz",
+      "sha256": "efa9c2b12c2da09cccb0a27d2e7a079ebd4c38fc1d03560d599f7634eb7f9932",
+      "dcf": "Package: cli\nVersion: 3.6.6\nDepends: R (>= 3.4)\nImports: utils\nSuggests: callr, covr, crayon, digest, glue (>= 1.6.0), grDevices,\n        htmltools, htmlwidgets, knitr, methods, processx, ps (>=\n        1.3.4.9000), rlang (>= 1.0.2.9003), rmarkdown, rprojroot,\n        rstudioapi, testthat (>= 3.2.0), tibble, whoami, withr\nLicense: MIT + file LICENSE\nMD5sum: 9969e89a653cbd6adab0f2272549f629\nBuilt: R 4.6.0; wasm32-unknown-emscripten; 2026-05-12 20:13:34 UTC;\n        unix\nFile: cli_3.6.6.tgz"
+    },
+    {
+      "name": "cpp11",
+      "version": "0.5.5",
+      "filename": "cpp11_0.5.5.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/cpp11_0.5.5.tgz",
+      "sha256": "101b838c116c78bb0f8fe9a8aafb38a74ecd7eef8645212ea6968de275509c6e",
+      "dcf": "Package: cpp11\nVersion: 0.5.5\nDepends: R (>= 4.0.0)\nSuggests: bench, brio, callr, cli, covr, decor, desc, ggplot2, glue,\n        knitr, lobstr, mockery, progress, rmarkdown, scales, Rcpp,\n        testthat (>= 3.2.0), tibble, utils, vctrs, withr\nLicense: MIT + file LICENSE\nMD5sum: 8936fd80577c137071f8f0bb1ffb3861\nBuilt: R 4.6.0; ; 2026-05-12 21:43:20 UTC; unix\nFile: cpp11_0.5.5.tgz"
+    },
+    {
+      "name": "farver",
+      "version": "2.1.2",
+      "filename": "farver_2.1.2.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/farver_2.1.2.tgz",
+      "sha256": "f7555f2c1926f88d431ff1919c81cff48ff6eadc09de4471610312695be6cea8",
+      "dcf": "Package: farver\nVersion: 2.1.2\nSuggests: covr, testthat (>= 3.0.0)\nLicense: MIT + file LICENSE\nMD5sum: d4d2197542b63048e6d99dcefef59a43\nBuilt: R 4.6.0; wasm32-unknown-emscripten; 2026-05-13 02:35:54 UTC;\n        unix\nFile: farver_2.1.2.tgz"
+    },
+    {
+      "name": "ggplot2",
+      "version": "4.0.3",
+      "filename": "ggplot2_4.0.3.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/ggplot2_4.0.3.tgz",
+      "sha256": "1a299608d88c92d5741666229c1125848e4c210b0624ebd0012af97957976ae6",
+      "dcf": "Package: ggplot2\nVersion: 4.0.3\nDepends: R (>= 4.1)\nImports: cli, grDevices, grid, gtable (>= 0.3.6), isoband, lifecycle (>\n        1.0.1), rlang (>= 1.1.0), S7, scales (>= 1.4.0), stats, vctrs\n        (>= 0.6.0), withr (>= 2.5.0)\nSuggests: broom, covr, dplyr, ggplot2movies, hexbin, Hmisc, hms, knitr,\n        mapproj, maps, MASS, mgcv, multcomp, munsell, nlme, profvis,\n        quantreg, quarto, ragg (>= 1.2.6), RColorBrewer, roxygen2,\n        rpart, sf (>= 0.7-3), svglite (>= 2.1.2), testthat (>= 3.1.5),\n        tibble, vdiffr (>= 1.0.6), xml2\nEnhances: sp\nLicense: MIT + file LICENSE\nMD5sum: 853c8cabb5f13906af19a92c26210247\nBuilt: R 4.6.0; ; 2026-05-13 05:28:23 UTC; unix\nFile: ggplot2_4.0.3.tgz"
+    },
+    {
+      "name": "glue",
+      "version": "1.8.1",
+      "filename": "glue_1.8.1.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/glue_1.8.1.tgz",
+      "sha256": "3b025aa5fd067ad9b87fecd219e561d4537d488b33581af8beabe2b06024d44d",
+      "dcf": "Package: glue\nVersion: 1.8.1\nDepends: R (>= 4.1)\nImports: methods\nSuggests: crayon, DBI (>= 1.2.0), dplyr, knitr, rlang, rmarkdown,\n        RSQLite, testthat (>= 3.2.0), vctrs (>= 0.3.0), waldo (>=\n        0.5.3), withr\nLicense: MIT + file LICENSE\nMD5sum: 4e61fadc9bdd09c8b66fe9b1f8532127\nBuilt: R 4.6.0; wasm32-unknown-emscripten; 2026-05-13 06:00:42 UTC;\n        unix\nFile: glue_1.8.1.tgz"
+    },
+    {
+      "name": "gtable",
+      "version": "0.3.6",
+      "filename": "gtable_0.3.6.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/gtable_0.3.6.tgz",
+      "sha256": "dae6408ed2ed1d759e50c5fb7e45f81348ff3f4f914cb418ac12bdeaae2ee80b",
+      "dcf": "Package: gtable\nVersion: 0.3.6\nDepends: R (>= 4.0)\nImports: cli, glue, grid, lifecycle, rlang (>= 1.1.0), stats\nSuggests: covr, ggplot2, knitr, profvis, rmarkdown, testthat (>= 3.0.0)\nLicense: MIT + file LICENSE\nMD5sum: e7fbf6603a3ff216ddcf38249bfaf3b4\nBuilt: R 4.6.0; ; 2026-05-13 06:49:40 UTC; unix\nFile: gtable_0.3.6.tgz"
+    },
+    {
+      "name": "isoband",
+      "version": "0.3.0",
+      "filename": "isoband_0.3.0.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/isoband_0.3.0.tgz",
+      "sha256": "bc7494f286084e8861331256df0f6ab27e519e1797e807ec100db1116d3e7a8e",
+      "dcf": "Package: isoband\nVersion: 0.3.0\nImports: cli, grid, rlang, utils\nLinkingTo: cpp11\nSuggests: covr, ggplot2, knitr, magick, bench, rmarkdown, sf, testthat\n        (>= 3.0.0), xml2\nLicense: MIT + file LICENSE\nMD5sum: b622cf2a0d972e4e9d867e360a484692\nBuilt: R 4.6.0; wasm32-unknown-emscripten; 2026-05-13 09:19:24 UTC;\n        unix\nFile: isoband_0.3.0.tgz"
+    },
+    {
+      "name": "labeling",
+      "version": "0.4.3",
+      "filename": "labeling_0.4.3.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/labeling_0.4.3.tgz",
+      "sha256": "1d89f92c8b15aee3b4f9c8c6c0e7697f79c515558c274279fddfd03a34a6d63d",
+      "dcf": "Package: labeling\nVersion: 0.4.3\nImports: stats, graphics\nLicense: MIT + file LICENSE | Unlimited\nMD5sum: 8716cde95fcede366579cc56d8952769\nBuilt: R 4.6.0; ; 2026-05-13 10:18:30 UTC; unix\nFile: labeling_0.4.3.tgz"
+    },
+    {
+      "name": "lifecycle",
+      "version": "1.0.5",
+      "filename": "lifecycle_1.0.5.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/lifecycle_1.0.5.tgz",
+      "sha256": "c2f8c5905f58b4526c3b68c6163f891b9a12f81d7e50347ad49a70b1f6592527",
+      "dcf": "Package: lifecycle\nVersion: 1.0.5\nDepends: R (>= 3.6)\nImports: cli (>= 3.4.0), rlang (>= 1.1.0)\nSuggests: covr, knitr, lintr (>= 3.1.0), rmarkdown, testthat (>=\n        3.0.1), tibble, tidyverse, tools, vctrs, withr, xml2\nLicense: MIT + file LICENSE\nMD5sum: 56e8354c9d8473374c6139f2ed97be80\nBuilt: R 4.6.0; ; 2026-05-13 10:59:31 UTC; unix\nFile: lifecycle_1.0.5.tgz"
+    },
+    {
+      "name": "rlang",
+      "version": "1.2.0",
+      "filename": "rlang_1.2.0.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/rlang_1.2.0.tgz",
+      "sha256": "6e8cf0cfedf6238f14dd588f44aabb0654da0883dc2dbb7f96e4a718170a1eb4",
+      "dcf": "Package: rlang\nVersion: 1.2.0\nDepends: R (>= 4.0.0)\nImports: utils\nSuggests: cli (>= 3.1.0), covr, crayon, desc, fs, glue, knitr,\n        magrittr, methods, pillar, pkgload, rmarkdown, stats, testthat\n        (>= 3.3.2), tibble, usethis, vctrs (>= 0.2.3), withr\nEnhances: winch\nLicense: MIT + file LICENSE\nMD5sum: 12b48695300c7537fad90dc1bf7e93ec\nBuilt: R 4.6.0; wasm32-unknown-emscripten; 2026-05-14 00:38:39 UTC;\n        unix\nFile: rlang_1.2.0.tgz"
+    },
+    {
+      "name": "scales",
+      "version": "1.4.0",
+      "filename": "scales_1.4.0.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/scales_1.4.0.tgz",
+      "sha256": "1e3fd9c44c6bba3ea2911ee8a2ee9a8cf5a47013a2ca6db8862cb10a1512ba96",
+      "dcf": "Package: scales\nVersion: 1.4.0\nDepends: R (>= 4.1)\nImports: cli, farver (>= 2.0.3), glue, labeling, lifecycle, R6,\n        RColorBrewer, rlang (>= 1.1.0), viridisLite\nSuggests: bit64, covr, dichromat, ggplot2, hms (>= 0.5.0), stringi,\n        testthat (>= 3.0.0)\nLicense: MIT + file LICENSE\nMD5sum: c6a768d2e66ef32d1933e7f2541240a2\nBuilt: R 4.6.0; ; 2026-05-14 02:57:52 UTC; unix\nFile: scales_1.4.0.tgz"
+    },
+    {
+      "name": "vctrs",
+      "version": "0.7.3",
+      "filename": "vctrs_0.7.3.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/vctrs_0.7.3.tgz",
+      "sha256": "42cc19d325e7de2160490273d97099049f261e8b6c3e6736391d96e43923798d",
+      "dcf": "Package: vctrs\nVersion: 0.7.3\nDepends: R (>= 4.0.0)\nImports: cli (>= 3.4.0), glue, lifecycle (>= 1.0.3), rlang (>= 1.1.7)\nSuggests: bit64, covr, crayon, dplyr (>= 0.8.5), generics, knitr,\n        pillar (>= 1.4.4), pkgdown (>= 2.0.1), rmarkdown, testthat (>=\n        3.0.0), tibble (>= 3.1.3), waldo (>= 0.2.0), withr, xml2,\n        zeallot\nLicense: MIT + file LICENSE\nMD5sum: 0987e2b4d65141176b517116bbf51b20\nBuilt: R 4.6.0; wasm32-unknown-emscripten; 2026-05-14 10:58:38 UTC;\n        unix\nFile: vctrs_0.7.3.tgz"
+    },
+    {
+      "name": "viridisLite",
+      "version": "0.4.3",
+      "filename": "viridisLite_0.4.3.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/viridisLite_0.4.3.tgz",
+      "sha256": "cbb327d9e0efe61bfa40ba89c9af3dc05fc5bd76ea69fc485ef3f64fe1785983",
+      "dcf": "Package: viridisLite\nVersion: 0.4.3\nDepends: R (>= 2.10)\nSuggests: hexbin (>= 1.27.0), ggplot2 (>= 1.0.1), testthat, covr\nLicense: MIT + file LICENSE\nMD5sum: 83445396fcda8e37120348484c244f63\nBuilt: R 4.6.0; ; 2026-05-14 11:12:30 UTC; unix\nFile: viridisLite_0.4.3.tgz"
+    },
+    {
+      "name": "withr",
+      "version": "3.0.2",
+      "filename": "withr_3.0.2.tgz",
+      "url": "https://repo.r-wasm.org/bin/emscripten/contrib/4.6/withr_3.0.2.tgz",
+      "sha256": "60dce3c8fa7b42a81a05d99c675fd82c57b8d2dca7233a6ba7d1ee543707b21c",
+      "dcf": "Package: withr\nVersion: 3.0.2\nDepends: R (>= 3.6.0)\nImports: graphics, grDevices\nSuggests: callr, DBI, knitr, methods, rlang, rmarkdown (>= 2.12),\n        RSQLite, testthat (>= 3.0.0)\nLicense: MIT + file LICENSE\nMD5sum: 3cb37859c8254eb029869ddfc1c0bc68\nBuilt: R 4.6.0; ; 2026-05-14 11:58:25 UTC; unix\nFile: withr_3.0.2.tgz"
+    }
+  ]
+}
