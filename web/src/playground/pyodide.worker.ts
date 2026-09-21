@@ -182,7 +182,8 @@ async function load(
     await pyodide.loadPackage([...packages])
     for (const name of extras) {
       const wheel = EXTRA_WHEELS[name]
-      const response = await fetch(new URL(`../wheels/${wheel.filename}`, import.meta.url))
+      const wheelBase = new URL('../wheels/', self.location.href)
+      const response = await fetch(new URL(wheel.filename, wheelBase))
       if (!response.ok) throw new Error(`Wheel HTTP ${response.status}: ${name}`)
       const bytes = await response.arrayBuffer()
       if (!TRUSTED_DIGEST) throw new Error('HTTPS is required to verify plotting packages')

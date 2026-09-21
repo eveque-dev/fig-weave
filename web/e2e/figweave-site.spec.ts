@@ -32,7 +32,11 @@ test('ggplot2 real runtime: style, undo, PNG, PDF and reproducible R export', as
   test.setTimeout(360_000)
   await page.goto(`${origin}/r/?lang=en`)
   await page.locator('[data-r-run]').click()
-  await expect(page.locator('[data-r-status]')).toHaveText('Preview ready', { timeout: 280_000 })
+  await expect.poll(async () => {
+    const error = page.locator('[data-r-error]')
+    if (await error.count()) throw new Error(await error.innerText())
+    return page.locator('[data-r-status]').innerText()
+  }, { timeout: 280_000 }).toBe('Preview ready')
   const image = page.locator('[data-r-preview]')
   const originalUrl = await image.getAttribute('src')
   await page.locator('[data-r-label="title"]').fill('FigWeave edited title')
@@ -68,7 +72,8 @@ test('seaborn, pandas plotting and NetworkX share the real Python editor', async
     buffer: Buffer.from(`import matplotlib.pyplot as plt\nimport seaborn as sns\nimport pandas as pd\nimport networkx as nx\nfig, axes = plt.subplots(1, 3)\nsns.scatterplot(x=[1,2,3], y=[1,4,2], ax=axes[0])\npd.Series([1,3,2]).plot(ax=axes[1])\nnx.draw(nx.path_graph(4), ax=axes[2], pos={0:(0,0),1:(1,1),2:(2,0),3:(3,1)})\nfig.suptitle('Python libraries')\nfig.tight_layout()\n`),
   })
   await expect(page.locator('[data-element-svg] svg')).toBeVisible({ timeout: 360_000 })
-  await expect(page.locator('[data-element-svg]')).toContainText('Python libraries')
+  // Matplotlib embeds labels as glyph paths; its SVG comments preserve the label.
+  await expect.poll(() => page.locator('[data-element-svg]').innerHTML()).toContain('Python libraries')
   await page.screenshot({ path: test.info().outputPath('python-libraries.png'), fullPage: true })
 })
 test.afterAll(async () => {
