@@ -29,6 +29,27 @@ Plotly / pyecharts 导出的 Python 用当前配置重建图表，不包含原�
 目前接收单个图表，暂不支持 JsCode 回调、外部地图、本地数据文件或任意 `pip install`。
 完整边界见 [在线版说明](docs/figweave-online.md)。
 
+## 工作台实景
+
+### Python · Plotly
+
+![在 FigWeave 中运行并编辑 Plotly 折线图](assets/figweave/plotly.png)
+
+运行 `fig` 后修改标题、坐标轴和原生配置，也可直接编辑图中文字与图例。
+
+### Python · pyecharts
+
+![在 FigWeave 中运行并编辑 pyecharts 图表](assets/figweave/pyecharts.png)
+
+运行 `chart` 后编辑图表，导出 PNG、JSON 或可重新执行的 Python 脚本。
+
+### R · ggplot2
+
+![FigWeave ggplot2 工作台与可移动的散点](assets/figweave/ggplot2.png)
+
+选中图内对象后拖动，或用方向键微调；支持标准文字、图例、点、曲线，并可撤销和导出。
+以上图片均来自实际工作台运行。
+
 ## 开始使用
 
 1. 打开对应工作台，先运行自带示例。
