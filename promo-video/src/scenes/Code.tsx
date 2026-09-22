@@ -46,7 +46,7 @@ export const Code = () => {
             lineHeight: 1.65,
             color: "#dfece3",
             margin: "20px 0 0",
-            fontFamily: "ui-monospace, monospace",
+            fontFamily: '"DejaVu Sans Mono", "Noto Sans SC Variable", monospace',
           }}
         >
           {

@@ -82,6 +82,7 @@ export function PlaygroundLanding({
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
             <p className="text-xs leading-relaxed text-ink-2">{pg('privacyNote')}</p>
             <a
+              data-playground-desktop
               href={playgroundDesktopHref(currentLocale())}
               className="flex h-7 shrink-0 items-center gap-1.5 rounded-sm border border-border px-2.5 text-xs text-ink-2 transition-colors hover:border-ink-faint hover:text-ink"
             >

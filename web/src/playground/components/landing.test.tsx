@@ -120,13 +120,12 @@ describe('PlaygroundLanding', () => {
     expect(onFile.mock.calls[0][0].name).toBe('mine.py')
   })
 
-  it('桌面版出口说明尚未发布，并链接本站进度', () => {
+  it('桌面预览入口链接本站公开下载区', () => {
     renderLanding()
-    const links = [...container.querySelectorAll('a')].filter((a) =>
-      a.textContent?.includes('桌面版进度'),
-    )
-    expect(links.length).toBeGreaterThanOrEqual(1)
+    const links = container.querySelectorAll('[data-playground-desktop]')
+    expect(links).toHaveLength(1)
     expect(links[0].getAttribute('href')).toBe('../?lang=zh#downloads')
-    expect(container.textContent).toContain('尚未发布')
+    expect(links[0].textContent).toContain('桌面预览版')
+    expect(container.textContent).toContain('桌面预览安装包')
   })
 })
