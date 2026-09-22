@@ -1618,6 +1618,7 @@
     "note": "Changes the interface background, not your figures or exports."
   },
   "charts": {
+    "source": "Python script",
     "title": "Interactive chart studio",
     "scope": "Run Plotly / pyecharts Python scripts directly. Name your Plotly figure fig or your pyecharts chart chart. Scripts run in your browser with bundled dependencies and one chart. JsCode callbacks, external maps and local data files are not supported.",
     "library": "Chart library",

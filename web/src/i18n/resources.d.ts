@@ -199,6 +199,7 @@ export default interface Resources {
       "open": "打开交互图表工作台",
       "options": "高级编辑 · 图表配置 JSON",
       "scope": "直接运行 Plotly / pyecharts Python 脚本。Plotly 图请命名为 fig，pyecharts 图请命名为 chart。脚本在浏览器中执行；支持内置依赖和单个图表，暂不支持 JsCode 回调、外部地图和本地数据文件。",
+      "source": "Python 脚本",
       "timeout": "运行超时，已停止 Python。请简化脚本后重试。",
       "title": "交互图表工作台",
       "upload": "上传 Python 脚本"

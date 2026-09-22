@@ -218,8 +218,10 @@ test('Plotly and pyecharts execute Python, edit, undo and export', async ({ page
     await page.goto(`${origin}/charts/?lang=en`)
     if (kind === 'pyecharts') {
       await page.locator('[data-chart-kind] button').click()
-      await page.keyboard.press('End'); await page.keyboard.press('Enter')
+      await page.locator('[data-select-option="pyecharts"]').click()
     }
+    await expect(page.locator('[data-chart-kind] button')).toHaveText(kind === 'plotly' ? 'Plotly' : 'pyecharts')
+    await expect(page.locator('[data-chart-source]')).toHaveValue(new RegExp(kind === 'plotly' ? 'import plotly' : 'from pyecharts'))
     await page.locator('[data-chart-run]').click()
     await expect.poll(async () => {
       const errors = await page.locator('[data-chart-error]').allTextContents()
@@ -240,6 +242,7 @@ test('Plotly and pyecharts execute Python, edit, undo and export', async ({ page
     await page.locator('[data-chart-python]').click()
     const code = readFileSync((await (await py).path())!, 'utf8')
     expect(code).toContain('Edited chart')
+    expect(code).toContain(kind === 'plotly' ? 'plotly' : 'pyecharts')
     await page.locator('[data-chart-undo]').click()
     await expect(page.locator('[data-chart-label="title"]')).toHaveValue(original)
     // Exported code must run in the same real Python runtime and preserve edits.

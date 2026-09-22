@@ -14,7 +14,7 @@
 
 - `pnpm build`：类型检查、生产构建和 Tailwind 扫描门禁通过。
 - `pnpm i18n:check`：双语资源、类型与文案扫描通过。
-- `pnpm test`：279 文件、4,142 条通过。日志仍存在已有的 jsdom canvas 未实现提示和一次 focusRescue 清理阶段异常输出，建议单独收敛；不能把测试通过等同于没有日志问题。
+- `pnpm test`：280 文件、4,145 条通过。日志仍存在已有的 jsdom canvas 未实现提示和一次 focusRescue 清理阶段异常输出，建议单独收敛；不能把测试通过等同于没有日志问题。
 - 真实浏览器：ggplot2 运行、标题修改、撤销、PNG/PDF/R 导出通过。
 - 真实浏览器：seaborn、pandas plotting、NetworkX 联合脚本运行并显示图表通过。
 - 首页→编辑器→首页、中英文切换、路径前缀部署通过。
@@ -38,12 +38,12 @@
 应复用既有导出管线补齐 Python SVG/PNG/PDF 的能力声明与入口，并为刷新前丢失编辑提供提示。
 会话恢复若增加持久化，需要明确用户选择与隐私边界，不应静默保存源码。
 
-### 3. 可复现发布（高优先级）
+### 3. 可复现发布（本轮已补齐）
 
-本地目录是无 `.git` 的工作副本，无法可靠确认它相对线上提交的完整差异。本次版本应以源代码
-快照 SHA-256 和 playground 指纹标识，不能伪称来自一个新 Git 提交。建议后续恢复开发仓库，
-让 CI 构建、测试、源码包和发布清单绑定同一提交。继续使用 releases/current 原子切换。
-已有线上版本目录可被其他用户写入（777/666），新版本应使用目录 755、文件 644。
+按照用户要求，项目目录不保存 `.git`，提交和推送在临时工作副本完成。线上 `version.json`
+记录准确提交、公开源码 ZIP 的 SHA-256 和 playground 指纹；源码由该提交直接归档。
+GitHub 安装包发布流程在两个平台构建、内置引擎冒烟通过后发布预览版，并附构建信息及校验值。
+线上沿用 releases/current 原子切换，旧版本保留用于回滚；新版本目录 755、文件 644。
 
 ### 4. 运维与首屏体积（中优先级）
 
@@ -57,7 +57,7 @@
 
 服务器既有 Ubuntu APT 源已经指向阿里云，无需更改全局源。HTTPS 与 certbot 定时续期已存在。
 Nginx 旧配置备份：`/etc/nginx/sites-available/fig-weave.backup-20260922-ui`。
-新站点目录以 `20260922-ui-<fingerprint>` 标识，旧目录保留。
+新站点目录以 `20260922-online-<commit>` 标识，旧目录保留；以线上 `version.json` 为准。
 回滚时将 `/var/www/fig-weave/current` 原子切回
 `/var/www/fig-weave/releases/20260922-7bce7c1`；如需同时撤销压缩策略，恢复上述配置备份后
 先 `nginx -t` 再 reload。无需修改或重启其他站点。
@@ -71,6 +71,8 @@ Nginx 旧配置备份：`/etc/nginx/sites-available/fig-weave.backup-20260922-ui
 - Git 历史在临时工作副本中操作，提交到 eveque-dev/fig-weave 私有分支；发布源码包绑定提交。
 - GitHub Actions 已构建 Windows x64 EXE 与 macOS ARM64 DMG，均为未签名预览版；
   R 与交互图表新增入口属于网页版，尚未包含在桌面离线引擎。
+- 预览发布工作流升级至 Node 24 Actions，使用独立 `figweave-preview-*` 标签，避免触发上游发行渠道。
+- Plotly 基础脚本不再预加载 numpy/pandas；浏览器归档去掉 Jupyter 专用资源，保留 Python、HTML 导出资源及许可证，体积从约 9.7 MB 降到 5.2 MB，原包和派生归档均校验 SHA-256。
 
 仍建议优先补齐 Matplotlib 在线导出与会话恢复，其次改善首页静态预渲染、
 拆分语言资源体积，并安排服务器更新维护窗口。

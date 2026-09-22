@@ -1599,6 +1599,7 @@
     "note": "只改变界面背景，不改变图表或导出颜色。"
   },
   "charts": {
+    "source": "Python 脚本",
     "title": "交互图表工作台",
     "scope": "直接运行 Plotly / pyecharts Python 脚本。Plotly 图请命名为 fig，pyecharts 图请命名为 chart。脚本在浏览器中执行；支持内置依赖和单个图表，暂不支持 JsCode 回调、外部地图和本地数据文件。",
     "library": "绘图库",

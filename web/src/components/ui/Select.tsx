@@ -91,6 +91,7 @@ export function Select<T extends string>({
               <RS.Item
                 key={opt.value}
                 value={opt.value}
+                data-select-option={opt.value}
                 className={cn(
                   'relative flex h-7 cursor-default select-none items-center gap-2 rounded-sm',
                   'pl-6 pr-2 text-sm text-ink outline-none',
