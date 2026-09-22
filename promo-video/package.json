@@ -1,0 +1,38 @@
+{
+  "name": "promo-video",
+  "version": "1.0.0",
+  "description": "FigWeave promotional film — reproducible Python/R figure editing",
+  "repository": {},
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "dependencies": {
+    "@fontsource-variable/noto-sans-sc": "5.3.0",
+    "@remotion/cli": "4.0.527",
+    "@remotion/media": "4.0.527",
+    "@remotion/tailwind-v4": "4.0.527",
+    "@remotion/transitions": "4.0.527",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "remotion": "4.0.527",
+    "tailwindcss": "4.0.0"
+  },
+  "devDependencies": {
+    "@remotion/eslint-config-flat": "4.0.527",
+    "@types/react": "19.2.7",
+    "@types/web": "0.0.166",
+    "eslint": "9.19.0",
+    "prettier": "3.8.1",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "dev": "remotion studio",
+    "build": "remotion bundle",
+    "upgrade": "remotion upgrade",
+    "lint": "eslint src && tsc",
+    "sfx": "node scripts/generate-sfx.mjs",
+    "render": "npm run sfx && remotion render FigWeavePromo out/FigWeave-promo-1080p.mp4 --codec=h264 --crf=18"
+  },
+  "sideEffects": [
+    "*.css"
+  ]
+}

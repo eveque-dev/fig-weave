@@ -1,0 +1,5 @@
+{
+  "code": "figweave_plot <- p + ggplot2::theme(text = ggplot2::element_text(size = 10), legend.position = \"right\")\nfigweave_result <- figweave_scene(figweave_plot, list(\"legend:0\" = c(-0.649999929028888,0.2299999682047108)), 7, 5)\ngrid::grid.newpage()\ngrid::grid.draw(figweave_result)\n",
+  "fontSize": 10,
+  "legendMoved": true
+}

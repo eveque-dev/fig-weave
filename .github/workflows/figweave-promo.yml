@@ -1,0 +1,37 @@
+name: FigWeave promo video
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  TAVOTTO_NO_TELEMETRY: '1'
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: promo-video
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run render -- --concurrency=2
+      - name: Render review frames and poster
+        run: |
+          for frame in 120 220 350 450 650 795 915; do
+            npx remotion still FigWeavePromo out/frame-${frame}.png --frame=${frame}
+          done
+          cp out/frame-120.png out/FigWeave-promo-poster.png
+          ffprobe -v error -show_format -show_streams -of json out/FigWeave-promo-1080p.mp4 > out/media-info.json
+          sha256sum out/FigWeave-promo-1080p.mp4 > out/SHA256SUMS-video.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: FigWeave-promo-1080p
+          path: promo-video/out/
+          if-no-files-found: error
+          retention-days: 30
