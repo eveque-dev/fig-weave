@@ -69,13 +69,13 @@ Plotly / pyecharts 导出的 Python 用当前配置重建图表，不包含原�
 ## 桌面预览安装包
 
 Windows x64 `.exe` 与 macOS Apple Silicon `.dmg` 已通过私有仓库的自动构建和
-内置引擎冒烟验证，可在 [GitHub Releases](https://github.com/eveque-dev/fig-weave/releases)
+内置引擎冒烟验证，可在 [FigWeave 0.15.0 预览 Release](https://github.com/eveque-dev/fig-weave/releases/tag/figweave-preview-0.15.0-20260922)
 下载预览版本。需要有本私有仓库的访问权限；Release 附带校验值和准确构建提交。
 
 | 平台 | 当前状态 |
 | --- | --- |
-| Windows x64 | 未签名预览 EXE，首次运行可能出现 SmartScreen 提示 |
-| macOS Apple Silicon | 未签名、未公证的预览 DMG，尚非正式发行版 |
+| Windows x64 | [下载 EXE](https://github.com/eveque-dev/fig-weave/releases/download/figweave-preview-0.15.0-20260922/FigWeave_0.15.0_windows_x64.exe) · 未签名预览，首次运行可能出现 SmartScreen 提示 |
+| macOS Apple Silicon | [下载 DMG](https://github.com/eveque-dev/fig-weave/releases/download/figweave-preview-0.15.0-20260922/FigWeave_0.15.0_macos_arm64.dmg) · 未签名、未公证，尚非正式发行版 |
 | macOS Intel / Windows ARM | 没有构建对应安装包，也没有完成平台验证 |
 | Linux | 本项目暂不提供桌面安装包，可使用在线入口 |
 
