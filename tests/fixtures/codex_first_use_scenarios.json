@@ -58,8 +58,8 @@
       "given": "用户说「帮我安装 Tavotto」，没有要求修改源码",
       "expect": "按 README 首用章节走普通安装；不 clone、不 pnpm/npm/cargo/Tauri/测试/editable install",
       "anchors": [
-        {"doc": "README.zh-CN.md", "must": ["普通用户不要克隆或构建这个仓库", "在 Codex 中第一次使用 Tavotto"]},
-        {"doc": "README.md", "must": ["do not clone or build this repository", "Using Tavotto with Codex for the first time"]},
+        {"doc": "docs/upstream-codex-zh-CN.md", "must": ["普通用户不要克隆或构建这个仓库", "在 Codex 中第一次使用 Tavotto"]},
+        {"doc": "docs/upstream-codex-en.md", "must": ["do not clone or build this repository", "Using Tavotto with Codex for the first time"]},
         {"doc": "AGENTS.md", "must": ["用户安装任务", "不得构建仓库、安装开发依赖或运行完整测试"]}
       ]
     },
@@ -68,8 +68,8 @@
       "given": "用户明确说要贡献 / 开发 Tavotto 本身",
       "expect": "这时才进入源码开发路径",
       "anchors": [
-        {"doc": "README.zh-CN.md", "must": ["贡献者：从源码开发"]},
-        {"doc": "README.md", "must": ["Contributors: developing from source"]},
+        {"doc": "docs/upstream-codex-zh-CN.md", "must": ["贡献者：从源码开发"]},
+        {"doc": "docs/upstream-codex-en.md", "must": ["Contributors: developing from source"]},
         {"doc": "AGENTS.md", "must": ["我要贡献/开发 Tavotto"]}
       ]
     }

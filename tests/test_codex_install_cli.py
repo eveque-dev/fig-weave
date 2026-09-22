@@ -266,7 +266,7 @@ def _run(argv: list[str], env_extra: dict | None = None) -> tuple[int, str, str]
 
 # --------------------------- 单一权威 ---------------------------
 def test_readme_and_cli_use_the_same_command():
-    """README 首用章节里的两条命令必须由 `brand.py` 的常量拼得出来。
+    """上游插件首用指南里的两条命令必须由 `brand.py` 的常量拼得出来。
 
     两处手写就会漂，而漂了之后的症状是「照文档做装不上」——用户没法自己发现
     是哪一边错。这条看的是**字面量同源**，不是「差不多」。
@@ -274,7 +274,7 @@ def test_readme_and_cli_use_the_same_command():
     sys.path.insert(0, str(SRC))
     from tavotto.engine import brand
 
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT / "docs/upstream-codex-en.md").read_text(encoding="utf-8")
     lines = [ln.strip() for ln in readme.splitlines()]
 
     # **整行相等，不是「包含」。** 子串匹配是一道空门禁：把 sparse 路径从两个

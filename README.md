@@ -102,3 +102,9 @@ FigWeave 基于 [Tavotto](https://github.com/Tavotto/Tavotto) 开发，保留其
 `src/tavotto`、Python 包名、CLI、文件格式和部分存储键暂时保留上游技术标识，
 不代表 FigWeave 使用上游的发行或自动更新渠道。上游教程、截图和安装包可在
 [Tavotto 原仓库](https://github.com/Tavotto/Tavotto) 查阅。
+
+
+上游插件用户可查阅 [在 Codex 中第一次使用 Tavotto](docs/upstream-codex-zh-CN.md)
+（[English](docs/upstream-codex-en.md)）；这不是 FigWeave 的安装渠道。
+上游 Tavotto™ 是未注册商标，见 [商标政策](TRADEMARKS.md)。
+贡献与授权资料：[贡献指南](CONTRIBUTING.md) · [上游法律文档](docs/legal/README.md)。

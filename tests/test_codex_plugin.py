@@ -1464,13 +1464,14 @@ def test_prefs_cli_rejects_unknown_keys(tmp_path):
 
 
 # ==================== 首次使用体验（2026-08-25 反转） =====================
-# README 是普通用户的唯一安装入口；SKILL.md 的会话入口是「先检查，不安装」。
+# FigWeave README points to dedicated upstream guides; those guides retain the
+# Tavotto installation contract. SKILL.md still checks health before installation.
 # 这一段盯的是：入口文案、sparse 双路径、openai.yaml 的 MCP 依赖声明，
 # 以及行为场景与文档锚点的绑定。
 
 READMES = {
-    "zh": ROOT / "README.zh-CN.md",
-    "en": ROOT / "README.md",
+    "zh": ROOT / "docs/upstream-codex-zh-CN.md",
+    "en": ROOT / "docs/upstream-codex-en.md",
 }
 #: 安装命令由 brand.py 派生（唯一出处）：README / 插件 README / 恢复文档三处必须逐字相同
 SPARSE_CMD = " ".join(

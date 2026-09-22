@@ -13,3 +13,9 @@
 
 FigWeave 基于 [Tavotto](https://github.com/Tavotto/Tavotto)，使用
 [AGPL-3.0-only](LICENSE) 许可证。
+
+
+上游插件用户可查阅 [在 Codex 中第一次使用 Tavotto](docs/upstream-codex-zh-CN.md)
+（[English](docs/upstream-codex-en.md)）；这不是 FigWeave 的安装渠道。
+上游 Tavotto™ 是未注册商标，见 [商标政策](TRADEMARKS.md)。
+贡献与授权资料：[贡献指南](CONTRIBUTING.md) · [上游法律文档](docs/legal/README.md)。
