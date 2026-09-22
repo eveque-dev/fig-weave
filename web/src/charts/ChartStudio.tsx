@@ -70,7 +70,7 @@ export function ChartStudio() {
     const w = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); worker.current = w
     const fail = (message: string) => { if (id === generation.current) { cancel(); setError(message) } }
     const deadline = (ms: number) => { clearTimeout(timer.current); timer.current = setTimeout(() => fail(t('charts.timeout')), ms) }
-    deadline(240_000)
+    deadline(360_000)
     w.onerror = (e) => fail(e.message)
     w.onmessage = async (event) => {
       if (id !== generation.current) return

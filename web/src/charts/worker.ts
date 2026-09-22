@@ -11,7 +11,21 @@ self.onmessage = async (event: MessageEvent<{ source: string; kind: 'plotly' | '
     const { loadPyodide } = await import(/* @vite-ignore */ `${runtime.cdn_base}pyodide.mjs`)
     const py = await loadPyodide({ indexURL: runtime.cdn_base, jsglobals: Object.create(null) })
     post({ phase: 'loadingPackages' })
-    await py.loadPackage(kind === 'plotly' ? ['narwhals', 'packaging', 'numpy', 'pandas'] : ['jinja2', 'simplejson', 'wcwidth'])
+    const imports: string[] = JSON.parse(py.runPython(`
+import ast, json
+_tree = ast.parse(${JSON.stringify(source)})
+_imports = []
+for _node in ast.walk(_tree):
+    if isinstance(_node, ast.Import):
+        _imports.extend(item.name for item in _node.names)
+    elif isinstance(_node, ast.ImportFrom):
+        _imports.extend((_node.module or "") + "." + item.name for item in _node.names)
+json.dumps(_imports)
+`))
+    const packages = kind === 'plotly' ? ['narwhals', 'packaging'] : ['jinja2', 'simplejson', 'wcwidth']
+    if (imports.some((name) => /^(numpy|pandas)(\.|$)|^plotly\.express(\.|$)/.test(name))) packages.push('numpy')
+    if (imports.some((name) => /^pandas(\.|$)|^plotly\.express(\.|$)/.test(name))) packages.push('pandas')
+    await py.loadPackage(packages)
     for (const name of kind === 'plotly' ? ['plotly'] as const : ['prettytable', 'pyecharts'] as const) {
       const wheel = wheels[name]
       const response = await fetch(new URL(wheel.filename, event.data.wheels))
