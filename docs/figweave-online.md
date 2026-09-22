@@ -5,13 +5,13 @@
 
 ## 本阶段
 
-- 网站首页支持中英文，提供 Python 编辑器与实验性 R 编辑器入口。
+- 网站默认中文，支持中英文、六种界面背景，提供 Matplotlib、Plotly/pyecharts 与实验性 R 工作台。
 - `/try/` 复用现有编辑器与 Pyodide worker；首页不加载 Python 运行时。
 - 在线页面里的桌面入口统一指向本站 `#downloads`，明确安装包尚未发布。
 - 显示名与官网地址在 Python / TypeScript 品牌常量中保持一致。
 - 上游仓库地址仍用于来源、既有引擎开发与历史文档，不是 FigWeave 发行仓库。
 
-本阶段不发布桌面安装器，不启用 FigWeave 自动更新。既有桌面壳、PyPI 包名、
+本阶段仅通过私有仓库分发未签名桌面预览构建，不发布正式安装器，不启用 FigWeave 自动更新。既有桌面壳、PyPI 包名、
 CLI、Codex 插件、文档格式及存储键仍带有 tavotto 标识。后续桌面迁移必须同时
 处理签名、安装路径、更新源、遥测归属和发行仓库，不能只修改窗口标题后发布。
 跨标签页文档占用频道也保持原标识，不随显示名变化，避免新旧页面互相失联。
@@ -37,7 +37,7 @@ cd ..
 python scripts/build_figweave_site.py
 ```
 
-产物是 `web/dist-site/`，包含首页 `index.html`、`try/index.html`、`r/index.html`、
+产物是 `web/dist-site/`，包含首页 `index.html`、`try/index.html`、`r/index.html`、`charts/index.html`、
 静态资源、编辑引擎、R 包和许可证。整个目录作为网站根目录部署，保留目录尾斜杠。
 静态服务器应返回真实文件或 404，不把缺失资源回退成首页 HTML。
 首页 `?lang=zh` / `?lang=en` 与体验页双向链接，不依赖另一个网站仓库或 `/zh/`。
