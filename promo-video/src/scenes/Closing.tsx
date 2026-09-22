@@ -1,3 +1,42 @@
-import {Interactive,interpolate,useCurrentFrame} from 'remotion';
-import {Brand,Shell,WEBSITE_URL} from '../shared';
-export const Closing = () => {const frame=useCurrentFrame();return <Shell><Brand/><Interactive.Div name="Closing title" style={{marginTop:96,fontSize:110,fontWeight:760,lineHeight:1.3,letterSpacing:-3}}>少补 prompt。<br/>多一点直接。</Interactive.Div><Interactive.Div name="Website" style={{fontSize:70,marginTop:70,fontWeight:550,color:'#3b7056',opacity:interpolate(frame,[15,32],[0,1],{extrapolateLeft:'clamp',extrapolateRight:'clamp'})}}>{WEBSITE_URL.replace('https://','')}</Interactive.Div><div style={{fontSize:32,marginTop:25,color:'#617968'}}>在线体验 · 默认中文 · 鼠尾草绿</div></Shell>};
+import { Interactive, interpolate, useCurrentFrame } from "remotion";
+import { Brand, Shell, WEBSITE_URL } from "../shared";
+export const Closing = () => {
+  const frame = useCurrentFrame();
+  return (
+    <Shell>
+      <Brand />
+      <Interactive.Div
+        name="Closing title"
+        style={{
+          marginTop: 96,
+          fontSize: 110,
+          fontWeight: 760,
+          lineHeight: 1.3,
+          letterSpacing: -3,
+        }}
+      >
+        少补 prompt。
+        <br />
+        多一点直接。
+      </Interactive.Div>
+      <Interactive.Div
+        name="Website"
+        style={{
+          fontSize: 70,
+          marginTop: 70,
+          fontWeight: 550,
+          color: "#3b7056",
+          opacity: interpolate(frame, [15, 32], [0, 1], {
+            extrapolateLeft: "clamp",
+            extrapolateRight: "clamp",
+          }),
+        }}
+      >
+        {WEBSITE_URL.replace("https://", "")}
+      </Interactive.Div>
+      <div style={{ fontSize: 32, marginTop: 25, color: "#617968" }}>
+        在线体验 · 默认中文 · 鼠尾草绿
+      </div>
+    </Shell>
+  );
+};
