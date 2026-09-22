@@ -1,11 +1,22 @@
 name: FigWeave preview installers
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a private GitHub prerelease after both builds pass
+        type: boolean
+        default: false
+      tag:
+        description: FigWeave preview tag (separate from upstream v* releases)
+        type: string
+        default: figweave-preview-0.15.0-20260922
 permissions:
   contents: read
 env:
   TAVOTTO_NO_TELEMETRY: '1'
   TAVOTTO_REQUIRE_RUNTIME: '1'
+  PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple/
+  PIP_DEFAULT_TIMEOUT: '60'
 jobs:
   build:
     strategy:
@@ -15,14 +26,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
-      - uses: pnpm/action-setup@v4
+          node-version: '24'
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v6
         with:
           version: '10.34.5'
       - uses: dtolnay/rust-toolchain@stable
@@ -36,10 +48,56 @@ jobs:
           else
             python scripts/smoke_app.py --exe dist/Tavotto/Tavotto --expect-source bundled --expect-runtime
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: FigWeave-preview-${{ matrix.os }}
           if-no-files-found: error
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/dmg/*.dmg
+
+  publish:
+    if: inputs.publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: FigWeave-preview-*
+          path: artifacts
+      - name: Prepare verified release assets
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, shutil, subprocess
+          tag = os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'figweave-preview-[0-9A-Za-z.-]+', tag):
+              raise SystemExit('Expected a FigWeave preview tag')
+          out = pathlib.Path('release-assets'); out.mkdir()
+          for ext, name in [('exe', 'FigWeave_0.15.0_windows_x64.exe'), ('dmg', 'FigWeave_0.15.0_macos_arm64.dmg')]:
+              files = list(pathlib.Path('artifacts').rglob('*.' + ext))
+              if len(files) != 1:
+                  raise SystemExit(f'Expected one {ext}, got {len(files)}')
+              shutil.copy2(files[0], out / name)
+          subprocess.run(['git', 'archive', '--format=zip', '--prefix=figweave/', '-o', str(out / 'figweave-source.zip'), 'HEAD'], check=True)
+          info = {'commit': os.environ['GITHUB_SHA'], 'run': os.environ['GITHUB_RUN_ID'], 'tag': tag, 'signed': False, 'updater': False}
+          (out / 'build-info.json').write_text(json.dumps(info, indent=2) + '\n')
+          shutil.copy2('LICENSE', out / 'LICENSE')
+          lines = [hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name for p in sorted(out.iterdir())]
+          (out / 'SHA256SUMS.txt').write_text('\n'.join(lines) + '\n')
+          PY
+      - name: Publish FigWeave prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --draft --prerelease --title "FigWeave 0.15.0 preview · 2026-09-22" --notes-file docs/releases/figweave-preview.md
+          gh release upload "$RELEASE_TAG" release-assets/*
+          gh release edit "$RELEASE_TAG" --draft=false

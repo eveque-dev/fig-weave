@@ -9,6 +9,10 @@ FigWeave 是面向科研与数据可视化的图表编辑项目。直接打开�
 [打开官网](https://fig-weave.com) · [Matplotlib 编辑器](https://fig-weave.com/try/) ·
 [Plotly / pyecharts 工作台](https://fig-weave.com/charts/) · [ggplot2 工作台](https://fig-weave.com/r/)
 
+![FigWeave 中文首页与真实科研图预览](assets/figweave/homepage.png)
+
+*当前线上首页：从真实 Matplotlib 示例进入编辑器，也可选择 Plotly / pyecharts 与 R 工作台。*
+
 ## 现在可以做什么
 
 | 入口 | 输入 | 编辑与输出 |
@@ -35,11 +39,17 @@ Plotly / pyecharts 导出的 Python 用当前配置重建图表，不包含原�
 服务器，也不会把脚本写入浏览器持久存储；脚本自己发起的网络请求不在此保证内。
 语言和界面背景偏好保存在当前浏览器中。刷新页面会丢失尚未导出的编辑会话。
 
+## 选择自己的工作背景
+
+![FigWeave 蓝色工作背景](assets/figweave/blue-theme.png)
+
+背景选择包含纸白、纯白、灰、蓝、绿、紫六种方案；刷新后保留选择，图纸本身的颜色不变。
+
 ## 桌面预览安装包
 
 Windows x64 `.exe` 与 macOS Apple Silicon `.dmg` 已通过私有仓库的自动构建和
-内置引擎冒烟验证，可在 [本次构建的 Artifacts](https://github.com/eveque-dev/fig-weave/actions/runs/35704926892)
-下载。需要有本私有仓库的访问权限；Artifacts 有保留期限。
+内置引擎冒烟验证，可在 [GitHub Releases](https://github.com/eveque-dev/fig-weave/releases)
+下载预览版本。需要有本私有仓库的访问权限；Release 附带校验值和准确构建提交。
 
 | 平台 | 当前状态 |
 | --- | --- |
