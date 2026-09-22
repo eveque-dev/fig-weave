@@ -1,0 +1,32 @@
+name: FigWeave web checks
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/figweave-web.yml'
+permissions:
+  contents: read
+env:
+  TAVOTTO_NO_TELEMETRY: '1'
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: '10.34.5'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm i18n:check
+      - run: pnpm build
+      - run: pnpm test
