@@ -74,6 +74,11 @@
   ],
   "unknownDynamic": [
     {
+      "from": "src/rstudio/client.ts",
+      "call": "import(/* @vite-ignore */ `${lock.base_url}webr.mjs`)",
+      "reason": "webR is an external runtime pinned in packaging/r-browser-runtime.json; remove this registration if the runtime becomes a bundled module."
+    },
+    {
       "from": "src/playground/pyodide.worker.ts",
       "call": "import(/* @vite-ignore */ `${pyodideBaseUrl}pyodide.mjs`)",
       "reason": "Pyodide 从 CDN 加载（版本钉在 packaging/playground-runtime.json），不是仓库模块。"

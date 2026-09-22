@@ -15,6 +15,7 @@
  */
 import type { PlaygroundFailure, PlaygroundPhase, WorkerRequest } from './protocol'
 import runtimeLock from '@playground-runtime'
+import { sha256 } from '@noble/hashes/sha2.js'
 
 const EXTRA_WHEELS: Record<string, { filename: string; sha256: string; dependencies: string[] }> = runtimeLock.wheels
 
@@ -186,8 +187,9 @@ async function load(
       const response = await fetch(new URL(wheel.filename, wheelBase))
       if (!response.ok) throw new Error(`Wheel HTTP ${response.status}: ${name}`)
       const bytes = await response.arrayBuffer()
-      if (!TRUSTED_DIGEST) throw new Error('HTTPS is required to verify plotting packages')
-      const hash = [...new TrustedU8(await TRUSTED_DIGEST('SHA-256', bytes))]
+      // IPv4 HTTP has no Web Crypto. Keep verification outside user Python;
+      // the bundled implementation checks the same pinned digest on both origins.
+      const hash = [...sha256(new TrustedU8(bytes))]
         .map((b) => b.toString(16).padStart(2, '0')).join('')
       if (hash !== wheel.sha256) throw new Error(`Wheel checksum mismatch: ${name}`)
       pyodide.unpackArchive(bytes, 'zip', { extractDir: '/extras' })
