@@ -3,8 +3,9 @@ import { useSyncExternalStore } from 'react'
 export const ONLINE_BACKGROUNDS = ['paper', 'white', 'slate', 'blue', 'sage', 'lavender'] as const
 export type OnlineBackground = (typeof ONLINE_BACKGROUNDS)[number]
 const STORAGE_KEY = 'tavotto.onlineBackground'
+const DEFAULT_BACKGROUND: OnlineBackground = 'sage'
 const listeners = new Set<() => void>()
-let background: OnlineBackground = 'paper'
+let background: OnlineBackground = DEFAULT_BACKGROUND
 
 function valid(value: unknown): value is OnlineBackground {
   return ONLINE_BACKGROUNDS.includes(value as OnlineBackground)
@@ -19,7 +20,7 @@ function apply(value: OnlineBackground) {
 export function initOnlineAppearance() {
   let value: string | null = null
   try { value = localStorage.getItem(STORAGE_KEY) } catch { /* session-only when storage is blocked */ }
-  apply(valid(value) ? value : 'paper')
+  apply(valid(value) ? value : DEFAULT_BACKGROUND)
 }
 export function setOnlineBackground(value: OnlineBackground) {
   if (!valid(value)) return
@@ -31,5 +32,5 @@ function subscribe(notify: () => void) {
   return () => { listeners.delete(notify) }
 }
 export function useOnlineBackground() {
-  return useSyncExternalStore(subscribe, () => background, () => 'paper' as OnlineBackground)
+  return useSyncExternalStore(subscribe, () => background, () => DEFAULT_BACKGROUND)
 }
