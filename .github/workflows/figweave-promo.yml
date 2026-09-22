@@ -30,7 +30,7 @@ jobs:
           done
           cp out/frame-120.png out/FigWeave-promo-poster.png
           ffprobe -v error -show_format -show_streams -of json out/FigWeave-promo-1080p.mp4 > out/media-info.json
-          sha256sum out/FigWeave-promo-1080p.mp4 > out/SHA256SUMS-video.txt
+          (cd out && sha256sum FigWeave-promo-1080p.mp4 > SHA256SUMS-video.txt)
       - uses: actions/upload-artifact@v7
         with:
           name: FigWeave-promo-1080p
