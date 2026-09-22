@@ -28,11 +28,13 @@ json.dumps(_imports)
     await py.loadPackage(packages)
     for (const name of kind === 'plotly' ? ['plotly'] as const : ['prettytable', 'pyecharts'] as const) {
       const wheel = wheels[name]
-      const response = await fetch(new URL(wheel.filename, event.data.wheels))
+      const filename = 'browser_filename' in wheel ? wheel.browser_filename : wheel.filename
+      const expectedHash = 'browser_sha256' in wheel ? wheel.browser_sha256 : wheel.sha256
+      const response = await fetch(new URL(filename, event.data.wheels))
       if (!response.ok) throw new Error(`Package download: ${response.status}`)
       const data = new Uint8Array(await response.arrayBuffer())
       const hash = Array.from(sha256(data), (b) => b.toString(16).padStart(2, '0')).join('')
-      if (hash !== wheel.sha256) throw new Error(`Package checksum mismatch: ${name}`)
+      if (hash !== expectedHash) throw new Error(`Package checksum mismatch: ${name}`)
       py.unpackArchive(data, 'zip', { extractDir: '/chart-packages' })
     }
     py.runPython('import sys\nsys.path.insert(0, "/chart-packages")')

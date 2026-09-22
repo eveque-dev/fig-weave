@@ -76,6 +76,7 @@ export function ChartStudio() {
       if (id !== generation.current) return
       if (event.data.phase) {
         setPhase(event.data.phase)
+        if (event.data.phase === 'loadingPackages') deadline(360_000)
         if (event.data.phase === 'running') deadline(30_000)
         return
       }

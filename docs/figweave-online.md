@@ -106,3 +106,8 @@ Pyodide 原生包使用同一个官方运行时锁，部署到自托管 runtime�
 Windows x64 EXE、macOS Apple Silicon DMG 由私有仓库 `figweave-preview.yml` 构建，
 属于未签名预览包，更新渠道关闭。当前在线新增 R / Plotly / pyecharts 工作台尚未
 打进桌面离线引擎；桌面包保持原有 Matplotlib 编辑能力。
+
+
+Plotly 浏览器归档从已验 SHA-256 的官方 wheel 确定性生成，仅移除 Jupyter 扩展与
+widget JavaScript 资源；保留 Python、普通 HTML 渲染资源和许可证。归档本身也有
+独立锁定的 SHA-256，从约 9.7 MB 缩小为 5.2 MB。工作台不提供 Jupyter FigureWidget。

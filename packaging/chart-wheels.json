@@ -3,7 +3,14 @@
     "version": "7.1.0",
     "filename": "plotly-7.1.0-py3-none-any.whl",
     "url": "https://files.pythonhosted.org/packages/e5/7d/905a3a3d51087515719058c94cfbda2ff0fc14417c20d557ae3e82d8b250/plotly-7.1.0-py3-none-any.whl",
-    "sha256": "dbb7fa18afce40d0a8e80d1bf162eceb3faa0ce5a77fe741ad09a74cf78f53f3"
+    "sha256": "dbb7fa18afce40d0a8e80d1bf162eceb3faa0ce5a77fe741ad09a74cf78f53f3",
+    "browser_filename": "plotly-7.1.0-browser.zip",
+    "exclude_prefixes": [
+      "plotly/labextension/",
+      "plotly-7.1.0.data/data/share/jupyter/",
+      "plotly/package_data/widgetbundle.js"
+    ],
+    "browser_sha256": "d480821e33d2e003c74e9de531d02b6e1fc305529b32cb7427e6e3e4513cbcfb"
   },
   "pyecharts": {
     "version": "2.1.0",
