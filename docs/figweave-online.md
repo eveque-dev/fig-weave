@@ -41,8 +41,17 @@ python scripts/build_figweave_site.py
 静态服务器应返回真实文件或 404，不把缺失资源回退成首页 HTML。
 首页 `?lang=zh` / `?lang=en` 与体验页双向链接，不依赖另一个网站仓库或 `/zh/`。
 
-首页只是入口，浏览器 Python 仍按 `packaging/playground-runtime.json` 下载。
-服务器 TLS / DNS 的配置独立于这个构建；本次代码修改不会自动覆盖线上部署。
+浏览器 Python 按 `packaging/playground-runtime.json` 从本站下载。部署前执行：
+
+```sh
+python scripts/mirror_pyodide_runtime.py /var/www/fig-weave/runtime/pyodide/v314.0.5
+```
+
+镜像脚本从锁定版本的上游地址获取运行时和允许包的传递依赖，按上游锁文件逐包
+核对版本与 SHA-256；不会下载整个包仓库。Nginx 将 `/runtime/` 映射到该目录的
+`runtime/` 根，允许静态资源跨域读取，以支持本地预览。浏览器仍在本机执行代码，
+服务器只提供静态文件。运行时目录独立于网站发布目录，以便切换版本和回滚。
+网站同时发布 `/source/figweave-source.zip`，内容对应 `version.txt` 中的 Git 提交。
 
 ## 验证
 
