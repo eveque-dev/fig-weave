@@ -10,6 +10,8 @@ import {
   TriangleAlert,
   X,
 } from '@/components/ui/icons'
+import { setOnlineLocale } from '@/lib/onlineLocale'
+import { BackgroundPicker } from '@/components/ui/BackgroundPicker'
 import { Details, Summary } from '@/components/ui/Details'
 import { ICON_SIZE } from '@/components/ui/Icon'
 import { CanvasStage } from '@/canvas/CanvasStage'
@@ -17,7 +19,7 @@ import { ElementInspector } from '@/components/inspector/ElementInspector'
 import { ElementTree } from '@/components/left/ElementTree'
 import { useEngineSync } from '@/hooks/useEngineSync'
 import { runUndoRedo } from '@/hooks/useKeyboard'
-import { currentLocale, formatMessage, msg, setLocale, t as translate, type UiMessage } from '@/i18n'
+import { currentLocale, formatMessage, msg, t as translate, type UiMessage } from '@/i18n'
 import { PRODUCT_NAME, playgroundHomeHref, playgroundDesktopHref } from '@/lib/brand'
 import { cn } from '@/lib/utils'
 import { useDocumentStore } from '@/store/documentStore'
@@ -286,7 +288,7 @@ export function PlaygroundApp() {
   }, [])
 
   const switchLocale = useCallback(async () => {
-    await setLocale(currentLocale() === 'zh-CN' ? 'en-US' : 'zh-CN')
+    await setOnlineLocale(currentLocale() === 'zh-CN' ? 'en-US' : 'zh-CN')
     setLocaleTick((n) => n + 1)
   }, [])
 
@@ -296,6 +298,7 @@ export function PlaygroundApp() {
         <BrandLink />
         <span className="text-xs text-ink-3">{pg('title')}</span>
         <span className="flex-1" />
+        <BackgroundPicker />
         <button
           onClick={() => void switchLocale()}
           className="h-7 rounded-sm px-2 text-xs text-ink-2 hover:bg-surface-2"
@@ -678,6 +681,7 @@ function EditorView({
         <button onClick={onLoadAnother} className="h-7 rounded-sm px-2 text-xs text-ink-2 hover:bg-surface-2">
           {backLabel(origin)}
         </button>
+        <BackgroundPicker />
         <button
           onClick={onSwitchLocale}
           className="h-7 rounded-sm px-2 text-xs text-ink-3 hover:bg-surface-2"

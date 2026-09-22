@@ -3,17 +3,20 @@ import { createRoot } from 'react-dom/client'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { IconProvider } from '@/components/ui/Icon'
 import { TooltipProvider } from '@/components/ui/Tooltip'
-import { currentLocale, i18n, initI18n, readStoredLocale, systemLocale, t as translate, urlLocale } from '@/i18n'
+import { currentLocale, i18n, initI18n, onlineLocale, t as translate } from '@/i18n'
 import { PRODUCT_NAME, playgroundDesktopHref } from '@/lib/brand'
 import { PlaygroundApp } from './PlaygroundApp'
 import '@/index.css'
+import { initOnlineAppearance } from '@/lib/onlineAppearance'
+
+initOnlineAppearance()
 
 /**
  * 浏览器 playground 的入口（`/try`，产物由 scripts/build_browser_playground.py
  * 构建、同步进网站仓库）。
  *
- * 语言：本次链接的 `?lang=` > 已保存的选择 > 系统语言 > **en-US**。
- * 官网的中英文入口显式传递语言；无语言提示时使用英文。
+ * 语言：本次链接的 `?lang=` > 已保存的选择 > **zh-CN**。
+ * 官网的中英文入口显式传递语言；首次无语言提示时使用中文。
  *
  * 能力检测放在挂载之前：不满足就说清楚缺什么，绝不留一个坏掉的编辑器。
  */
@@ -25,7 +28,7 @@ if (typeof WebAssembly === 'undefined') missing.push('WebAssembly')
 if (typeof Worker === 'undefined') missing.push('Web Worker')
 if (typeof TextDecoder === 'undefined' || typeof File === 'undefined') missing.push('File API')
 
-initI18n(urlLocale() ?? readStoredLocale() ?? systemLocale() ?? 'en-US')
+initI18n(onlineLocale())
 const syncPageMetadata = () => {
   document.title = `${PRODUCT_NAME} · ${translate('playground.title', { ns: 'dialogs' })}`
   document.documentElement.lang = currentLocale()

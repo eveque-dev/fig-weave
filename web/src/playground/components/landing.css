@@ -1,0 +1,17 @@
+.playground-landing-inner { padding-top:48px; padding-bottom:40px; }
+.playground-landing-heading { max-width:660px; padding-bottom:12px; }
+.playground-landing-heading h1 { font-size:32px; line-height:1.35; margin-bottom:10px; text-wrap:balance; }
+.playground-landing-heading p { font-size:15px; max-width:60ch; }
+.playground-gallery-layout { gap:20px; }
+.playground-gallery [data-example-card] { box-shadow:var(--shadow-card); }
+.playground-gallery [data-example-card] > div:first-of-type { padding:22px 16px; min-height:180px; display:flex; align-items:center; }
+.playground-gallery [data-example-card] > div:last-child { padding:20px; gap:10px; }
+.playground-gallery [data-example-card] > div:last-child > div:first-child { flex-wrap:wrap; }
+.playground-gallery [data-example-card] > div:last-child > div:first-child > span:last-child { margin-left:0; width:100%; }
+.playground-gallery [data-example-card] h3 { font-size:15px; }
+.playground-gallery [data-example-card] p { line-height:1.7; }
+.playground-gallery [data-example-card] button { min-height:36px; }
+.playground-drop-stage [data-stage-state] { min-height:145px; padding:30px; }
+.playground-landing a:focus-visible { outline:2px solid var(--color-accent); outline-offset:3px; }
+@media(max-width:640px) { .playground-landing-inner { padding-top:28px; } .playground-landing-heading h1 { font-size:27px; } .playground-gallery [data-example-card] button { min-height:44px; } }
+@media(min-width:1024px) { .playground-gallery [data-example-card] > div:first-of-type { aspect-ratio:1.4; } .playground-gallery [data-example-card] > div:first-of-type img { max-height:100%; object-fit:contain; } .playground-gallery [data-example-card] > div:last-child > div:last-child { margin-top:auto; padding-top:10px; } }

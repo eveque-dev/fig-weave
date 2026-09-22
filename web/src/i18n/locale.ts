@@ -116,3 +116,8 @@ export const LOCALE_LABELS: Record<Locale, string> = {
   'zh-CN': '简体中文',
   'en-US': 'English',
 }
+
+/** Public online entry points default to Chinese, independent of OS language. */
+export function onlineLocale(): Locale {
+  return urlLocale() ?? readStoredLocale() ?? DEFAULT_LOCALE
+}

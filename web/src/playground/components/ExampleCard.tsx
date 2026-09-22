@@ -182,11 +182,11 @@ export function ExampleCard({
               {pg('starterBadge')}
             </span>
           )}
-          <span className="ml-auto font-mono text-xs text-ink-faint">{example.filename}</span>
+          <span className="ml-auto font-mono text-xs text-ink-3">{example.filename}</span>
         </div>
         <p className="text-xs leading-relaxed text-ink-2">{pg(example.descriptionKey)}</p>
         <p className="text-xs text-ink-3">
-          <span className="text-ink-faint">{pg('editableLabel')}</span>{' '}
+          <span className="text-ink-3">{pg('editableLabel')}</span>{' '}
           {pg(example.editableKey)}
         </p>
 

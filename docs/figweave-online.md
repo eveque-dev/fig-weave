@@ -51,7 +51,8 @@ python scripts/mirror_pyodide_runtime.py /var/www/fig-weave/runtime/pyodide/v314
 核对版本与 SHA-256；不会下载整个包仓库。Nginx 将 `/runtime/` 映射到该目录的
 `runtime/` 根，允许静态资源跨域读取，以支持本地预览。浏览器仍在本机执行代码，
 服务器只提供静态文件。运行时目录独立于网站发布目录，以便切换版本和回滚。
-网站同时发布 `/source/figweave-source.zip`，内容对应 `version.txt` 中的 Git 提交。
+网站同时发布 `/source/figweave-source.zip`，Git 工作区发布时内容对应 `version.txt` 中的 Git 提交；无 Git 的源码快照发布时，
+该文件明确记录 `git_commit: null`、源码包 SHA-256 和 playground 指纹，不冒充提交。
 
 ## 验证
 
@@ -74,3 +75,17 @@ Windows PowerShell 使用已安装 Chrome 时先设置 `$env:PLAYWRIGHT_CHANNEL=
 
 发布前还需在真实浏览器验证首页 → 案例运行 → 改图 → 返回首页，以及中英文
 与窄屏布局。公开分发修改版时一并提供对应源码与构建说明。
+
+## 国内依赖源（2026-09-22）
+
+前端仓库的 `web/.npmrc` 默认使用阿里系 `https://registry.npmmirror.com/`。
+继续通过 `pnpm install --frozen-lockfile` 安装，保留锁文件完整性检查，不更换依赖版本。
+Python 开发环境需要安装包时，可按次指定阿里云源：
+
+```sh
+python -m pip install --index-url https://mirrors.aliyun.com/pypi/simple/ -r requirements-dev.txt
+```
+
+浏览器运行的 Pyodide/webR 包不是普通 PyPI/CRAN 的本机二进制包，不能直接替换成
+普通镜像地址。Pyodide 已通过锁文件校验后自托管；R 包由构建脚本校验后随站点分发，
+webR 核心目前仍来自锁定版本的官方地址。不要用取消哈希或浮动版本来换取镜像命中。

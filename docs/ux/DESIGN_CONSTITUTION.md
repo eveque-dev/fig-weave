@@ -718,3 +718,21 @@ reduced-motion 契约）；68/85 命中 `foundation.test`（533 处）；弹簧 
   第 3 行 / 方向键仍按行走 / 多词任意顺序）；`ai/assistantMotion.test`「底边不经过 store 也长」三条
   （输入框长高跟到底 / 内容长高跟到底 / 翻上去了都不拽），jsdom 用假 ResizeObserver 记「谁在观察谁」，
   `fakeGeometry.grow` 让 scrollHeight 长而 scrollTop 原地——那正是缺陷的几何。
+
+## 二十五、FigWeave 在线入口改版（2026-09-22）
+
+用户明确要求通过 UI UX Pro Max 大改在线 UI。本轮采用该技能的科研 SaaS 信息层级、
+清晰的行动入口、键盘焦点、窄屏适配建议，与现有 Paper × Instrument 体系合并。
+不采用搜索结果中的全屏玻璃、外部字体 CDN 或第三方图标库。
+
+官网展示排版由 `web/src/site/site.css` 管理：大标题 36–59px、分区标题 25–32px、
+正文 14–16px；首页行动链接 48px，手机导航点击区至少 44px。颜色、圆角与动效仍
+消费 `index.css` 的既有 token；首页不加载 Python/R 运行时。`PlaygroundLanding`
+使用三列真实案例封面与下方拖入区，保留点击、键盘和拖放启动链；R 工作区采用
+独立代码/属性栏与图纸预览区。编辑器原语、几何操作与写回流程保持原来的权威链。
+
+### 在线背景偏好（2026-09-22 用户补充）
+
+官网、Python 在线体验、R 工作区共用 `BackgroundPicker`。六种浅色背景的颜色值只在
+`index.css` 声明，由色块与页面共同消费；偏好只存 `tavotto.onlineBackground`，不进文档。
+只调整应用底、输入框底和工作区底；白色图纸、图内属性和导出颜色不受影响。

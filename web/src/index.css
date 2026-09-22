@@ -687,3 +687,25 @@
 [data-radix-popper-content-wrapper]:has([role='tooltip']) {
   pointer-events: none;
 }
+
+:root {
+  --online-bg-paper: #f7f6f3;
+  --online-bg-white: #ffffff;
+  --online-bg-slate: #edf0f3;
+  --online-bg-blue: #edf4fc;
+  --online-bg-sage: #eef5ef;
+  --online-bg-lavender: #f4f0fa;
+}
+/* Online-only background preferences. White figure paper is never recolored. */
+:root[data-online-background='white'] { --color-bg: var(--online-bg-white); --color-field: #f2f4f7; --color-field-hover: #e8ecf0; --color-canvas: #e9edf2; }
+:root[data-online-background='slate'] { --color-bg: var(--online-bg-slate); --color-field: #e7ebef; --color-field-hover: #e1e6eb; --color-canvas: #dfe5ec; }
+:root[data-online-background='blue'] { --color-bg: var(--online-bg-blue); --color-field: #e7eff9; --color-field-hover: #e0eaf5; --color-canvas: #dce7f4; }
+:root[data-online-background='sage'] { --color-bg: var(--online-bg-sage); --color-field: #e6eee7; --color-field-hover: #e0e9e1; --color-canvas: #dde8df; }
+:root[data-online-background='lavender'] { --color-bg: var(--online-bg-lavender); --color-field: #eee8f5; --color-field-hover: #e7dfef; --color-canvas: #e5dfee; }
+:root[data-online-background]:not([data-online-background='paper']) { --color-ink-3: #585c63; }
+[data-background-swatch='paper'] { background: var(--online-bg-paper); }
+[data-background-swatch='white'] { background: var(--online-bg-white); }
+[data-background-swatch='slate'] { background: var(--online-bg-slate); }
+[data-background-swatch='blue'] { background: var(--online-bg-blue); }
+[data-background-swatch='sage'] { background: var(--online-bg-sage); }
+[data-background-swatch='lavender'] { background: var(--online-bg-lavender); }

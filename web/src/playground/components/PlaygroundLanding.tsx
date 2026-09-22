@@ -12,6 +12,7 @@
  * 路径最终都走同一个 onLaunch——启动逻辑（真 Pyodide 会话）在 PlaygroundApp。
  */
 import { useRef, useState } from 'react'
+import './landing.css'
 import { Download } from '@/components/ui/icons'
 import { ICON_SIZE } from '@/components/ui/Icon'
 import { playgroundDesktopHref } from '@/lib/brand'
@@ -39,9 +40,9 @@ export function PlaygroundLanding({
   const [codeExample, setCodeExample] = useState<PlaygroundExample | null>(null)
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-7 px-4 py-8 sm:px-6">
-        <header className="flex flex-col gap-1.5">
+    <div className="playground-landing min-h-0 flex-1 overflow-y-auto">
+      <div className="playground-landing-inner mx-auto flex w-full max-w-[1120px] flex-col gap-7 px-4 py-8 sm:px-6">
+        <header className="playground-landing-heading flex flex-col gap-1.5">
           <h1 className="text-[19px] font-medium tracking-tight text-ink">
             {pg('landingTitle')}
           </h1>
@@ -50,17 +51,17 @@ export function PlaygroundLanding({
           </p>
         </header>
 
-        <div className="flex flex-col gap-5 xl:grid xl:grid-cols-[340px_minmax(0,1fr)] xl:items-start xl:gap-6">
+        <div className="playground-gallery-layout flex flex-col gap-5">
           <ExampleGallery
             stageRef={stageRef}
             onLaunch={onLaunch}
             onViewCode={setCodeExample}
             onDragChange={setDrag}
-            className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1"
+            className="playground-gallery grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
           />
           {/* 台面在窄屏（没有指针拖拽的世界）退化成一句提示——点击卡片
               就是那条完整路径，不要求任何人执行拖放 */}
-          <div className="hidden sm:flex xl:sticky xl:top-6 xl:min-h-[440px]">
+          <div className="playground-drop-stage hidden sm:flex">
             <ExampleStage stageRef={stageRef} drag={drag} />
           </div>
           <p className="text-center text-xs text-ink-3 sm:hidden">{pg('stageMobile')}</p>
@@ -94,7 +95,7 @@ export function PlaygroundLanding({
               .map(([n, v]) => `${n} ${v}`)
               .join(' · ')}
           </p>
-          <p className="font-mono text-xs text-ink-faint">
+          <p className="font-mono text-xs text-ink-3">
             {pg('cdnNote', { version: PYODIDE_VERSION })}
           </p>
         </footer>

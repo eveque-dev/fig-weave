@@ -112,3 +112,64 @@ test('built homepage → editor → homepage preserves language and desktop stat
   await page.screenshot({ path: test.info().outputPath('homepage-mobile.png'), fullPage: true })
   expect(failedResponses).toEqual([])
 })
+
+// Subject: rendered public entry layouts at supported mobile/tablet/desktop widths.
+// Reuse the repository's HTML overflow ruler; SVG internals are not layout boxes.
+test('public workspaces remain readable at mobile and desktop widths', async ({ page }) => {
+  const { horizontalOffenders } = await import('./overflow')
+  const { default: AxeBuilder } = await import('@axe-core/playwright')
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'connection', { configurable: true, value: { saveData: true } })
+  })
+  for (const lang of ['zh', 'en']) {
+    for (const width of [375, 768, 1024, 1440]) {
+      await page.setViewportSize({ width, height: 960 })
+      for (const route of ['', 'try/', 'r/']) {
+        await page.goto(`${origin}/${route}?lang=${lang}`)
+        await expect(page.locator('#root')).not.toBeEmpty()
+        await expect.poll(() => horizontalOffenders(page, '#root')).toEqual([])
+        if (width === 375 || width === 1440) {
+          await page.screenshot({ path: test.info().outputPath(`${route.replace('/', '') || 'home'}-${lang}-${width}.png`), fullPage: true })
+        }
+      }
+    }
+    await page.goto(`${origin}/?lang=${lang}`)
+    const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()
+    expect(result.violations).toEqual([])
+  }
+})
+
+// Subject: fresh online browser with an English OS locale, then explicit preferences.
+test('online defaults to Chinese and preserves language and background choices', async ({ browser }) => {
+  const context = await browser.newContext({ locale: 'en-US', viewport: { width: 1280, height: 900 } })
+  const page = await context.newPage()
+  try {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'connection', { configurable: true, value: { saveData: true } })
+    })
+    for (const route of ['', 'try/', 'r/']) {
+      await page.goto(`${origin}/${route}`)
+      await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
+    }
+    await page.goto(origin)
+    const colors = new Set<string>()
+    for (const choice of ['paper', 'white', 'slate', 'blue', 'sage', 'lavender']) {
+      await page.locator('[data-background-picker]').click()
+      await page.locator(`[data-background-choice="${choice}"]`).click()
+      await expect(page.locator('html')).toHaveAttribute('data-online-background', choice)
+      colors.add(await page.locator('.site-page').evaluate((el) => getComputedStyle(el).backgroundColor))
+    }
+    expect(colors.size).toBe(6)
+    await page.reload()
+    await expect(page.locator('html')).toHaveAttribute('data-online-background', 'lavender')
+    await page.locator('[data-site-language]').click()
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en-US')
+    await page.reload()
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en-US')
+    for (const route of ['try/', 'r/']) {
+      await page.goto(`${origin}/${route}`)
+      await expect(page.locator('html')).toHaveAttribute('lang', 'en-US')
+      await expect(page.locator('html')).toHaveAttribute('data-online-background', 'lavender')
+    }
+  } finally { await context.close() }
+})

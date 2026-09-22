@@ -325,7 +325,7 @@
     "bootListSeparator": "、",
     "bootUnsupportedBrowser": "{{product}} 在线体验需要支持 WebAssembly 与 module Worker 的现代浏览器（缺少：{{missing}}）。请换用现代桌面浏览器。",
     "cancelLoading": "取消",
-    "cdnNote": "浏览器会从 jsDelivr 下载 Python 运行时（Pyodide v{{version}}）。",
+    "cdnNote": "浏览器会从本站下载 Python 运行时（Pyodide v{{version}}）。",
     "changed": "意外改动",
     "codePlain": "普通 Matplotlib 脚本",
     "codeSelfContained": "不依赖外部数据",
@@ -1516,7 +1516,30 @@
     "license": "AGPL-3.0-only 许可证",
     "rAction": "体验 R / ggplot2",
     "sourceDownload": "本版本源码",
-    "experimental": "实验版"
+    "experimental": "实验版",
+    "skip": "跳至主要内容",
+    "workflow": "如何使用",
+    "figurePreview": "案例预览",
+    "figureLabel": "反应动力学 · FIGURE 01",
+    "editHint": "标题、图例、曲线，每一个细节都可调整",
+    "libraryLabel": "熟悉的绘图库，更直观的工作流",
+    "workflowTitle": "从一段代码，到一张讲清楚故事的图。",
+    "workflowIntro": "保留代码的可复现性，把最后的微调交给眼睛和鼠标。",
+    "stepSource": "从真实绘图开始",
+    "stepSourceBody": "选一个内置案例，或打开独立绘图脚本。在浏览器里运行，无需配置本地环境。",
+    "stepEdit": "直接在图上微调",
+    "stepEditBody": "选中标题、曲线或图例，调整文字与样式。每一步修改都能撤销，放心尝试。",
+    "stepExport": "对比修改与结果",
+    "stepExportBody": "Python 体验版支持查看修改记录与撤销；R 实验版可导出 PNG、PDF 与带样式的 R 脚本。",
+    "supportIntro": "为你的绘图方式，选择合适的入口。",
+    "calibrationAlt": "校准曲线案例：数据点、拟合线和误差范围",
+    "spectrumAlt": "光谱案例：曲线、峰值和区域标注",
+    "rCodeLabel": "ggplot2 代码示意",
+    "rBoundary": "R 入口专注主题与样式调整，暂不支持逐对象拖拽。",
+    "privacyTitle": "你的图，在你的浏览器里运行。",
+    "privacyBody": "本站不上传绘图源码。会话只保存在内存中，刷新页面会清除当前修改。",
+    "privacyTag": "本地执行 · 开源可查",
+    "nextChapter": "接下来"
   },
   "rStudio": {
     "title": "R / ggplot2 实验版",
@@ -1559,5 +1582,15 @@
     "exportR": "导出 R 脚本",
     "preview": "ggplot2 图表预览",
     "empty": "运行左侧示例，开始调整图表。"
+  },
+  "appearance": {
+    "title": "背景颜色",
+    "paper": "纸白",
+    "white": "纯白",
+    "slate": "雾灰",
+    "blue": "浅蓝",
+    "sage": "鼠尾草绿",
+    "lavender": "淡紫",
+    "note": "只改变界面背景，不改变图表或导出颜色。"
   }
 }

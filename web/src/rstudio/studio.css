@@ -1,0 +1,19 @@
+.r-studio-header { min-height:76px; background:var(--color-surface); }
+.r-studio-header > a:first-child { font-size:23px; letter-spacing:-.055em; }
+.r-studio-header > a:last-child { display:inline-flex; align-items:center; min-height:36px; color:var(--color-accent); }
+.r-studio-main { padding:32px; }
+.r-studio-scope { padding:16px 20px; border-left:2px solid var(--color-accent); background:var(--color-accent-subtle); max-width:100%; }
+.r-studio-layout { align-items:start; gap:28px; }
+.r-studio-controls { padding:24px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-md); min-width:0; }
+.r-studio-controls textarea { line-height:1.8; padding:14px; }
+.r-studio-controls fieldset { margin-top:28px; padding-top:20px; }
+.r-studio-controls legend { padding-right:12px; }
+.r-studio-output { position:sticky; top:24px; }
+.r-studio-output > div:first-child { padding:12px 16px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-md); }
+.r-studio-preview { min-height:540px; background-color:var(--color-field); background-image:radial-gradient(var(--color-border) 1px,transparent 1px); background-size:18px 18px; padding:28px; }
+.r-studio-preview img { background:var(--color-surface); box-shadow:var(--shadow-card); }
+.r-studio-preview > p { background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-md); padding:24px; max-width:40ch; text-align:center; line-height:1.8; }
+.r-studio a:focus-visible { outline:2px solid var(--color-accent); outline-offset:3px; }
+@media(min-width:1200px) { .r-studio-layout { grid-template-columns:390px minmax(0,1fr); } }
+@media(max-width:1023px) { .r-studio-output { position:static; } .r-studio-preview { min-height:340px; } }
+@media(max-width:640px) { .r-studio-main { padding:20px 16px; } .r-studio-header { gap:8px; padding:16px; } .r-studio-header h1 { order:3; width:100%; color:var(--color-ink-2); } .r-studio-controls { padding:18px; } .r-studio-preview { padding:12px; } .r-studio button { min-height:44px; } }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { BackgroundPicker } from '@/components/ui/BackgroundPicker'
 import { Button } from '@/components/ui/Button'
 import { TextArea, TextInput } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
@@ -7,6 +8,7 @@ import { currentLocale } from '@/i18n'
 import { PRODUCT_NAME, playgroundHomeHref } from '@/lib/brand'
 import { DEFAULT_STYLE, RPlotClient, styleExpression, type PlotStyle } from './client'
 import example from './example.R?raw'
+import './studio.css'
 
 function download(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
@@ -87,16 +89,17 @@ export function RStudio() {
     finally { if (seq.current === id) setBusy(false) }
   }
   return (
-    <div className="min-h-screen bg-bg text-ink">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
+    <div className="r-studio min-h-screen bg-bg text-ink">
+      <header className="r-studio-header flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
         <a href={playgroundHomeHref(currentLocale())} className="font-medium">{PRODUCT_NAME}</a>
         <h1 className="text-lg font-medium">{t('rStudio.title')}</h1>
+        <BackgroundPicker />
         <a href={`../try/?lang=${currentLocale() === 'zh-CN' ? 'zh' : 'en'}`} className="text-sm">{t('rStudio.python')}</a>
       </header>
-      <main className="mx-auto max-w-[1400px] space-y-5 p-6">
-        <p className="max-w-[90ch] text-sm leading-relaxed text-ink-2">{t('rStudio.scope')}</p>
-        <div className="grid gap-6 lg:grid-cols-[minmax(280px,360px)_1fr]">
-          <section className="space-y-4">
+      <main className="r-studio-main mx-auto max-w-[1400px] space-y-5 p-6">
+        <p className="r-studio-scope text-sm leading-relaxed text-ink-2">{t('rStudio.scope')}</p>
+        <div className="r-studio-layout grid gap-6 lg:grid-cols-[minmax(280px,360px)_1fr]">
+          <section className="r-studio-controls space-y-4">
             <label className="block space-y-2">
               <span className="text-sm font-medium">{t('rStudio.source')}</span>
               <TextArea data-r-source aria-label={t('rStudio.source')} value={source} disabled={busy} onChange={(e) => setSource(e.target.value)} className="min-h-[260px] font-mono text-sm" />
@@ -147,13 +150,13 @@ export function RStudio() {
               </div>
             </fieldset>
           </section>
-          <section className="min-w-0 space-y-4">
+          <section className="r-studio-output min-w-0 space-y-4">
             <div className="flex flex-wrap gap-2">
               <Button data-r-png disabled={!active || !preview} onClick={() => { if (preview) download(preview, 'figure.png') }}>{t('rStudio.png')}</Button>
               <Button data-r-pdf disabled={!active} onClick={() => void exportPdf()}>{t('rStudio.pdf')}</Button>
               <Button data-r-export disabled={!active} onClick={() => download(new Blob([`${loadedSource}\n\n# ${PRODUCT_NAME} styling\nfigweave_plot <- ${styleExpression(style)}\nprint(figweave_plot)\n`], { type: 'text/plain;charset=utf-8' }), 'figure-styled.R')}>{t('rStudio.exportR')}</Button>
             </div>
-            <div className="flex min-h-[350px] items-center justify-center rounded-md border border-border bg-surface p-4">
+            <div className="r-studio-preview flex min-h-[350px] items-center justify-center rounded-md border border-border bg-surface p-4">
               {previewUrl ? <img data-r-preview src={previewUrl} alt={t('rStudio.preview')} className="h-auto max-w-full" /> : <p className="text-sm text-ink-3">{t('rStudio.empty')}</p>}
             </div>
           </section>

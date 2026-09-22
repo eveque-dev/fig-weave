@@ -328,7 +328,7 @@
     "bootListSeparator": ", ",
     "bootUnsupportedBrowser": "{{product}} requires a modern browser with WebAssembly and module Worker support (missing: {{missing}}). Please use a modern desktop browser.",
     "cancelLoading": "Cancel",
-    "cdnNote": "The browser downloads the Python runtime from jsDelivr (Pyodide v{{version}}).",
+    "cdnNote": "The browser downloads the Python runtime from this site (Pyodide v{{version}}).",
     "changed": "changed unexpectedly",
     "codePlain": "Ordinary Matplotlib script",
     "codeSelfContained": "No external data",
@@ -1535,7 +1535,30 @@
     "license": "AGPL-3.0-only license",
     "rAction": "Try R / ggplot2",
     "sourceDownload": "Source for this version",
-    "experimental": "Experimental"
+    "experimental": "Experimental",
+    "skip": "Skip to main content",
+    "workflow": "How it works",
+    "figurePreview": "Example preview",
+    "figureLabel": "REACTION KINETICS · FIGURE 01",
+    "editHint": "Titles, legends, curves. Every detail, within reach.",
+    "libraryLabel": "Your libraries. A more visual workflow.",
+    "workflowTitle": "From a line of code to a clearer story.",
+    "workflowIntro": "Keep the reproducibility of code. Put the finishing touches in your hands.",
+    "stepSource": "Start with a real plot",
+    "stepSourceBody": "Choose a built-in example or open a standalone plotting script. Run it in your browser, without a local setup.",
+    "stepEdit": "Refine it on the figure",
+    "stepEditBody": "Select a title, curve or legend and adjust its style. Every edit is undoable, so there is room to experiment.",
+    "stepExport": "Review your changes",
+    "stepExportBody": "Inspect changes and undo edits in the Python preview. Export PNG, PDF and styled R scripts from the R experiment.",
+    "supportIntro": "Choose the right workspace for the way you plot.",
+    "calibrationAlt": "Calibration example with observations, a fitted line and uncertainty",
+    "spectrumAlt": "Spectrum example with curves, peaks and annotated regions",
+    "rCodeLabel": "Illustrative ggplot2 code",
+    "rBoundary": "The R workspace focuses on themes and styling; per-object dragging is not supported yet.",
+    "privacyTitle": "Your figures run in your browser.",
+    "privacyBody": "This site does not upload your plotting source. Sessions live in memory; refreshing clears your current edits.",
+    "privacyTag": "Local execution · Open source",
+    "nextChapter": "UP NEXT"
   },
   "rStudio": {
     "title": "R / ggplot2 experimental",
@@ -1578,5 +1601,15 @@
     "exportR": "Export R script",
     "preview": "ggplot2 plot preview",
     "empty": "Run the example on the left to start styling."
+  },
+  "appearance": {
+    "title": "Background",
+    "paper": "Paper",
+    "white": "White",
+    "slate": "Mist",
+    "blue": "Blue",
+    "sage": "Sage",
+    "lavender": "Lavender",
+    "note": "Changes the interface background, not your figures or exports."
   }
 }
