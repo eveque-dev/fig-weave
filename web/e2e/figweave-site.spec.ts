@@ -88,7 +88,10 @@ test('built homepage → editor → homepage preserves language and desktop stat
   for (const prefix of ['', '/preview']) {
     await page.goto(`${origin}${prefix}/?lang=zh`)
     await expect(page).toHaveTitle('FigWeave — 让科研图表的最后一步，更直观。')
-    await expect(page.locator('#downloads')).toContainText('尚未发布')
+    await expect(page.locator('#downloads')).toContainText('预览版')
+    await expect(page.locator('[data-site-download="windows"]')).toHaveAttribute('href', /^https:\/\/github\.com\/eveque-dev\/fig-weave\/releases\/download\/.+\/FigWeave_.+_windows_x64\.exe$/)
+    await expect(page.locator('[data-site-download="macos"]')).toHaveAttribute('href', /^https:\/\/github\.com\/eveque-dev\/fig-weave\/releases\/download\/.+\/FigWeave_.+_macos_arm64\.dmg$/)
+    await expect(page.locator('[data-site-download-access]')).toContainText('私有仓库')
     expect(external).toEqual([])
     await page.screenshot({ path: test.info().outputPath('homepage-desktop.png'), fullPage: true })
     // Prevent prewarm only after the homepage assertion above: its zero-request

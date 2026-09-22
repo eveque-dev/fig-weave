@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { currentLocale } from '@/i18n'
 import { setOnlineLocale } from '@/lib/onlineLocale'
-import { PRODUCT_NAME, REPO_URL, UPSTREAM_PRODUCT_NAME, WEBSITE_URL } from '@/lib/brand'
+import { DESKTOP_PREVIEW, PRODUCT_NAME, REPO_URL, UPSTREAM_PRODUCT_NAME, WEBSITE_URL } from '@/lib/brand'
 import { BackgroundPicker } from '@/components/ui/BackgroundPicker'
 import { Button } from '@/components/ui/Button'
 import { ArrowUpRight, Check, FileCodeCorner, MousePointerClick, Download, ShieldCheck } from '@/components/ui/icons'
@@ -107,7 +107,20 @@ export function SiteApp() {
         </section>
 
         <section className="site-privacy"><ShieldCheck aria-hidden size={ICON_SIZE.lg} /><div><h2>{t('site.privacyTitle')}</h2><p>{t('site.privacyBody')}</p></div><span>{t('site.privacyTag')}</span></section>
-        <section id="downloads" className="site-downloads"><div><p className="site-eyebrow">{t('site.nextChapter')}</p><h2 className="text-[19px]">{t('site.desktopTitle')}</h2></div><div><p>{t('site.desktopBody', { product: PRODUCT_NAME })}</p><p className="site-note">{t('site.desktopNote')}</p></div></section>
+        <section id="downloads" className="site-downloads">
+          <div><p className="site-eyebrow">{t('site.nextChapter')}</p><h2 className="text-[19px]">{t('site.desktopTitle')}</h2></div>
+          <div>
+            <p>{t('site.desktopBody', { product: PRODUCT_NAME, version: DESKTOP_PREVIEW.version })}</p>
+            <div className="site-download-links">
+              <a data-site-download="windows" href={DESKTOP_PREVIEW.windowsUrl} className="site-text-link rounded-sm border border-border bg-surface px-4"><Download aria-hidden />{t('site.downloadWindows')}</a>
+              <a data-site-download="macos" href={DESKTOP_PREVIEW.macosUrl} className="site-text-link rounded-sm border border-border bg-surface px-4"><Download aria-hidden />{t('site.downloadMac')}</a>
+            </div>
+            <p data-site-download-access className="site-note">{t('site.downloadAccess')}</p>
+            <p className="site-note">{t('site.desktopNote')}</p>
+            <p className="site-note">{t('site.desktopScope')}</p>
+            <a data-site-release href={DESKTOP_PREVIEW.releaseUrl} className="site-text-link">{t('site.releaseNotes')}<ArrowUpRight aria-hidden /></a>
+          </div>
+        </section>
       </main>
       <footer className="site-footer site-container"><div><a href={WEBSITE_URL} className="site-brand">{PRODUCT_NAME}</a><p>{t('site.attribution', { product: PRODUCT_NAME, upstream: UPSTREAM_PRODUCT_NAME })}</p></div><div className="site-footer-links"><a href={REPO_URL}>{t('site.upstreamSource')}</a><a href="./source/figweave-source.zip">{t('site.sourceDownload')}</a><a href="./LICENSE">{t('site.license')}</a></div></footer>
     </div>

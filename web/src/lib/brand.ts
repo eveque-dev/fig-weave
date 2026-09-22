@@ -12,7 +12,19 @@ export const PRODUCT_NAME = 'FigWeave'
 export const WEBSITE_URL = 'https://fig-weave.com'
 export const UPSTREAM_PRODUCT_NAME = 'Tavotto'
 
-/** The online distribution has its own homepage; desktop releases are not available yet. */
+/** FigWeave preview downloads are separate from the upstream update channel. */
+export const FIGWEAVE_REPO_URL = 'https://github.com/eveque-dev/fig-weave'
+const PREVIEW_VERSION = '0.15.0'
+const PREVIEW_TAG = `figweave-preview-${PREVIEW_VERSION}-20260922`
+const PREVIEW_ASSETS = `${FIGWEAVE_REPO_URL}/releases/download/${PREVIEW_TAG}`
+export const DESKTOP_PREVIEW = {
+  version: PREVIEW_VERSION,
+  releaseUrl: `${FIGWEAVE_REPO_URL}/releases/tag/${PREVIEW_TAG}`,
+  windowsUrl: `${PREVIEW_ASSETS}/${PRODUCT_NAME}_${PREVIEW_VERSION}_windows_x64.exe`,
+  macosUrl: `${PREVIEW_ASSETS}/${PRODUCT_NAME}_${PREVIEW_VERSION}_macos_arm64.dmg`,
+} as const
+
+/** The online distribution has its own homepage and preview download section. */
 export const playgroundHomeHref = (locale: string) =>
   `../?lang=${locale.startsWith('zh') ? 'zh' : 'en'}`
 export const playgroundDesktopHref = (locale: string) => `${playgroundHomeHref(locale)}#downloads`

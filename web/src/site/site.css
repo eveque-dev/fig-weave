@@ -75,6 +75,8 @@
 .site-downloads h2 { font-size:25px; font-weight:500; letter-spacing:-.03em; }
 .site-downloads p { color:var(--color-ink-2); font-size:14px; }
 .site-downloads .site-note { font-size:12px; }
+.site-download-links { display:flex; flex-wrap:wrap; gap:12px; margin-block:20px; }
+.site-downloads .site-note + .site-note { margin-top:8px; }
 .site-footer { border-top:1px solid var(--color-border); padding-block:30px 40px; display:flex; justify-content:space-between; align-items:center; gap:24px; }
 .site-footer .site-brand { font-size:19px; }
 .site-footer p, .site-footer-links { font-size:11px; color:var(--color-ink-3); }
