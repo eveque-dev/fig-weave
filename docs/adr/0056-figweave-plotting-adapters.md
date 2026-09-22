@@ -12,6 +12,10 @@ pure-Python wheel, downloaded at build time and checked against SHA-256 at build
 load. Its dependencies come from the pinned Pyodide distribution. No arbitrary pip
 installation or import-based package resolution is introduced.
 
+Cold imports of the engine and requested allowlisted libraries run in the bounded
+environment-preparation phase. The separate 20-second user-script budget begins
+after these imports; user code is never executed during preparation.
+
 ## R
 
 The experimental `/r/` entry uses a separate webR worker per script, never a server

@@ -23,7 +23,7 @@ interface PyodideLike {
   loadPackage(names: string[]): Promise<void>
   unpackArchive(buf: ArrayBuffer, format: string, opts?: { extractDir?: string }): void
   runPython(code: string): unknown
-  pyimport(name: string): { handle?: (s: string) => string; classify_json?: (s: string) => string }
+  pyimport(name: string): { handle?: (s: string) => string; classify_json?: (s: string) => string; destroy?: () => void }
   /** Emscripten 虚拟 FS。完整性摘要经它读字节——**绕开 Python 解释器**。 */
   FS: { readFile(path: string, opts?: { encoding?: string }): Uint8Array }
 }
@@ -174,6 +174,7 @@ async function load(
   // 2. 按需加载受支持的包。matplotlib/numpy 是引擎自己的依赖，恒在。
   progress(id, 'packages')
   const packages = new Set(['matplotlib', 'numpy', ...((cls.packages as string[]) ?? [])])
+  const requestedPackages = new Set(packages)
   try {
     const extras = [...packages].filter((name) => EXTRA_WHEELS[name])
     for (const name of extras) {
@@ -199,10 +200,13 @@ async function load(
     fail('runtime_failure', `Python 包加载失败: ${err instanceof Error ? err.message : err}`)
   }
 
-  // 3. 引擎适配层就位（首次 import matplotlib 就发生在这里），再跑脚本
-  progress(id, 'script')
+  // Trusted engine and allowlisted library cold imports belong to environment
+  // preparation, not the user's 20-second execution budget. No user code runs here.
   const browser = pyodide.pyimport('browser')
   handleFn = (s: string) => browser.handle!(s)
+  for (const [root, pkg] of Object.entries(runtimeLock.import_roots)) {
+    if (requestedPackages.has(pkg)) pyodide.pyimport(root).destroy?.()
+  }
 
   // **先把路径钉死，再跑用户代码**。收紧规则（`_safe_script_name`）只有
   // Python 那一份实现，所以问它——但要在它还没跑过任何用户代码的时候问。
@@ -212,6 +216,7 @@ async function load(
   const named = callPython({ cmd: 'safe_name', filename })
   workspacePath = `/workspace/${typeof named.script === 'string' ? named.script : 'figure.py'}`
 
+  progress(id, 'script')
   const out = callPython({ cmd: 'load', filename, source })
   progress(id, 'figures')
   // 界面上「文件名 · 未改动」是一句话：名字也必须是**被核对的那个**。
