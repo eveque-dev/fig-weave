@@ -1535,7 +1535,7 @@
     "calibrationAlt": "校准曲线案例：数据点、拟合线和误差范围",
     "spectrumAlt": "光谱案例：曲线、峰值和区域标注",
     "rCodeLabel": "ggplot2 代码示意",
-    "rBoundary": "R 入口专注主题与样式调整，暂不支持逐对象拖拽。",
+    "rBoundary": "支持标准文字、图例、散点和曲线的显示偏移；自定义 grob 和栅格对象暂不支持。",
     "privacyTitle": "你的图，在你的浏览器里运行。",
     "privacyBody": "本站不上传绘图源码。会话只保存在内存中，刷新页面会清除当前修改。",
     "privacyTag": "本地执行 · 开源可查",
@@ -1544,7 +1544,7 @@
   "rStudio": {
     "title": "R / ggplot2 实验版",
     "python": "Python 编辑器",
-    "scope": "在浏览器中运行独立 R 脚本，并对名为 p 的 ggplot2 对象调整标题、坐标轴、主题、字号和图例。原脚本保留，修改可撤销，支持 PNG、PDF 和带样式的 R 脚本导出。暂不支持本地数据文件、其他 R 包或直接拖动图中元素。首次使用需下载 R 与 ggplot2；应用不会上传脚本，但脚本自己发起的网络请求不在此保证内。",
+    "scope": "在浏览器中运行独立 R 脚本，并对名为 p 的 ggplot2 对象调整标题、坐标轴、主题、字号和图例。原脚本保留，修改可撤销，支持 PNG、PDF 和带样式的 R 脚本导出。支持标准文字、图例、散点和曲线的显示偏移；暂不支持本地数据文件与其他 R 包。首次使用需下载 R 与 ggplot2；应用不会上传脚本，但脚本自己发起的网络请求不在此保证内。",
     "source": "R 脚本（将图保存为 p）",
     "upload": "或选择一个 .R 文件",
     "tooLarge": "脚本不能超过 256 KiB。",
@@ -1581,7 +1581,12 @@
     "pdf": "导出 PDF",
     "exportR": "导出 R 脚本",
     "preview": "ggplot2 图表预览",
-    "empty": "运行左侧示例，开始调整图表。"
+    "empty": "运行左侧示例，开始调整图表。",
+    "dragHint": "拖动标题、轴标题、图例、散点或曲线；也可用 Tab 选中后按方向键微调。数据对象仅调整显示偏移，不改变原始数据。修改布局会清除偏移，可撤销。暂不支持自定义 grob 和栅格对象。",
+    "dragtext": "拖动文字",
+    "draglegend": "拖动图例",
+    "dragpoint": "拖动数据点（显示偏移）",
+    "dragcurve": "拖动曲线（显示偏移）"
   },
   "appearance": {
     "title": "背景颜色",
@@ -1592,5 +1597,18 @@
     "sage": "鼠尾草绿",
     "lavender": "淡紫",
     "note": "只改变界面背景，不改变图表或导出颜色。"
+  },
+  "charts": {
+    "title": "交互图表工作台",
+    "scope": "直接运行 Plotly / pyecharts Python 脚本。Plotly 图请命名为 fig，pyecharts 图请命名为 chart。脚本在浏览器中执行；支持内置依赖和单个图表，暂不支持 JsCode 回调、外部地图和本地数据文件。",
+    "library": "绘图库",
+    "upload": "上传 Python 脚本",
+    "timeout": "运行超时，已停止 Python。请简化脚本后重试。",
+    "apply": "应用修改",
+    "exportPython": "导出 Python",
+    "exportJson": "导出图表 JSON",
+    "options": "高级编辑 · 图表配置 JSON",
+    "editHint": "可修改标题与坐标轴，或展开图表配置修改系列、颜色和布局。Plotly 还可直接编辑图内文字、拖动图例与注释。导出 Python 重建当前图表，原脚本保留在输入区。",
+    "open": "打开交互图表工作台"
   }
 }

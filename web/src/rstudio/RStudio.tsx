@@ -6,7 +6,8 @@ import { TextArea, TextInput } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { currentLocale } from '@/i18n'
 import { PRODUCT_NAME, playgroundHomeHref } from '@/lib/brand'
-import { DEFAULT_STYLE, RPlotClient, styleExpression, type PlotStyle } from './client'
+import { DEFAULT_STYLE, RPlotClient, exportR, type PlotStyle, type RObject } from './client'
+import { DragOverlay } from './DragOverlay'
 import example from './example.R?raw'
 import './studio.css'
 
@@ -20,6 +21,7 @@ function download(blob: Blob, filename: string) {
 /** ggplot2 styles are replayed from p; this is not a Matplotlib artist editor. */
 export function RStudio() {
   const { t } = useTranslation('dialogs')
+  const [objects, setObjects] = useState<RObject[]>([])
   const [source, setSource] = useState(example)
   const [loadedSource, setLoadedSource] = useState('')
   const [style, setStyle] = useState<PlotStyle>({ ...DEFAULT_STYLE })
@@ -57,7 +59,7 @@ export function RStudio() {
       await r.load(source, (key) => { if (seq.current === id) setPhase(key) })
       const blob = await r.render(DEFAULT_STYLE)
       if (seq.current !== id) return
-      setPreview(blob); setLoadedSource(source); setStyle({ ...DEFAULT_STYLE })
+      setObjects(r.objects); setPreview(blob); setLoadedSource(source); setStyle({ ...DEFAULT_STYLE })
       setHistory([]); setFuture([]); setPhase('ready')
     } catch (e) {
       r.close()
@@ -66,6 +68,7 @@ export function RStudio() {
   }
   const apply = async (next: PlotStyle, direction: 'edit' | 'undo' | 'redo' = 'edit') => {
     if (!client.current || busy || !loadedSource) return
+    if (direction === 'edit' && next.moves === style.moves) next = { ...next, moves: {} }
     const id = seq.current
     setBusy(true); setError('')
     try {
@@ -74,7 +77,7 @@ export function RStudio() {
       if (direction === 'undo') { setHistory(history.slice(0, -1)); setFuture([...future, style]) }
       else if (direction === 'redo') { setFuture(future.slice(0, -1)); setHistory([...history, style]) }
       else { setHistory([...history, style].slice(-50)); setFuture([]) }
-      setStyle(next); setPreview(blob)
+      setObjects(client.current.objects); setStyle(next); setPreview(blob)
     } catch (e) {
       if (id === seq.current) setError(String(e))
     } finally { if (id === seq.current) setBusy(false) }
@@ -154,10 +157,14 @@ export function RStudio() {
             <div className="flex flex-wrap gap-2">
               <Button data-r-png disabled={!active || !preview} onClick={() => { if (preview) download(preview, 'figure.png') }}>{t('rStudio.png')}</Button>
               <Button data-r-pdf disabled={!active} onClick={() => void exportPdf()}>{t('rStudio.pdf')}</Button>
-              <Button data-r-export disabled={!active} onClick={() => download(new Blob([`${loadedSource}\n\n# ${PRODUCT_NAME} styling\nfigweave_plot <- ${styleExpression(style)}\nprint(figweave_plot)\n`], { type: 'text/plain;charset=utf-8' }), 'figure-styled.R')}>{t('rStudio.exportR')}</Button>
+              <Button data-r-export disabled={!active} onClick={() => download(new Blob([exportR(loadedSource, style)], { type: 'text/plain;charset=utf-8' }), 'figure-styled.R')}>{t('rStudio.exportR')}</Button>
             </div>
+            <p className="text-sm text-ink-2">{t('rStudio.dragHint')}</p>
             <div className="r-studio-preview flex min-h-[350px] items-center justify-center rounded-md border border-border bg-surface p-4">
-              {previewUrl ? <img data-r-preview src={previewUrl} alt={t('rStudio.preview')} className="h-auto max-w-full" /> : <p className="text-sm text-ink-3">{t('rStudio.empty')}</p>}
+              {previewUrl ? <div className="r-drag-frame"><img data-r-preview src={previewUrl} alt={t('rStudio.preview')} className="h-auto max-w-full" /><DragOverlay objects={objects} disabled={!active} move={(id, dx, dy) => {
+                const previous = style.moves[id] ?? [0, 0]
+                void apply({ ...style, moves: { ...style.moves, [id]: [previous[0] + dx, previous[1] + dy] } })
+              }} /></div> : <p className="text-sm text-ink-3">{t('rStudio.empty')}</p>}
             </div>
           </section>
         </div>

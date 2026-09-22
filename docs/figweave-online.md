@@ -16,11 +16,12 @@ CLI、Codex 插件、文档格式及存储键仍带有 tavotto 标识。后续�
 处理签名、安装路径、更新源、遥测归属和发行仓库，不能只修改窗口标题后发布。
 跨标签页文档占用频道也保持原标识，不随显示名变化，避免新旧页面互相失联。
 Python 在线环境支持 seaborn、pandas plotting 与 NetworkX 生成的 Matplotlib 图，
-复用原有对象编辑器。Plotly、Bokeh、Altair 等独立渲染体系尚未接入。
+复用原有对象编辑器。Plotly 与 pyecharts 在 `/charts/` 使用各自引擎接入；Bokeh、Altair 尚未接入。
 
 `/r/` 通过 webR 运行 ggplot2 脚本，脚本需要将图赋给 `p`。支持标题、轴标签、
-主题、字号、图例位置、尺寸、撤销与 PNG/PDF/R 脚本导出；不支持 Matplotlib
-式的逐对象拖拽，也不写回原始 R 文件。当前不包含本机离线 R 环境。
+主题、字号、图例位置、尺寸、撤销与 PNG/PDF/R 脚本导出。标准文字、图例、散点和
+折线支持拖拽与键盘显示偏移；不改变测量值，不写回原始 R 文件。布局编辑清空偏移，
+撤销可恢复；自定义 grob、栅格对象未接入。当前不包含本机离线 R 环境。
 R 的默认 PDF 字体对非拉丁文字有限制，中文图建议先用 PNG 导出检查效果。
 运行时与依赖分别锁定在 `packaging/r-browser-runtime.json` 和
 `packaging/r-packages.lock.json`，构建时校验哈希并将 R 包随网站部署。
@@ -89,3 +90,19 @@ python -m pip install --index-url https://mirrors.aliyun.com/pypi/simple/ -r req
 浏览器运行的 Pyodide/webR 包不是普通 PyPI/CRAN 的本机二进制包，不能直接替换成
 普通镜像地址。Pyodide 已通过锁文件校验后自托管；R 包由构建脚本校验后随站点分发，
 webR 核心目前仍来自锁定版本的官方地址。不要用取消哈希或浮动版本来换取镜像命中。
+
+
+## 交互图表与桌面预览（2026-09-22）
+
+`/charts/` 在独立 Pyodide Worker 中执行 Python。Plotly 对象名 `fig`，pyecharts
+对象名 `chart`。运行超时 30 秒（依赖冷启动另给 240 秒），取消直接终止 Worker。
+支持标题、轴名、原生 JSON 配置修改与撤销；Plotly 支持其原生文字编辑、图例与注释
+拖拽。导出 PNG、JSON、重建当前图表的 Python。导出的 Python 不保留数据处理过程，
+原始源码仍在输入区。每次运行新 Worker；源码不写浏览器存储、不由应用上传。
+只接受单图，拒绝 JsCode / JS 回调，不接本地数据文件、外部地图或任意 pip 安装。
+纯 Python 包由 `packaging/chart-wheels.json` 锁定，优先阿里云镜像并验 SHA-256；
+Pyodide 原生包使用同一个官方运行时锁，部署到自托管 runtime。
+
+Windows x64 EXE、macOS Apple Silicon DMG 由私有仓库 `figweave-preview.yml` 构建，
+属于未签名预览包，更新渠道关闭。当前在线新增 R / Plotly / pyecharts 工作台尚未
+打进桌面离线引擎；桌面包保持原有 Matplotlib 编辑能力。

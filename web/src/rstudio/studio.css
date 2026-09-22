@@ -17,3 +17,11 @@
 @media(min-width:1200px) { .r-studio-layout { grid-template-columns:390px minmax(0,1fr); } }
 @media(max-width:1023px) { .r-studio-output { position:static; } .r-studio-preview { min-height:340px; } }
 @media(max-width:640px) { .r-studio-main { padding:20px 16px; } .r-studio-header { gap:8px; padding:16px; } .r-studio-header h1 { order:3; width:100%; color:var(--color-ink-2); } .r-studio-controls { padding:18px; } .r-studio-preview { padding:12px; } .r-studio button { min-height:44px; } }
+
+.r-drag-frame { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
+.r-drag-frame img { display: block; }
+.r-drag-overlay { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.r-drag-object { fill: transparent; stroke: transparent; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: all; cursor: move; touch-action: none; }
+path.r-drag-object { fill: none; stroke-width: 12; pointer-events: stroke; }
+.r-drag-object:hover, .r-drag-object:focus-visible, .r-drag-object.selected { stroke: var(--color-accent); outline: none; }
+path.r-drag-object:hover, path.r-drag-object:focus-visible, path.r-drag-object.selected { stroke-width: 4; }

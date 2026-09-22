@@ -1,6 +1,8 @@
+import dragSource from './drag.R?raw'
 import lock from '../../../packaging/r-browser-runtime.json'
 
 export interface PlotStyle {
+  moves: Record<string, [number, number]>
   title: string | null
   x: string | null
   y: string | null
@@ -11,7 +13,7 @@ export interface PlotStyle {
   height: number
 }
 export const DEFAULT_STYLE: PlotStyle = {
-  title: null, x: null, y: null, theme: 'original', fontSize: 12,
+  moves: {}, title: null, x: null, y: null, theme: 'original', fontSize: 12,
   legend: 'right', width: 7, height: 5,
 }
 
@@ -30,6 +32,16 @@ export function styleExpression(s: PlotStyle, plot = 'p'): string {
     + ` + ggplot2::theme(text = ggplot2::element_text(size = ${s.fontSize}), legend.position = ${JSON.stringify(s.legend)})`
 }
 
+export interface RObject { id: string; kind: 'text' | 'legend' | 'point' | 'curve'; coords: number[]; breaks: number[] }
+export function movesExpression(moves: PlotStyle['moves']): string {
+  return 'list(' + Object.entries(moves).map(([key, xy]) => {
+    if (!/^(?:\d+|legend):\d+$/.test(key) || xy.length !== 2 || !xy.every((v) => Number.isFinite(v) && Math.abs(v) <= 2)) throw new Error('Invalid visual offset')
+    return `${JSON.stringify(key)} = c(${xy.join(',')})`
+  }).join(',') + ')'
+}
+export function exportR(source: string, style: PlotStyle): string {
+  return `${source}\n\n${dragSource}\nfigweave_plot <- ${styleExpression(style)}\nfigweave_result <- figweave_scene(figweave_plot, ${movesExpression(style.moves)}, ${style.width}, ${style.height})\ngrid::grid.newpage()\ngrid::grid.draw(figweave_result)\n`
+}
 interface Shelter {
   captureR(code: string, opts: object): Promise<{ images: ImageBitmap[]; output: { type: string; data: string }[] }>
   purge(): Promise<void>
@@ -46,6 +58,7 @@ interface WebR {
 
 /** Each source gets its own R worker. Closing also invalidates all pending work. */
 export class RPlotClient {
+  objects: RObject[] = []
   private runtime: WebR | null = null
   private closed = false
   private stop: (() => void) | null = null
@@ -83,6 +96,7 @@ export class RPlotClient {
       await this.runtime.installPackages(['ggplot2'])
       const version = await this.runtime.evalRString('as.character(utils::packageVersion("ggplot2"))')
       if (version !== lock.ggplot2_version) throw new Error(`ggplot2 version mismatch: ${version}`)
+      await this.runtime.evalRVoid(dragSource)
       phase('running')
       await this.runtime.evalRVoid(`local({
         env <- new.env(parent = globalenv())
@@ -102,12 +116,17 @@ export class RPlotClient {
       const shelter = await new r.Shelter()
       let images: ImageBitmap[] = []
       try {
-        const result = await shelter.captureR('print(.fw_plot)', {
-          captureGraphics: { width: style.width * 96, height: style.height * 96 },
+        const result = await shelter.captureR(`figweave_draw(.fw_plot, ${movesExpression(style.moves)}, ${style.width}, ${style.height}, TRUE)`, {
+          captureGraphics: { width: style.width * 72, height: style.height * 72 },
           captureConditions: false,
           withAutoprint: false,
           captureStreams: true,
         })
+        const geometry = await r.evalRString('.fw_geometry')
+        this.objects = geometry ? geometry.split('\n').map((row) => {
+          const [id, kind, coords, breaks] = row.split('\t')
+          return { id, kind: kind as RObject['kind'], coords: coords.split(/[;,]/).map(Number), breaks: breaks ? breaks.split(',').map(Number) : [] }
+        }) : []
         images = result.images
         if (!images.length) throw new Error(result.output.map((x) => x.data).join('\n') || 'No plot produced')
         const image = images[images.length - 1]
@@ -123,7 +142,7 @@ export class RPlotClient {
   async pdf(style: PlotStyle): Promise<Blob> {
     return this.bounded(async () => {
       const r = this.runtime!
-      await r.evalRVoid(`ggplot2::ggsave("/tmp/figweave.pdf", plot = ${styleExpression(style, '.fw_original')}, device = "pdf", width = ${style.width}, height = ${style.height}, units = "in")`)
+      await r.evalRVoid(`ggplot2::ggsave("/tmp/figweave.pdf", plot = figweave_scene(${styleExpression(style, '.fw_original')}, ${movesExpression(style.moves)}, ${style.width}, ${style.height}), device = "pdf", width = ${style.width}, height = ${style.height}, units = "in")`)
       const bytes = await r.FS.readFile('/tmp/figweave.pdf')
       return new Blob([new Uint8Array(bytes)], { type: 'application/pdf' })
     }, 30_000)

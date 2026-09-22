@@ -1554,7 +1554,7 @@
     "calibrationAlt": "Calibration example with observations, a fitted line and uncertainty",
     "spectrumAlt": "Spectrum example with curves, peaks and annotated regions",
     "rCodeLabel": "Illustrative ggplot2 code",
-    "rBoundary": "The R workspace focuses on themes and styling; per-object dragging is not supported yet.",
+    "rBoundary": "Drag standard text, legends, points and curves using visual offsets. Custom grobs and raster objects are not supported.",
     "privacyTitle": "Your figures run in your browser.",
     "privacyBody": "This site does not upload your plotting source. Sessions live in memory; refreshing clears your current edits.",
     "privacyTag": "Local execution · Open source",
@@ -1563,7 +1563,7 @@
   "rStudio": {
     "title": "R / ggplot2 experimental",
     "python": "Python editor",
-    "scope": "Run a standalone R script in your browser, then style the ggplot2 object named p: titles, axes, theme, text size and legend. Keep the original script, undo edits and export PNG, PDF or styled R code. Local data files, additional R packages and direct manipulation of plot elements are not supported yet. The first run downloads R and ggplot2. The app does not upload scripts; network requests made by your script are outside this guarantee.",
+    "scope": "Run a standalone R script in your browser, then style the ggplot2 object named p: titles, axes, theme, text size and legend. Keep the original script, undo edits and export PNG, PDF or styled R code. Standard text, legends, points and curves support visual offsets. Local data files and additional R packages are not supported. The first run downloads R and ggplot2. The app does not upload scripts; network requests made by your script are outside this guarantee.",
     "source": "R script (assign the plot to p)",
     "upload": "Or choose an .R file",
     "tooLarge": "Source must not exceed 256 KiB.",
@@ -1600,7 +1600,12 @@
     "pdf": "Export PDF",
     "exportR": "Export R script",
     "preview": "ggplot2 plot preview",
-    "empty": "Run the example on the left to start styling."
+    "empty": "Run the example on the left to start styling.",
+    "dragHint": "Drag titles, axis titles, legends, points or curves; Tab and arrow keys also work. Data objects receive visual offsets; source data stays unchanged. Layout edits clear offsets and can be undone. Custom grobs and raster objects are not supported.",
+    "dragtext": "Move text",
+    "draglegend": "Move legend",
+    "dragpoint": "Move point (visual offset)",
+    "dragcurve": "Move curve (visual offset)"
   },
   "appearance": {
     "title": "Background",
@@ -1611,5 +1616,18 @@
     "sage": "Sage",
     "lavender": "Lavender",
     "note": "Changes the interface background, not your figures or exports."
+  },
+  "charts": {
+    "title": "Interactive chart studio",
+    "scope": "Run Plotly / pyecharts Python scripts directly. Name your Plotly figure fig or your pyecharts chart chart. Scripts run in your browser with bundled dependencies and one chart. JsCode callbacks, external maps and local data files are not supported.",
+    "library": "Chart library",
+    "upload": "Upload Python script",
+    "timeout": "Python timed out and was stopped. Simplify your script and retry.",
+    "apply": "Apply changes",
+    "exportPython": "Export Python",
+    "exportJson": "Export chart JSON",
+    "options": "Advanced editing · chart options JSON",
+    "editHint": "Edit titles and axes, or expand chart options to change series, colors and layout. Plotly also supports editing text and dragging legends and annotations directly. Python export reconstructs the edited chart; the original source stays in the input.",
+    "open": "Open interactive chart studio"
   }
 }

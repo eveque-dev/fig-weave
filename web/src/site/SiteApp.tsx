@@ -72,7 +72,7 @@ export function SiteApp() {
 
         <div className="site-library-strip">
           <p>{t('site.libraryLabel')}</p>
-          <div>{['Matplotlib', 'seaborn', 'pandas', 'NetworkX'].map((name) => <span key={name}>{name}</span>)}<span>{R_LIBRARY} <small>{t('site.experimental')}</small></span></div>
+          <div>{['Matplotlib', 'seaborn', 'pandas', 'NetworkX', 'Plotly', 'pyecharts'].map((name) => <span key={name}>{name}</span>)}<span>{R_LIBRARY} <small>{t('site.experimental')}</small></span></div>
         </div>
 
         <section id="workflow" className="site-section">
@@ -84,6 +84,7 @@ export function SiteApp() {
           </div>
         </section>
 
+        <a data-site-charts href={`./charts/?lang=${language}`} className="site-primary">{t('charts.open')}<ArrowUpRight aria-hidden /></a>
         <section id="support" className="site-section">
           <div className="site-section-heading"><p className="site-eyebrow">{t('site.libraryLabel')}</p><h2 className="text-[19px]">{t('site.supportTitle')}</h2><p>{t('site.supportIntro')}</p></div>
           <div className="site-support-grid">

@@ -124,7 +124,7 @@ test('public workspaces remain readable at mobile and desktop widths', async ({ 
   for (const lang of ['zh', 'en']) {
     for (const width of [375, 768, 1024, 1440]) {
       await page.setViewportSize({ width, height: 960 })
-      for (const route of ['', 'try/', 'r/']) {
+      for (const route of ['', 'try/', 'r/', 'charts/']) {
         await page.goto(`${origin}/${route}?lang=${lang}`)
         await expect(page.locator('#root')).not.toBeEmpty()
         await expect.poll(() => horizontalOffenders(page, '#root')).toEqual([])
@@ -147,7 +147,7 @@ test('online defaults to Chinese and preserves language and background choices',
     await page.addInitScript(() => {
       Object.defineProperty(navigator, 'connection', { configurable: true, value: { saveData: true } })
     })
-    for (const route of ['', 'try/', 'r/']) {
+    for (const route of ['', 'try/', 'r/', 'charts/']) {
       await page.goto(`${origin}/${route}`)
       await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
     }
@@ -172,4 +172,80 @@ test('online defaults to Chinese and preserves language and background choices',
       await expect(page.locator('html')).toHaveAttribute('data-online-background', 'lavender')
     }
   } finally { await context.close() }
+})
+
+test('ggplot2 drag targets: text, legend, point and curve replay and undo', async ({ page }) => {
+  test.setTimeout(300_000)
+  await page.goto(`${origin}/r/?lang=en`)
+  await page.locator('[data-r-source]').fill(`library(ggplot2)
+p <- ggplot(data.frame(x=1:5,y=c(2,4,3,6,5),group="A"),aes(x,y,colour=group))+geom_line()+geom_point(size=3)+labs(title="Drag objects")+theme_minimal()`)
+  await page.locator('[data-r-run]').click()
+  await expect(page.locator('[data-r-status]')).toHaveText('Preview ready', { timeout: 240_000 })
+  for (const kind of ['text', 'legend', 'point', 'curve']) {
+    const targets = page.locator(`[data-r-kind="${kind}"]`)
+    expect(await targets.count()).toBeGreaterThan(0)
+    // Deterministic ordinal in this fixture; every category is exercised.
+    const target = targets.nth(0)
+    const id = await target.getAttribute('data-r-object')
+    const before = await target.boundingBox()
+    const readPng = () => page.locator('[data-r-preview]').evaluate(async (img) => {
+      const bytes = await (await fetch((img as HTMLImageElement).src)).arrayBuffer()
+      return Array.from(new Uint8Array(bytes))
+    })
+    const baselinePng = await readPng()
+    await target.focus()
+    await target.press('ArrowRight')
+    await expect(page.locator('[data-r-run]')).toBeEnabled()
+    await expect(page.locator('[data-r-error]')).toHaveCount(0)
+    const after = await page.locator(`[data-r-object="${id}"]`).boundingBox()
+    expect(after!.x).toBeGreaterThan(before!.x + 1)
+    expect(await readPng()).not.toEqual(baselinePng)
+    const exported = page.waitForEvent('download')
+    await page.locator('[data-r-export]').click()
+    const code = readFileSync((await (await exported).path())!, 'utf8')
+    expect(code).toContain(`"${id}" = c(0.005,0)`)
+    await page.locator('[data-r-undo]').click()
+    await expect(page.locator('[data-r-run]')).toBeEnabled()
+    const undone = await page.locator(`[data-r-object="${id}"]`).boundingBox()
+    expect(undone!.x).toBeCloseTo(before!.x, 1)
+    expect(await readPng()).toEqual(baselinePng)
+  }
+})
+
+test('Plotly and pyecharts execute Python, edit, undo and export', async ({ page }) => {
+  test.setTimeout(600_000)
+  for (const kind of ['plotly', 'pyecharts']) {
+    await page.goto(`${origin}/charts/?lang=en`)
+    if (kind === 'pyecharts') {
+      await page.locator('[data-chart-kind] button').click()
+      await page.keyboard.press('End'); await page.keyboard.press('Enter')
+    }
+    await page.locator('[data-chart-run]').click()
+    await expect.poll(async () => {
+      const errors = await page.locator('[data-chart-error]').allTextContents()
+      if (errors.length) throw new Error(errors.join('\n'))
+      return page.locator('[data-chart-status]').innerText()
+    }, { timeout: 280_000 }).toBe('Preview ready')
+    const original = await page.locator('[data-chart-label="title"]').inputValue()
+    await page.locator('[data-chart-label="title"]').fill('Edited chart')
+    await page.locator('[data-chart-apply]').click()
+    await expect(page.locator('[data-chart-run]')).toBeEnabled()
+    const json = page.waitForEvent('download')
+    await page.locator('[data-chart-json]').click()
+    expect(readFileSync((await (await json).path())!, 'utf8')).toContain('Edited chart')
+    const png = page.waitForEvent('download')
+    await page.locator('[data-chart-png]').click()
+    expect(readFileSync((await (await png).path())!).subarray(1,4).toString()).toBe('PNG')
+    const py = page.waitForEvent('download')
+    await page.locator('[data-chart-python]').click()
+    const code = readFileSync((await (await py).path())!, 'utf8')
+    expect(code).toContain('Edited chart')
+    await page.locator('[data-chart-undo]').click()
+    await expect(page.locator('[data-chart-label="title"]')).toHaveValue(original)
+    // Exported code must run in the same real Python runtime and preserve edits.
+    await page.locator('[data-chart-source]').fill(code)
+    await page.locator('[data-chart-run]').click()
+    await expect(page.locator('[data-chart-status]')).toHaveText('Preview ready', { timeout: 240_000 })
+    await expect(page.locator('[data-chart-label="title"]')).toHaveValue('Edited chart')
+  }
 })

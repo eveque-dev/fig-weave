@@ -61,3 +61,16 @@ Nginx 旧配置备份：`/etc/nginx/sites-available/fig-weave.backup-20260922-ui
 回滚时将 `/var/www/fig-weave/current` 原子切回
 `/var/www/fig-weave/releases/20260922-7bce7c1`；如需同时撤销压缩策略，恢复上述配置备份后
 先 `nginx -t` 再 reload。无需修改或重启其他站点。
+
+
+## 本次追加完成（2026-09-22）
+
+- 在线入口默认简体中文，语言选择与六种背景色可保存；图纸本身不随界面背景变色。
+- `/charts/` 新增 Plotly / pyecharts 直接 Python 执行，编辑、撤销及 PNG/JSON/Python 导出。
+- `/r/` 新增实际 grid 对象的文字、图例、点、曲线显示偏移，预览/撤销/导出共享实现。
+- Git 历史在临时工作副本中操作，提交到 eveque-dev/fig-weave 私有分支；发布源码包绑定提交。
+- GitHub Actions 已构建 Windows x64 EXE 与 macOS ARM64 DMG，均为未签名预览版；
+  R 与交互图表新增入口属于网页版，尚未包含在桌面离线引擎。
+
+仍建议优先补齐 Matplotlib 在线导出与会话恢复，其次改善首页静态预渲染、
+拆分语言资源体积，并安排服务器更新维护窗口。

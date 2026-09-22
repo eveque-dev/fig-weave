@@ -40,7 +40,7 @@ def mirror(lock_path: Path, destination: Path) -> None:
         for dependency in packages[name]["depends"]:
             include(dependency)
 
-    for name, version in lock["packages"].items():
+    for name, version in {**lock["packages"], **lock.get("chart_packages", {})}.items():
         if name in lock.get("wheels", {}):
             continue
         if packages[name]["version"] != version:

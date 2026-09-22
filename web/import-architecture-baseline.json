@@ -82,6 +82,11 @@
       "from": "src/playground/pyodide.worker.ts",
       "call": "import(/* @vite-ignore */ `${pyodideBaseUrl}pyodide.mjs`)",
       "reason": "Pyodide 从 CDN 加载（版本钉在 packaging/playground-runtime.json），不是仓库模块。"
+    },
+    {
+      "from": "src/charts/worker.ts",
+      "call": "import(/* @vite-ignore */ `${runtime.cdn_base}pyodide.mjs`)",
+      "reason": "Reviewed browser chart worker loads the same pinned Pyodide runtime as the Matplotlib workspace; URL comes only from packaging/playground-runtime.json."
     }
   ],
   "layerViolations": []
