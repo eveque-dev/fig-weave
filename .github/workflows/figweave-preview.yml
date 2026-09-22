@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish a private GitHub prerelease after both builds pass
+        description: Publish a GitHub prerelease after both builds pass
         type: boolean
         default: false
       tag:

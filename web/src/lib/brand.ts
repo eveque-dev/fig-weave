@@ -14,6 +14,8 @@ export const UPSTREAM_PRODUCT_NAME = 'Tavotto'
 
 /** FigWeave preview downloads are separate from the upstream update channel. */
 export const FIGWEAVE_REPO_URL = 'https://github.com/eveque-dev/fig-weave'
+export const FIGWEAVE_WEB_CHECKS_URL = `${FIGWEAVE_REPO_URL}/actions/workflows/figweave-web.yml`
+export const FIGWEAVE_DESKTOP_BUILDS_URL = `${FIGWEAVE_REPO_URL}/actions/workflows/figweave-preview.yml`
 const PREVIEW_VERSION = '0.15.0'
 const PREVIEW_TAG = `figweave-preview-${PREVIEW_VERSION}-20260922`
 const PREVIEW_ASSETS = `${FIGWEAVE_REPO_URL}/releases/download/${PREVIEW_TAG}`

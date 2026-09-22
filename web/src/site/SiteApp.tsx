@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { currentLocale } from '@/i18n'
 import { setOnlineLocale } from '@/lib/onlineLocale'
-import { DESKTOP_PREVIEW, PRODUCT_NAME, REPO_URL, UPSTREAM_PRODUCT_NAME, WEBSITE_URL } from '@/lib/brand'
+import { DESKTOP_PREVIEW, FIGWEAVE_REPO_URL, FIGWEAVE_WEB_CHECKS_URL, FIGWEAVE_DESKTOP_BUILDS_URL, PRODUCT_NAME, REPO_URL, UPSTREAM_PRODUCT_NAME, WEBSITE_URL } from '@/lib/brand'
 import { BackgroundPicker } from '@/components/ui/BackgroundPicker'
 import { Button } from '@/components/ui/Button'
 import { ArrowUpRight, Check, FileCodeCorner, MousePointerClick, Download, ShieldCheck } from '@/components/ui/icons'
@@ -11,6 +11,8 @@ import preview from '@/playground/generated/kinetics.webp'
 import calibration from '@/playground/generated/calibration.webp'
 import spectrum from '@/playground/generated/spectrum.webp'
 import exampleManifest from '@/playground/generated/examples-manifest.json'
+import promoPoster from '../../../assets/figweave/promo-poster.png'
+import promoVideo from '../../../assets/figweave/promo.mp4'
 import './site.css'
 
 const PREVIEW_FILENAME = 'kinetics.py'
@@ -75,6 +77,14 @@ export function SiteApp() {
           <div>{['Matplotlib', 'seaborn', 'pandas', 'NetworkX', 'Plotly', 'pyecharts'].map((name) => <span key={name}>{name}</span>)}<span>{R_LIBRARY} <small>{t('site.experimental')}</small></span></div>
         </div>
 
+        <section id="film" className="site-section site-film">
+          <div className="site-section-heading"><p className="site-eyebrow">{t('site.promoLabel')}</p><h2>{t('site.promoTitle')}</h2><p>{t('site.promoBody')}</p></div>
+          <video data-site-video controls playsInline preload="none" poster={promoPoster} aria-label={t('site.promoVideo')}>
+            <source src={promoVideo} type="video/mp4" />
+            <a href={promoVideo}>{t('site.promoVideo')}</a>
+          </video>
+        </section>
+
         <section id="workflow" className="site-section">
           <div className="site-section-heading"><p className="site-eyebrow">{t('site.workflow')}</p><h2>{t('site.workflowTitle')}</h2><p>{t('site.workflowIntro')}</p></div>
           <div className="site-workflow-grid">
@@ -121,8 +131,21 @@ export function SiteApp() {
             <a data-site-release href={DESKTOP_PREVIEW.releaseUrl} className="site-text-link">{t('site.releaseNotes')}<ArrowUpRight aria-hidden /></a>
           </div>
         </section>
+        <section id="opensource" className="site-section site-open-source">
+          <div className="site-section-heading"><p className="site-eyebrow">{PRODUCT_NAME} / GitHub</p><h2>{t('site.githubTitle')}</h2><p>{t('site.githubBody')}</p></div>
+          <div className="site-project-badges">
+            <a href={FIGWEAVE_WEB_CHECKS_URL}>{t('site.webChecks')}<ArrowUpRight aria-hidden /></a>
+            <a href={FIGWEAVE_DESKTOP_BUILDS_URL}>{t('site.desktopBuild')}<ArrowUpRight aria-hidden /></a>
+            <a href={DESKTOP_PREVIEW.releaseUrl}>{t('site.previewRelease')} · {DESKTOP_PREVIEW.version}</a>
+            <a href="./LICENSE">{t('site.license')}</a>
+          </div>
+          <div className="site-actions">
+            <a data-site-github href={FIGWEAVE_REPO_URL} className="site-primary">{t('site.githubRepo')}<ArrowUpRight aria-hidden /></a>
+            <a href={`${FIGWEAVE_REPO_URL}/issues`} className="site-text-link">{t('site.issues')}<ArrowUpRight aria-hidden /></a>
+          </div>
+        </section>
       </main>
-      <footer className="site-footer site-container"><div><a href={WEBSITE_URL} className="site-brand">{PRODUCT_NAME}</a><p>{t('site.attribution', { product: PRODUCT_NAME, upstream: UPSTREAM_PRODUCT_NAME })}</p></div><div className="site-footer-links"><a href={REPO_URL}>{t('site.upstreamSource')}</a><a href="./source/figweave-source.zip">{t('site.sourceDownload')}</a><a href="./LICENSE">{t('site.license')}</a></div></footer>
+      <footer className="site-footer site-container"><div><a href={WEBSITE_URL} className="site-brand">{PRODUCT_NAME}</a><p>{t('site.attribution', { product: PRODUCT_NAME, upstream: UPSTREAM_PRODUCT_NAME })}</p></div><div className="site-footer-links"><a href={FIGWEAVE_REPO_URL}>{t('site.githubRepo')}</a><a href={REPO_URL}>{t('site.upstreamSource')}</a><a href="./source/figweave-source.zip">{t('site.sourceDownload')}</a><a href="./LICENSE">{t('site.license')}</a></div></footer>
     </div>
   )
 }

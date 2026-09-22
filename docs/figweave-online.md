@@ -11,7 +11,7 @@
 - 显示名与官网地址在 Python / TypeScript 品牌常量中保持一致。
 - 上游仓库地址仍用于来源、既有引擎开发与历史文档，不是 FigWeave 发行仓库。
 
-本阶段仅通过私有仓库分发未签名桌面预览构建，不发布正式安装器，不启用 FigWeave 自动更新。既有桌面壳、PyPI 包名、
+本阶段通过公开 GitHub Release 分发未签名桌面预览构建，不发布正式安装器，不启用 FigWeave 自动更新。既有桌面壳、PyPI 包名、
 CLI、Codex 插件、文档格式及存储键仍带有 tavotto 标识。后续桌面迁移必须同时
 处理签名、安装路径、更新源、遥测归属和发行仓库，不能只修改窗口标题后发布。
 跨标签页文档占用频道也保持原标识，不随显示名变化，避免新旧页面互相失联。
@@ -103,7 +103,7 @@ webR 核心目前仍来自锁定版本的官方地址。不要用取消哈希或
 纯 Python 包由 `packaging/chart-wheels.json` 锁定，优先阿里云镜像并验 SHA-256；
 Pyodide 原生包使用同一个官方运行时锁，部署到自托管 runtime。
 
-Windows x64 EXE、macOS Apple Silicon DMG 由私有仓库 `figweave-preview.yml` 构建，
+Windows x64 EXE、macOS Apple Silicon DMG 由公开仓库的 `figweave-preview.yml` 构建，
 属于未签名预览包，更新渠道关闭。当前在线新增 R / Plotly / pyecharts 工作台尚未
 打进桌面离线引擎；桌面包保持原有 Matplotlib 编辑能力。
 

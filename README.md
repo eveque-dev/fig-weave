@@ -1,5 +1,11 @@
 # FigWeave
 
+[![Web checks](https://github.com/eveque-dev/fig-weave/actions/workflows/figweave-web.yml/badge.svg?branch=main)](https://github.com/eveque-dev/fig-weave/actions/workflows/figweave-web.yml)
+[![Desktop builds](https://github.com/eveque-dev/fig-weave/actions/workflows/figweave-preview.yml/badge.svg)](https://github.com/eveque-dev/fig-weave/actions/workflows/figweave-preview.yml)
+[![Preview Release](https://img.shields.io/badge/Release-0.15.0_preview-6c8b76)](https://github.com/eveque-dev/fig-weave/releases/tag/figweave-preview-0.15.0-20260922)
+[![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-blue)](LICENSE)
+[![Website](https://img.shields.io/badge/Web-fig--weave.com-6c8b76)](https://fig-weave.com)
+
 **把绘图脚本变成可以继续编辑的图表。**
 
 FigWeave 是面向科研与数据可视化的图表编辑项目。直接打开网页，运行 Python 或 R
@@ -13,6 +19,15 @@ FigWeave 是面向科研与数据可视化的图表编辑项目。直接打开�
 
 *当前线上首页：从真实 Matplotlib 示例进入编辑器，也可选择 Plotly / pyecharts 与 R 工作台。*
 
+## 32 秒看看怎么用
+
+[![图画好了，还在补 prompt？](assets/figweave/promo-poster.png)](https://fig-weave.com/#film)
+
+**“图例放左下角”“字号再小一点”——少补几轮 prompt，直接在图上调。**
+短片只有音效、无人声，展示真实 ggplot2 字号与图例修改，以及实际导出的 R 脚本。
+[观看 / 下载 MP4](https://github.com/eveque-dev/fig-weave/releases/download/figweave-preview-0.15.0-20260922/FigWeave-promo-1080p.mp4) ·
+[视频源码与复现方式](promo-video/README.md) · [小红书文案](docs/promo/xiaohongshu.md)
+
 ## 现在可以做什么
 
 | 入口 | 输入 | 编辑与输出 |
@@ -20,7 +35,7 @@ FigWeave 是面向科研与数据可视化的图表编辑项目。直接打开�
 | **Matplotlib** `/try/` | 独立 Python 脚本；支持 seaborn、pandas plotting、NetworkX 生成的 Matplotlib 图 | 复用对象编辑器，调整文字、图例、曲线与布局，支持撤销；在线导出能力仍在完善 |
 | **Plotly** `/charts/` | Python 脚本，图对象命名为 `fig` | 修改标题、轴名、系列与布局配置；直接编辑文字、移动图例和注释；撤销及 PNG / JSON / Python 导出 |
 | **pyecharts** `/charts/` | Python 脚本，图对象命名为 `chart` | 修改标题、轴名与原生图表配置；撤销及 PNG / JSON / Python 导出 |
-| **ggplot2** `/r/` | R 脚本，图对象命名为 `p` | 调整主题、字体、尺寸；拖动标准文字、图例、散点和曲线；撤销及 PNG / PDF / R 脚本导出 |
+| **ggplot2** `/r/` | R 脚本，图对象命名为 `p` | 调整主题、字号、尺寸；拖动标准文字、图例、散点和曲线；撤销及 PNG / PDF / R 脚本导出 |
 
 ggplot2 的数据点和曲线拖动保存为**显示偏移**，不改原始数据值。鼠标拖动和键盘
 方向键都可操作；改变布局会清除偏移，撤销可以恢复。自定义 grob、栅格图元尚不支持。
@@ -68,9 +83,9 @@ Plotly / pyecharts 导出的 Python 用当前配置重建图表，不包含原�
 
 ## 桌面预览安装包
 
-Windows x64 `.exe` 与 macOS Apple Silicon `.dmg` 已通过私有仓库的自动构建和
+Windows x64 `.exe` 与 macOS Apple Silicon `.dmg` 已通过 GitHub Actions 自动构建和
 内置引擎冒烟验证，可在 [FigWeave 0.15.0 预览 Release](https://github.com/eveque-dev/fig-weave/releases/tag/figweave-preview-0.15.0-20260922)
-下载预览版本。需要有本私有仓库的访问权限；Release 附带校验值和准确构建提交。
+下载预览版本，无需登录 GitHub。Release 附带校验值和准确构建提交。
 
 | 平台 | 当前状态 |
 | --- | --- |

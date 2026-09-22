@@ -2495,6 +2495,11 @@ class TestCacheSeed:
 #: 「它是托管的吗」。
 _HOSTED_RUNNERS = frozenset({"ubuntu-latest", "macos-latest", "windows-latest"})
 
+# FigWeave 的 push / 手动发行工作流固定 OS 版本；这些也是 GitHub 托管标签，
+# 不是自托管池。PR 与缓存矩阵仍保持上面的三平台合同。
+# https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+_TRUSTED_PINNED_HOSTED_RUNNERS = frozenset({"ubuntu-24.04", "macos-15"})
+
 #: 注册 self-hosted runner 时 GitHub 自动打上的标签（`self-hosted` + OS + 架构）。
 #: actionlint 认得它们，所以它们不用出现在 `.github/actionlint.yaml` 里；
 #: 判「自定义标签集合」时要把它们剪掉。
@@ -2757,7 +2762,10 @@ class TestRunnerTrustZones:
                 used |= _runs_on_atoms(_code(block), f"{name}::{job_id}")
         custom = {
             a
-            for a in used - _HOSTED_RUNNERS - _BUILTIN_SELF_HOSTED_LABELS
+            for a in used
+            - _HOSTED_RUNNERS
+            - _TRUSTED_PINNED_HOSTED_RUNNERS
+            - _BUILTIN_SELF_HOSTED_LABELS
             if not a.startswith("group:")
         }
         assert "tavotto-lab" in custom, (

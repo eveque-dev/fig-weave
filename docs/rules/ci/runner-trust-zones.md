@@ -14,3 +14,8 @@
   workflow 限制 / fork PR 审批 / 私有 infra 仓库（本轮读到：仓库级 runner 4 台在 Default 组、org 是 free 计划、fork 审批只挡首次
   贡献者、同仓库分支 PR 不经审批），现状、缺口与管理员交接在 `docs/implementation/ci-foundation/CI04_RUNNER_PILOT.md` §2 与
   `ADMIN_HANDOFF_RUNNER_POOL.md`。`runner_pool_ready: not_run`。
+
+FigWeave 的手动发行与 push 网页检查可固定 `macos-15` / `ubuntu-24.04`，两者是
+[GitHub 官方托管标签](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)，
+不计入 actionlint 自托管标签集合。PR 三平台与缓存矩阵合同不变；枚举见同一看护用例的
+`_TRUSTED_PINNED_HOSTED_RUNNERS`。

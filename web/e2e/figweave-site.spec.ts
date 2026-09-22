@@ -91,7 +91,10 @@ test('built homepage → editor → homepage preserves language and desktop stat
     await expect(page.locator('#downloads')).toContainText('预览版')
     await expect(page.locator('[data-site-download="windows"]')).toHaveAttribute('href', /^https:\/\/github\.com\/eveque-dev\/fig-weave\/releases\/download\/.+\/FigWeave_.+_windows_x64\.exe$/)
     await expect(page.locator('[data-site-download="macos"]')).toHaveAttribute('href', /^https:\/\/github\.com\/eveque-dev\/fig-weave\/releases\/download\/.+\/FigWeave_.+_macos_arm64\.dmg$/)
-    await expect(page.locator('[data-site-download-access]')).toContainText('私有仓库')
+    await expect(page.locator('[data-site-download-access]')).toContainText('无需登录')
+    await expect(page.locator('[data-site-github]')).toHaveAttribute('href', 'https://github.com/eveque-dev/fig-weave')
+    await expect(page.locator('[data-site-video]')).toHaveAttribute('preload', 'none')
+    await expect(page.locator('[data-site-video] source')).toHaveAttribute('src', /\.mp4$/)
     expect(external).toEqual([])
     await page.screenshot({ path: test.info().outputPath('homepage-desktop.png'), fullPage: true })
     // Prevent prewarm only after the homepage assertion above: its zero-request
