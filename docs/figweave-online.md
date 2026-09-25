@@ -111,3 +111,10 @@ Windows x64 EXE、macOS Apple Silicon DMG 由公开仓库的 `figweave-preview.y
 Plotly 浏览器归档从已验 SHA-256 的官方 wheel 确定性生成，仅移除 Jupyter 扩展与
 widget JavaScript 资源；保留 Python、普通 HTML 渲染资源和许可证。归档本身也有
 独立锁定的 SHA-256，从约 9.7 MB 缩小为 5.2 MB。工作台不提供 Jupyter FigureWidget。
+
+### Matplotlib 在线 PNG 下载
+
+编辑器工具栏下方提供“导出 PNG”，使用同一 Pyodide 会话按点击时的修改快照
+生成宽 2400 像素的图片，保留图形比例。导出不会上传脚本，不改变撤销历史。
+导出中禁止重复提交；切换脚本会放弃旧会话的下载。当前此入口仅支持 PNG，
+不代表已实现 PDF/SVG 或 Python 源码写回。

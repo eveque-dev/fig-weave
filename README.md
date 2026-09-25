@@ -32,7 +32,7 @@ FigWeave 是面向科研与数据可视化的图表编辑项目。直接打开�
 
 | 入口 | 输入 | 编辑与输出 |
 | --- | --- | --- |
-| **Matplotlib** `/try/` | 独立 Python 脚本；支持 seaborn、pandas plotting、NetworkX 生成的 Matplotlib 图 | 复用对象编辑器，调整文字、图例、曲线与布局，支持撤销；在线导出能力仍在完善 |
+| **Matplotlib** `/try/` | 独立 Python 脚本；支持 seaborn、pandas plotting、NetworkX 生成的 Matplotlib 图 | 复用对象编辑器，调整文字、图例、曲线与布局，支持撤销及带当前修改的高清 PNG 导出（宽 2400 像素） |
 | **Plotly** `/charts/` | Python 脚本，图对象命名为 `fig` | 修改标题、轴名、系列与布局配置；直接编辑文字、移动图例和注释；撤销及 PNG / JSON / Python 导出 |
 | **pyecharts** `/charts/` | Python 脚本，图对象命名为 `chart` | 修改标题、轴名与原生图表配置；撤销及 PNG / JSON / Python 导出 |
 | **ggplot2** `/r/` | R 脚本，图对象命名为 `p` | 调整主题、字号、尺寸；拖动标准文字、图例、散点和曲线；撤销及 PNG / PDF / R 脚本导出 |

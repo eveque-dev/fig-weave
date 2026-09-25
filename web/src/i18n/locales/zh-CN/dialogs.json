@@ -430,7 +430,12 @@
     "uploadScopeBad": "不支持：读取本地文件（pd.read_csv(\"data.csv\")、np.load(...)、open(...)）；同目录自定义模块；本地图片与字体；项目级相对路径；完整 Conda 项目。",
     "uploadScopeGood": "适合：单个 UTF-8 编码的 .py；NumPy、Matplotlib 与运行时明确支持的包；数据写在脚本里或由代码生成。",
     "viewCode": "查看代码",
-    "libraryExamples": "试试更多 Python 绘图库"
+    "libraryExamples": "试试更多 Python 绘图库",
+    "exportPng": "导出 PNG",
+    "exportingPng": "正在生成…",
+    "exportPngNote": "宽 2400 像素 · 包含点击导出时的修改",
+    "exportPngFailed": "导出失败，请稍后重试。若会话已失效，请重新运行脚本。",
+    "downloadPngReady": "图片已生成，点击下载"
   },
   "presets": {
     "insertSymbolAria": "插入符号 {{symbol}}",

@@ -258,3 +258,45 @@ test('Plotly and pyecharts execute Python, edit, undo and export', async ({ page
     await expect(page.locator('[data-chart-label="title"]')).toHaveValue('Edited chart')
   }
 })
+
+// The downloaded bytes must reflect current edits, and undo must restore the image.
+test('Matplotlib PNG download includes edits and undo restores the original', async ({ page }) => {
+  test.setTimeout(360_000)
+  await page.goto(`${origin}/try/?lang=zh`)
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'export-proof.py', mimeType: 'text/x-python',
+    buffer: Buffer.from('import matplotlib.pyplot as plt\nfig, ax = plt.subplots(figsize=(6,4))\nax.plot([0,1,2],[0,1,0])\nax.set_title("Export proof", fontsize=10)\nplt.show()\n'),
+  })
+  const button = page.locator('[data-playground-export]')
+  await expect(button).toBeEnabled({ timeout: 240_000 })
+  const downloadPng = async () => {
+    await expect(button).toBeEnabled({ timeout: 60_000 })
+    let received = false
+    const download = page.waitForEvent('download', { timeout: 60_000 }).then((d) => { received = true; return d })
+    await button.click()
+    await expect(page.locator('[data-playground-download]')).toBeVisible({ timeout: 60_000 })
+    await page.waitForTimeout(700)
+    if (!received) await page.locator('[data-playground-download]').click()
+    const bytes = readFileSync((await (await download).path())!)
+    expect(bytes.subarray(1, 4).toString()).toBe('PNG')
+    expect(bytes.readUInt32BE(16)).toBe(2400)
+    return createHash('sha256').update(bytes).digest('hex')
+  }
+  const original = await downloadPng()
+  const title = page.locator('[data-element-svg] svg [id="axes_0.title"]')
+  await expect(title).toHaveCount(1)
+  const box = (await title.boundingBox())!
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+  const size = page.locator('[data-inspector-prop="fontsize"]')
+  await expect(size).toHaveCount(1)
+  await size.fill('22')
+  await size.press('Enter')
+  const changed = await downloadPng()
+  expect(changed).not.toBe(original)
+  await page.keyboard.press('Tab')
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect(size).toHaveValue('10', { timeout: 60_000 })
+  expect(await downloadPng()).toBe(original)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(button).toBeVisible()
+})

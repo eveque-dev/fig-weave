@@ -26,6 +26,7 @@ import { useDocumentStore } from '@/store/documentStore'
 import { usePanelRender } from '@/store/renderStore'
 import type { PanelObject } from '@/types/document'
 import { exampleById, type PlaygroundExample } from './examples'
+import { PlaygroundExport } from './components/PlaygroundExport'
 import { GuidedTask } from './components/GuidedTask'
 import { PlaygroundFailureActions } from './components/PlaygroundFailureActions'
 import { PlaygroundLanding } from './components/PlaygroundLanding'
@@ -690,6 +691,8 @@ function EditorView({
           {currentLocale() === 'zh-CN' ? 'EN' : '中文'}
         </button>
       </header>
+
+      <PlaygroundExport client={session.client} panelId={panelId} busy={busy} />
 
       {/* 不变式失效：Tavotto 保证碰不到源文件，而工作区里那个文件确实变了。
           这不是一条提示，是「别再信这个会话」——所以常驻、不可关、带技术细节。 */}
