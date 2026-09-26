@@ -1,42 +1,39 @@
-import { Interactive, interpolate, useCurrentFrame } from "remotion";
-import { Brand, Shell, WEBSITE_URL } from "../shared";
-export const Closing = () => {
-  const frame = useCurrentFrame();
+import { useCurrentFrame } from "remotion";
+import { Stage, Brand, WEBSITE_URL, BLUE, ramp } from "../shared";
+export function Closing() {
+  const f = useCurrentFrame();
   return (
-    <Shell>
-      <Brand />
-      <Interactive.Div
-        name="Closing title"
+    <Stage>
+      <div
         style={{
-          marginTop: 96,
-          fontSize: 110,
-          fontWeight: 760,
-          lineHeight: 1.3,
-          letterSpacing: -3,
+          position: "absolute",
+          inset: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexDirection: "column",
+          opacity: ramp(f, 0, 15),
+          transform: `translateY(${ramp(f, 0, 28, 25, 0)}px)`,
         }}
       >
-        少补 prompt。
-        <br />
-        多一点直接。
-      </Interactive.Div>
-      <Interactive.Div
-        name="Website"
-        style={{
-          fontSize: 70,
-          marginTop: 70,
-          fontWeight: 550,
-          color: "#3b7056",
-          opacity: interpolate(frame, [15, 32], [0, 1], {
-            extrapolateLeft: "clamp",
-            extrapolateRight: "clamp",
-          }),
-        }}
-      >
-        {WEBSITE_URL.replace("https://", "")}
-      </Interactive.Div>
-      <div style={{ fontSize: 32, marginTop: 25, color: "#617968" }}>
-        在线体验 · 默认中文 · 鼠尾草绿
+        <Brand size={133} />
+        <div
+          style={{
+            fontSize: 46,
+            marginTop: 64,
+            fontWeight: 500,
+            letterSpacing: -1,
+          }}
+        >
+          少补一轮 prompt。多一点直接。
+        </div>
+        <div style={{ fontSize: 42, marginTop: 55, color: BLUE }}>
+          {WEBSITE_URL.replace("https://", "")}
+        </div>
+        <div style={{ fontSize: 24, marginTop: 24, color: "#a8adb4" }}>
+          在线体验 · 默认中文 · 曜石黑
+        </div>
       </div>
-    </Shell>
+    </Stage>
   );
-};
+}

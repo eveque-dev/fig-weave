@@ -1,70 +1,126 @@
-import { Interactive, interpolate, useCurrentFrame } from "remotion";
-import { Shell } from "../shared";
-export const Code = () => {
-  const frame = useCurrentFrame();
+import { useCurrentFrame } from "remotion";
+import { Stage, Footer, Picture, ramp, BLUE } from "../shared";
+import evidence from "../../public/v2/evidence.json";
+const offset =
+  evidence.exportExcerpt.match(/"legend:0" = c\(([^)]+)\)/)?.[1].split(",") ??
+  [];
+export function Code() {
+  const f = useCurrentFrame();
   return (
-    <Shell dark>
-      <Interactive.Div
-        name="Reproducible title"
-        style={{ fontSize: 82, fontWeight: 700 }}
-      >
-        修改不只留在画面里。
-      </Interactive.Div>
-      <div style={{ fontSize: 37, color: "#bbcdc1", marginTop: 28 }}>
-        支持的修改随脚本导出，下次运行还能重现。
-      </div>
-      <Interactive.Div
-        name="Exported R code"
+    <Stage>
+      <div
         style={{
-          marginTop: 45,
-          background: "#101f19",
-          border: "1px solid #466152",
-          borderRadius: 26,
-          padding: "32px 46px",
-          opacity: interpolate(frame, [12, 30], [0, 1], {
-            extrapolateLeft: "clamp",
-            extrapolateRight: "clamp",
-          }),
+          position: "absolute",
+          left: 104,
+          top: 86,
+          fontSize: 75,
+          fontWeight: 650,
+          letterSpacing: -2,
+        }}
+      >
+        改动，带着代码一起走。
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          left: 104,
+          top: 204,
+          fontSize: 29,
+          color: "#a8adb4",
+        }}
+      >
+        导出 R 脚本，保留字号和图例位置。
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          left: 104,
+          top: 306,
+          width: 978,
+          height: 618,
+          background: "#12151a",
+          border: "1px solid #353b45",
+          borderRadius: 10,
+          opacity: ramp(f, 4, 22),
+          transform: `translateY(${ramp(f, 4, 22, 25, 0)}px)`,
         }}
       >
         <div
           style={{
-            fontSize: 25,
-            color: "#abc2b2",
-            paddingBottom: 28,
-            borderBottom: "1px solid #304839",
+            height: 67,
+            padding: "17px 28px",
+            fontSize: 24,
+            borderBottom: "1px solid #30363f",
+            display: "flex",
+            justifyContent: "space-between",
           }}
         >
-          figure-styled.R{" "}
-          <span style={{ float: "right", color: "#acd7b6" }}>
-            ✓ 实际导出脚本节选
-          </span>
+          <span>figure-styled.R</span>
+          <span style={{ fontSize: 20, color: BLUE }}>实际导出脚本 · 节选</span>
         </div>
         <pre
           style={{
-            fontSize: 29,
-            lineHeight: 1.65,
-            color: "#dfece3",
-            margin: "20px 0 0",
-            fontFamily: '"DejaVu Sans Mono", "Noto Sans SC Variable", monospace',
+            padding: "23px 30px",
+            fontFamily: "monospace",
+            fontSize: 24,
+            lineHeight: 1.5,
+            color: "#d7dce4",
+            margin: 0,
           }}
         >
           {
-            "# 原脚本与重放辅助函数保留\nfigweave_plot <- p + ggplot2::theme(\n  text = ggplot2::element_text("
+            "figweave_plot <- p + ggplot2::theme(\n  text = ggplot2::element_text("
           }
-          <span style={{ color: "#f1c17f" }}>size = 10</span>
-          {
-            '),\n  legend.position = "right"\n)\nfigweave_result <- figweave_scene(figweave_plot,\n  list('
-          }
-          <span style={{ color: "#f1c17f" }}>
-            {'"legend:0" = c(-0.65, 0.23)'}
+          <span
+            style={{
+              background: f > 36 ? "#24334c" : "transparent",
+              color: BLUE,
+            }}
+          >
+            {"size = 10"}
           </span>
-          {"), 7, 5)\ngrid::grid.draw(figweave_result)"}
+          {
+            '),\n  legend.position = "right"\n)\n\nfigweave_result <- figweave_scene(\n  figweave_plot, list(\n    "legend:0" = c(\n      '
+          }
+          <span style={{ color: BLUE }}>{offset[0]}</span>
+          {",\n      "}
+          <span style={{ color: BLUE }}>{offset[1]}</span>
+          {"\n    )), 7, 5\n)\ngrid::grid.draw(figweave_result)"}
         </pre>
-      </Interactive.Div>
-      <div style={{ fontSize: 25, color: "#a7c0af", marginTop: 22 }}>
-        演示：字号与图例显示偏移；偏移数值为便于阅读已四舍五入。
       </div>
-    </Shell>
+      <div
+        style={{
+          position: "absolute",
+          right: 104,
+          top: 360,
+          width: 608,
+          transform: `translateX(${ramp(f, 23, 52, 65, 0)}px)`,
+          opacity: ramp(f, 23, 46),
+        }}
+      >
+        <Picture state="after" />
+        <div
+          style={{
+            fontSize: 24,
+            color: BLUE,
+            marginTop: 26,
+            textAlign: "center",
+          }}
+        >
+          图里的改动，脚本里也有。
+        </div>
+        <div
+          style={{
+            fontSize: 23,
+            color: "#a8adb4",
+            marginTop: 14,
+            textAlign: "center",
+          }}
+        >
+          ggplot2：支持的修改随导出脚本保存
+        </div>
+      </div>
+      <Footer label="保留原始脚本 · 导出可复现版本" />
+    </Stage>
   );
-};
+}

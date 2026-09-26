@@ -1,70 +1,37 @@
-import {
-  CanvasImage,
-  Interactive,
-  interpolate,
-  staticFile,
-  useCurrentFrame,
-} from "remotion";
-import { Shell } from "../shared";
-export const Direct = () => {
-  const frame = useCurrentFrame();
+import { useCurrentFrame } from "remotion";
+import { Stage, Footer, ramp, BLUE } from "../shared";
+export function Direct() {
+  const f = useCurrentFrame();
   return (
-    <Shell>
-      <Interactive.Div
-        name="Direct editing title"
-        style={{ fontSize: 87, fontWeight: 720, lineHeight: 1.3 }}
+    <Stage>
+      <div
+        style={{
+          position: "absolute",
+          left: 104,
+          top: 235,
+          fontSize: 123,
+          fontWeight: 700,
+          lineHeight: 1.35,
+          letterSpacing: -5,
+          transform: `translateY(${ramp(f, 0, 25, 45, 0)}px)`,
+          opacity: ramp(f, 0, 16),
+        }}
       >
         把最后几步，
         <br />
-        交给鼠标。
-      </Interactive.Div>
-      <Interactive.Div
-        name="Direct editing subtitle"
-        style={{
-          fontSize: 36,
-          lineHeight: 1.7,
-          marginTop: 45,
-          color: "#58705f",
-        }}
-      >
-        运行绘图脚本
-        <br />
-        直接编辑图形
-      </Interactive.Div>
-      <div
-        style={{
-          position: "absolute",
-          left: 860,
-          top: 110,
-          width: 970,
-          height: 810,
-          overflow: "hidden",
-          borderRadius: 30,
-          boxShadow: "0 24px 70px #28433020",
-          background: "white",
-        }}
-      >
-        <CanvasImage
-          src={staticFile("screens/r-workspace.png")}
-          style={{
-            width: 970,
-            translate: `0 ${interpolate(frame, [0, 135], [0, -80])}px`,
-          }}
-        />
+        <span style={{ color: BLUE }}>交给鼠标。</span>
       </div>
       <div
         style={{
           position: "absolute",
-          left: 112,
-          top: 680,
-          fontSize: 28,
-          border: "1px solid #c6d6c9",
-          padding: "17px 24px",
-          borderRadius: 99,
+          right: 130,
+          top: 320,
+          width: 2,
+          height: ramp(f, 12, 42, 0, 280),
+          background: "#5e769a",
         }}
-      >
-        脚本 → 图形 → 可复现的修改
-      </div>
-    </Shell>
+      />
+      <Footer label="直接编辑 Python / R 生成的图表" />
+    </Stage>
   );
-};
+}

@@ -1,114 +1,180 @@
-import {
-  CanvasImage,
-  Interactive,
-  interpolate,
-  staticFile,
-  useCurrentFrame,
-} from "remotion";
-import { Shell } from "../shared";
-export const Edit = () => {
-  const frame = useCurrentFrame();
+import { useCurrentFrame } from "remotion";
+import evidence from "../../public/v2/evidence.json";
+import { Stage, Footer, Picture, Caption, Cursor, ramp, BLUE } from "../shared";
+// Values are measured from the real R editor. Only the selection outline follows
+// the pointer during dragging; the real exported figure replaces it on release.
+export function Edit() {
+  const f = useCurrentFrame();
+  const changed = f >= 75;
+  const dragging = f >= 156 && f < 220;
+  const moved = f >= 220;
+  const scale = ramp(f, 111, 150, 1, 1.12);
+  const paperX = 745 + ramp(f, 111, 150, 0, 40),
+    paperY = 165;
+  const w = 1050;
+  const h = 750;
+  const dx = ramp(f, 163, 218, 0, -0.65 * w * scale),
+    dy = ramp(f, 163, 218, 0, 0.23 * h * scale);
+  const legendW =
+      (evidence.legendBefore.width / evidence.plot.width) * w * scale,
+    legendH = (evidence.legendBefore.height / evidence.plot.height) * h * scale;
+  const lx =
+    paperX +
+    0.8 * w * (1 - scale) +
+    ((evidence.legendBefore.x - evidence.plot.x) / evidence.plot.width) *
+      w *
+      scale;
+  const ly =
+    paperY +
+    0.55 * h * (1 - scale) +
+    ((evidence.legendBefore.y - evidence.plot.y) / evidence.plot.height) *
+      h *
+      scale;
+  const ex = lx + dx,
+    ey = ly + dy;
   return (
-    <Shell>
-      <div style={{ fontSize: 24, letterSpacing: 4, color: "#688372" }}>
-        真实操作 / ggplot2
-      </div>
-      <Interactive.Div
-        name="Edit title"
-        style={{ fontSize: 82, fontWeight: 740, marginTop: 26 }}
-      >
-        拖图例。
-        <br />
-        调字号。
-      </Interactive.Div>
-      <div style={{ marginTop: 65, fontSize: 37, lineHeight: 1.9 }}>
-        字号 <span style={{ color: "#779180" }}>12</span> → <b>10</b>
-        <br />
-        图例 右侧 → <b>左下方</b>
-      </div>
-      <div
-        style={{
-          marginTop: 45,
-          fontSize: 27,
-          color: "#627668",
-          width: 540,
-          lineHeight: 1.8,
-        }}
-      >
-        保留绘图脚本，
-        <br />
-        把细节调整留在图上。
-      </div>
+    <Stage>
+      <Caption
+        index={f < 129 ? "01 / 调字号" : "02 / 拖图例"}
+        title={
+          f < 129 ? "“字号小一些。”\n直接调。" : "“图例放左下。”\n拖过去。"
+        }
+        detail={
+          f < 129
+            ? "选中后调整，立即看到结果。"
+            : "选中图例，拖到你想要的位置。"
+        }
+      />
       <div
         style={{
           position: "absolute",
-          left: 780,
-          top: 110,
-          width: 1028,
-          height: 825,
-          borderRadius: 22,
-          overflow: "hidden",
-          background: "white",
-          boxShadow: "0 20px 65px #28433018",
+          left: paperX,
+          top: paperY,
+          width: w,
+          transform: `scale(${scale})`,
+          transformOrigin: "80% 55%",
+          boxShadow: "0 24px 75px #0008",
+          opacity: ramp(f, 0, 17),
+          border: "1px solid #393d44",
         }}
       >
-        <CanvasImage
-          src={staticFile("screens/r-before.png")}
-          style={{ position: "absolute", width: 1028, top: -72 }}
-        />
-        <CanvasImage
-          src={staticFile("screens/r-after.png")}
-          style={{
-            position: "absolute",
-            width: 1028,
-            top: -72,
-            opacity: interpolate(frame, [112, 126], [0, 1], {
-              extrapolateLeft: "clamp",
-              extrapolateRight: "clamp",
-            }),
-          }}
-        />
         <div
           style={{
             position: "absolute",
-            left: interpolate(frame, [52, 112], [880, 290], {
-              extrapolateLeft: "clamp",
-              extrapolateRight: "clamp",
-            }),
-            top: interpolate(frame, [52, 112], [405, 605], {
-              extrapolateLeft: "clamp",
-              extrapolateRight: "clamp",
-            }),
-            opacity: interpolate(frame, [30, 42, 145, 155], [0, 1, 1, 0], {
-              extrapolateLeft: "clamp",
-              extrapolateRight: "clamp",
-            }),
+            top: -46,
+            left: -1,
+            right: -1,
+            height: 46,
+            background: "#181b20",
+            border: "1px solid #393d44",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "0 18px",
+            fontSize: 18,
+            color: "#b7bec9",
           }}
         >
-          <svg width="54" height="66" viewBox="0 0 32 40">
-            <path
-              d="M3 2 L27 24 L16 25 L11 37 Z"
-              fill="#213f31"
-              stroke="white"
-              strokeWidth="2"
-            />
-          </svg>
+          <span>figure.R</span>
+          <span>ggplot2 · 编辑演示</span>
         </div>
-        <div
-          style={{
-            position: "absolute",
-            bottom: 24,
-            right: 26,
-            padding: "12px 23px",
-            borderRadius: 30,
-            background: "#edf4ee",
-            color: "#254d36",
-            fontSize: 24,
-          }}
-        >
-          {frame < 119 ? "修改前" : "修改后 · 真实导出结果"}
-        </div>
+        <Picture state={moved ? "after" : changed ? "size" : "before"} />
       </div>
-    </Shell>
+      {f < 139 && (
+        <div
+          style={{
+            position: "absolute",
+            left: 104,
+            top: 575,
+            width: 360,
+            padding: "25px 28px",
+            background: "#181b20",
+            border: "1px solid #363c46",
+            borderRadius: 10,
+            opacity: ramp(f, 22, 34),
+            transform: `translateY(${ramp(f, 22, 40, 15, 0)}px)`,
+          }}
+        >
+          <div style={{ fontSize: 24, color: "#a8adb4", marginBottom: 19 }}>
+            基础字号
+          </div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              fontSize: 59,
+              fontWeight: 500,
+            }}
+          >
+            <span style={{ color: changed ? BLUE : "#f5f6f7" }}>
+              {changed ? "10" : "12"}
+              <small style={{ fontSize: 23, color: "#a8adb4", marginLeft: 16 }}>
+                pt
+              </small>
+            </span>
+            <span style={{ fontSize: 21, color: "#828993" }}>− / ＋</span>
+          </div>
+        </div>
+      )}
+      {f >= 139 && (
+        <div
+          style={{
+            position: "absolute",
+            left: 104,
+            top: 565,
+            fontSize: 33,
+            color: moved ? BLUE : "#a8adb4",
+            opacity: ramp(f, 139, 154),
+          }}
+        >
+          {moved ? "已移到图内左下方" : "右侧 → 左下方"}
+        </div>
+      )}
+      {dragging && (
+        <div
+          style={{
+            position: "absolute",
+            left: ex,
+            top: ey,
+            width: legendW,
+            height: legendH,
+            border: "2px solid #659cff",
+            boxShadow: "0 0 0 3px #659cff18",
+          }}
+        />
+      )}
+      {f >= 42 && f < 125 && (
+        <Cursor
+          x={ramp(f, 42, 60, 535, 366)}
+          y={ramp(f, 42, 60, 820, 688)}
+          click={f >= 66 && f < 78}
+          opacity={1 - ramp(f, 106, 122)}
+        />
+      )}
+      {f >= 143 && f < 242 && (
+        <Cursor
+          x={ex + legendW / 2}
+          y={ey + legendH / 2}
+          click={f >= 156 && f < 168}
+          opacity={ramp(f, 143, 155) * (1 - ramp(f, 230, 241))}
+        />
+      )}
+      {moved && (
+        <div
+          style={{
+            position: "absolute",
+            left: 108,
+            top: 662,
+            fontSize: 25,
+            color: "#a8adb4",
+            opacity: ramp(f, 223, 236),
+          }}
+        >
+          修改仍然属于这张图。
+        </div>
+      )}
+      <Footer label="真实 ggplot2 渲染 · 12 pt → 10 pt · 图例移动" />
+    </Stage>
   );
-};
+}

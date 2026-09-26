@@ -1,64 +1,81 @@
-import { CanvasImage, Interactive, staticFile } from "remotion";
-import { Shell } from "../shared";
-export const Engines = () => (
-  <Shell>
-    <Interactive.Div
-      name="Workflow title"
-      style={{ fontSize: 88, fontWeight: 730 }}
-    >
-      从绘图脚本出发。
-    </Interactive.Div>
-    <div style={{ fontSize: 36, color: "#5c7666", marginTop: 25 }}>
-      接着熟悉的 Python / R 工作流，完成最后的细节。
-    </div>
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr 1fr 1fr",
-        gap: 24,
-        marginTop: 68,
-      }}
-    >
-      {[
-        { name: "Matplotlib", img: "matplotlib.webp", lang: "Python" },
-        { name: "Plotly", img: "plotly.png", lang: "Python" },
-        { name: "pyecharts", img: "pyecharts.png", lang: "Python" },
-        { name: "ggplot2", img: "r-after.png", lang: "R" },
-      ].map((e) => (
-        <div
-          key={e.name}
-          style={{
-            background: "white",
-            border: "1px solid #d0ddd2",
-            borderRadius: 25,
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{ height: 280, overflow: "hidden", background: "#f7f9f6" }}
-          >
-            <CanvasImage
-              src={staticFile(`screens/${e.img}`)}
-              style={{
-                width: "100%",
-                height: 280,
-                objectFit: e.name === "Matplotlib" ? "contain" : "cover",
-                objectPosition:
-                  e.name === "ggplot2" ? "center bottom" : "right center",
-              }}
-            />
-          </div>
-          <div style={{ padding: 27 }}>
-            <div style={{ fontSize: 35, fontWeight: 650 }}>{e.name}</div>
-            <div style={{ fontSize: 24, marginTop: 12, color: "#678572" }}>
-              {e.lang}
-            </div>
-          </div>
+import { useCurrentFrame } from "remotion";
+import { Stage, Footer, Picture, ramp } from "../shared";
+export function Engines() {
+  const f = useCurrentFrame();
+  return (
+    <Stage>
+      <div
+        style={{
+          position: "absolute",
+          left: 104,
+          top: 105,
+          fontSize: 76,
+          fontWeight: 650,
+          letterSpacing: -2,
+        }}
+      >
+        把时间留给研究。
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          left: 104,
+          top: 235,
+          fontSize: 30,
+          color: "#a8adb4",
+        }}
+      >
+        图表导出，继续下一步。
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          left: 760,
+          top: 58,
+          width: 770,
+          height: 1000,
+          padding: 55,
+          background: "#fff",
+          color: "#14181d",
+          transform: `perspective(1700px) rotateY(${ramp(f, 0, 60, -12, 0)}deg) scale(${ramp(f, 0, 65, 0.89, 0.77)})`,
+          transformOrigin: "50% 45%",
+          boxShadow: "0 30px 100px #0009",
+        }}
+      >
+        <div style={{ fontSize: 29, fontWeight: 600, marginBottom: 18 }}>
+          Response over time
         </div>
-      ))}
-    </div>
-    <div style={{ fontSize: 26, color: "#617969", marginTop: 28 }}>
-      各引擎支持的编辑范围不同，以对应工作台为准。
-    </div>
-  </Shell>
-);
+        <div
+          style={{
+            height: 4,
+            width: "70%",
+            background: "#cbd0d6",
+            marginBottom: 38,
+          }}
+        />
+        <Picture state="after" />
+        <div style={{ fontSize: 16, marginTop: 14, marginBottom: 35 }}>
+          Figure 01 · Control / Treatment
+        </div>
+        <div style={{ display: "flex", gap: 24 }}>
+          {[0, 1].map((col) => (
+            <div key={col} style={{ flex: 1 }}>
+              {Array.from({ length: 13 }, (_, i) => (
+                <div
+                  key={i}
+                  style={{
+                    height: 5,
+                    marginBottom: 12,
+                    width: `${i % 5 === 4 ? 76 : 100}%`,
+                    background: "#dce0e5",
+                  }}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+      <Footer label="页面为排版示意 · 图表为实际导出结果" />
+    </Stage>
+  );
+}
