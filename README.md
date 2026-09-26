@@ -38,7 +38,7 @@ FigWeave 是基于 Tavotto 的独立派生项目。当前扩展方向是多绘�
 | **Matplotlib** `/try/` | 独立 Python 脚本；支持 seaborn、pandas plotting、NetworkX 生成的 Matplotlib 图 | 复用对象编辑器，调整文字、图例、曲线与布局，支持撤销及带当前修改的高清 PNG 导出（宽 2400 像素） |
 | **Plotly** `/charts/` | Python 脚本，图对象命名为 `fig` | 修改标题、轴名、系列与布局配置；直接编辑文字、移动图例和注释；撤销及 PNG / JSON / Python 导出 |
 | **pyecharts** `/charts/` | Python 脚本，图对象命名为 `chart` | 修改标题、轴名与原生图表配置；撤销及 PNG / JSON / Python 导出 |
-| **ggplot2** `/r/` | R 脚本，图对象命名为 `p` | 调整主题、字号、尺寸；拖动标准文字、图例、散点和曲线；撤销及 PNG / PDF / R 脚本导出 |
+| **ggplot2** `/r/` | R 脚本，图对象命名为 `p` | 保留原图样式，调整主题、基础字体、字号和尺寸，图例可一键放在图内四角；拖动标准文字、图例、散点和曲线，单独恢复位置；撤销及 PNG / PDF / R 脚本导出 |
 
 ggplot2 的数据点和曲线拖动保存为**显示偏移**，不改原始数据值。鼠标拖动和键盘
 方向键都可操作；改变布局会清除偏移，撤销可以恢复。自定义 grob、栅格图元尚不支持。

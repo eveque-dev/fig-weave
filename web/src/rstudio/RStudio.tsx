@@ -6,7 +6,7 @@ import { TextArea, TextInput } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { currentLocale } from '@/i18n'
 import { PRODUCT_NAME, playgroundHomeHref } from '@/lib/brand'
-import { DEFAULT_STYLE, RPlotClient, exportR, type PlotStyle, type RObject } from './client'
+import { DEFAULT_STYLE, FONT_FAMILIES, LEGEND_POSITIONS, RPlotClient, exportR, type PlotStyle, type RObject } from './client'
 import { DragOverlay } from './DragOverlay'
 import example from './example.R?raw'
 import './studio.css'
@@ -22,6 +22,8 @@ function download(blob: Blob, filename: string) {
 export function RStudio() {
   const { t } = useTranslation('dialogs')
   const [objects, setObjects] = useState<RObject[]>([])
+  const [selected, setSelected] = useState('')
+  const [layoutReset, setLayoutReset] = useState(false)
   const [source, setSource] = useState(example)
   const [loadedSource, setLoadedSource] = useState('')
   const [style, setStyle] = useState<PlotStyle>({ ...DEFAULT_STYLE })
@@ -34,6 +36,7 @@ export function RStudio() {
   const [previewUrl, setPreviewUrl] = useState('')
   const client = useRef<RPlotClient | null>(null)
   const seq = useRef(0)
+  const pending = useRef(false)
   const active = !!loadedSource && !busy
   useEffect(() => () => { seq.current++; client.current?.close() }, [])
   useEffect(() => {
@@ -48,12 +51,14 @@ export function RStudio() {
 
   const cancel = () => {
     seq.current++; client.current?.close(); client.current = null
+    pending.current = false; setObjects([]); setSelected(''); setLayoutReset(false)
     setBusy(false); setLoadedSource(''); setPreview(null); setPhase('idle')
   }
   const run = async () => {
     const id = ++seq.current
     client.current?.close()
     const r = new RPlotClient(); client.current = r
+    pending.current = true; setObjects([]); setSelected(''); setLayoutReset(false)
     setBusy(true); setError(''); setLoadedSource(''); setPreview(null)
     try {
       await r.load(source, (key) => { if (seq.current === id) setPhase(key) })
@@ -64,12 +69,15 @@ export function RStudio() {
     } catch (e) {
       r.close()
       if (seq.current === id) { setError(String(e)); setPhase('idle') }
-    } finally { if (seq.current === id) setBusy(false) }
+    } finally { if (seq.current === id) { pending.current = false; setBusy(false) } }
   }
   const apply = async (next: PlotStyle, direction: 'edit' | 'undo' | 'redo' = 'edit') => {
-    if (!client.current || busy || !loadedSource) return
+    if (!client.current || pending.current || !loadedSource) return
+    if (JSON.stringify(next) === JSON.stringify(style)) return
+    const clearsMoves = direction === 'edit' && next.moves === style.moves && Object.keys(style.moves).length > 0
     if (direction === 'edit' && next.moves === style.moves) next = { ...next, moves: {} }
     const id = seq.current
+    pending.current = true
     setBusy(true); setError('')
     try {
       const blob = await client.current.render(next)
@@ -78,18 +86,27 @@ export function RStudio() {
       else if (direction === 'redo') { setFuture(future.slice(0, -1)); setHistory([...history, style]) }
       else { setHistory([...history, style].slice(-50)); setFuture([]) }
       setObjects(client.current.objects); setStyle(next); setPreview(blob)
+      setLayoutReset(clearsMoves)
+      if (clearsMoves || !client.current.objects.some((object) => object.id === selected)) setSelected('')
     } catch (e) {
-      if (id === seq.current) setError(String(e))
-    } finally { if (id === seq.current) setBusy(false) }
+      if (id === seq.current) {
+        if (client.current?.isClosed) cancel()
+        setError(String(e))
+      }
+    } finally { if (id === seq.current) { pending.current = false; setBusy(false) } }
   }
   const exportPdf = async () => {
-    if (!client.current || !active) return
-    const id = seq.current; setBusy(true); setError('')
+    if (!client.current || !active || pending.current) return
+    const id = seq.current; pending.current = true; setBusy(true); setError('')
     try {
       const blob = await client.current.pdf(style)
       if (seq.current === id) download(blob, 'figure.pdf')
-    } catch (e) { if (seq.current === id) setError(String(e)) }
-    finally { if (seq.current === id) setBusy(false) }
+    } catch (e) {
+      if (seq.current === id) {
+        if (client.current?.isClosed) cancel()
+        setError(String(e))
+      }
+    } finally { if (seq.current === id) { pending.current = false; setBusy(false) } }
   }
   return (
     <div className="r-studio min-h-screen bg-bg text-ink">
@@ -136,12 +153,24 @@ export function RStudio() {
                 </label>
               ))}
               <Select ariaLabel={t('rStudio.theme')} disabled={!active} value={style.theme} onChange={(theme) => void apply({ ...style, theme })} options={(['original', 'minimal', 'classic', 'bw'] as const).map((value) => ({ value, label: t(`rStudio.${value}`) }))} />
-              <Select ariaLabel={t('rStudio.legend')} disabled={!active} value={style.legend} onChange={(legend) => void apply({ ...style, legend })} options={(['right', 'bottom', 'none'] as const).map((value) => ({ value, label: t(`rStudio.${value}`) }))} />
+              <div data-r-legend className="space-y-1 text-sm">
+                <span>{t('rStudio.legend')}</span>
+                <Select ariaLabel={t('rStudio.legend')} disabled={!active} value={style.legend} onChange={(legend) => void apply({ ...style, legend })} options={LEGEND_POSITIONS.map((value) => ({ value, label: value === 'original' ? t('rStudio.keepStyle') : t(`rStudio.${value}`) }))} />
+              </div>
+              <div data-r-font className="space-y-1 text-sm">
+                <span>{t('rStudio.fontFamily')}</span>
+                <Select ariaLabel={t('rStudio.fontFamily')} disabled={!active} value={style.fontFamily} onChange={(fontFamily) => void apply({ ...style, fontFamily })} options={FONT_FAMILIES.map((value) => ({ value, label: value === 'original' ? t('rStudio.keepStyle') : t(`rStudio.${value}`) }))} />
+                <p className="text-xs text-ink-3">{t('rStudio.fontHint')}</p>
+              </div>
               {(['fontSize', 'width', 'height'] as const).map((key) => (
                 <label key={key} className="flex items-center justify-between gap-4 text-sm">
                   <span>{t(`rStudio.${key}`)}</span>
-                  <TextInput data-r-number={key} key={`${key}:${style[key]}`} type="number" className="max-w-24" defaultValue={style[key]} min={key === 'fontSize' ? 6 : 1} max={key === 'fontSize' ? 48 : 20} step="1" onBlur={(e) => {
-                    const value = Number(e.target.value)
+                  <TextInput data-r-number={key} key={`${key}:${style[key]}`} type="number" className="max-w-32" defaultValue={style[key] ?? ''} placeholder={t('rStudio.keepStyle')} min={key === 'fontSize' ? 6 : 1} max={key === 'fontSize' ? 48 : 20} step="1" onBlur={(e) => {
+                    const value = e.target.value === '' && key === 'fontSize' ? null : Number(e.target.value)
+                    if (value !== null && (!Number.isFinite(value) || value < (key === 'fontSize' ? 6 : 1) || value > (key === 'fontSize' ? 48 : 20))) {
+                      e.target.value = String(style[key] ?? '')
+                      return
+                    }
                     if (value !== style[key]) void apply({ ...style, [key]: value })
                   }} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }} />
                 </label>
@@ -149,7 +178,7 @@ export function RStudio() {
               <div className="flex gap-2">
                 <Button data-r-undo disabled={!active || !history.length} onClick={() => void apply(history[history.length - 1], 'undo')}>{t('rStudio.undo')}</Button>
                 <Button data-r-redo disabled={!active || !future.length} onClick={() => void apply(future[future.length - 1], 'redo')}>{t('rStudio.redo')}</Button>
-                <Button disabled={!active} onClick={() => void apply({ ...DEFAULT_STYLE })}>{t('rStudio.reset')}</Button>
+                <Button data-r-reset disabled={!active} onClick={() => void apply({ ...DEFAULT_STYLE })}>{t('rStudio.reset')}</Button>
               </div>
             </fieldset>
           </section>
@@ -160,8 +189,16 @@ export function RStudio() {
               <Button data-r-export disabled={!active} onClick={() => download(new Blob([exportR(loadedSource, style)], { type: 'text/plain;charset=utf-8' }), 'figure-styled.R')}>{t('rStudio.exportR')}</Button>
             </div>
             <p className="text-sm text-ink-2">{t('rStudio.dragHint')}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button data-r-reset-selected disabled={!active || !style.moves[selected]} onClick={() => {
+                const moves = { ...style.moves }; delete moves[selected]
+                void apply({ ...style, moves })
+              }}>{t('rStudio.resetSelected')}</Button>
+              <Button data-r-reset-moves disabled={!active || !Object.keys(style.moves).length} onClick={() => void apply({ ...style, moves: {} })}>{t('rStudio.resetMoves')}</Button>
+            </div>
+            {layoutReset && <p data-r-layout-reset role="status" className="text-sm text-ink-2">{t('rStudio.layoutReset')}</p>}
             <div className="r-studio-preview flex min-h-[350px] items-center justify-center rounded-md border border-border bg-surface p-4">
-              {previewUrl ? <div className="r-drag-frame"><img data-r-preview src={previewUrl} alt={t('rStudio.preview')} className="h-auto max-w-full" /><DragOverlay objects={objects} disabled={!active} move={(id, dx, dy) => {
+              {previewUrl ? <div className="r-drag-frame"><img data-r-preview src={previewUrl} alt={t('rStudio.preview')} className="h-auto max-w-full" /><DragOverlay objects={objects} selected={selected} select={setSelected} disabled={!active} move={(id, dx, dy) => {
                 const previous = style.moves[id] ?? [0, 0]
                 void apply({ ...style, moves: { ...style.moves, [id]: [previous[0] + dx, previous[1] + dy] } })
               }} /></div> : <p className="text-sm text-ink-3">{t('rStudio.empty')}</p>}

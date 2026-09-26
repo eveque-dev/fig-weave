@@ -1,35 +1,52 @@
 import dragSource from './drag.R?raw'
 import lock from '../../../packaging/r-browser-runtime.json'
 
+export const LEGEND_POSITIONS = ['original', 'right', 'left', 'top', 'bottom', 'bottomLeft', 'bottomRight', 'topLeft', 'topRight', 'none'] as const
+export const FONT_FAMILIES = ['original', 'sans', 'serif', 'mono'] as const
+
 export interface PlotStyle {
   moves: Record<string, [number, number]>
   title: string | null
   x: string | null
   y: string | null
   theme: 'original' | 'minimal' | 'classic' | 'bw'
-  fontSize: number
-  legend: 'right' | 'bottom' | 'none'
+  fontSize: number | null
+  fontFamily: typeof FONT_FAMILIES[number]
+  legend: typeof LEGEND_POSITIONS[number]
   width: number
   height: number
 }
 export const DEFAULT_STYLE: PlotStyle = {
-  moves: {}, title: null, x: null, y: null, theme: 'original', fontSize: 12,
-  legend: 'right', width: 7, height: 5,
+  moves: {}, title: null, x: null, y: null, theme: 'original', fontSize: null,
+  fontFamily: 'original', legend: 'original', width: 7, height: 5,
 }
 
 /** A closed set of styling operations, shared by preview and exported R code. */
 export function styleExpression(s: PlotStyle, plot = 'p'): string {
   if (![s.width, s.height].every((n) => Number.isFinite(n) && n >= 1 && n <= 20)
-    || !Number.isFinite(s.fontSize) || s.fontSize < 6 || s.fontSize > 48)
+    || (s.fontSize !== null && (!Number.isFinite(s.fontSize) || s.fontSize < 6 || s.fontSize > 48)))
     throw new Error('Invalid plot dimensions or font size')
   if (!['original', 'minimal', 'classic', 'bw'].includes(s.theme)
-    || !['right', 'bottom', 'none'].includes(s.legend)) throw new Error('Invalid plot style')
+    || !LEGEND_POSITIONS.includes(s.legend) || !FONT_FAMILIES.includes(s.fontFamily)) throw new Error('Invalid plot style')
   const labels = (['title', 'x', 'y'] as const)
     .filter((k) => s[k] !== null).map((k) => `${k} = ${JSON.stringify(s[k])}`)
+  const text = [
+    ...(s.fontSize === null ? [] : [`size = ${s.fontSize}`]),
+    ...(s.fontFamily === 'original' ? [] : [`family = ${JSON.stringify(s.fontFamily)}`]),
+  ]
+  const theme = text.length ? [`text = ggplot2::element_text(${text.join(', ')})`] : []
+  const corners: Record<string, [number, number]> = {
+    bottomLeft: [.03, .03], bottomRight: [.97, .03], topLeft: [.03, .97], topRight: [.97, .97],
+  }
+  if (corners[s.legend]) {
+    const [x, y] = corners[s.legend]
+    theme.push('legend.position = "inside"', `legend.position.inside = c(${x}, ${y})`,
+      `legend.justification.inside = c(${x < .5 ? 0 : 1}, ${y < .5 ? 0 : 1})`)
+  } else if (s.legend !== 'original') theme.push(`legend.position = ${JSON.stringify(s.legend)}`)
   return plot
     + (s.theme === 'original' ? '' : ` + ggplot2::theme_${s.theme}()`)
     + (labels.length ? ` + ggplot2::labs(${labels.join(', ')})` : '')
-    + ` + ggplot2::theme(text = ggplot2::element_text(size = ${s.fontSize}), legend.position = ${JSON.stringify(s.legend)})`
+    + (theme.length ? ` + ggplot2::theme(${theme.join(', ')})` : '')
 }
 
 export interface RObject { id: string; kind: 'text' | 'legend' | 'point' | 'curve'; coords: number[]; breaks: number[] }
@@ -40,7 +57,10 @@ export function movesExpression(moves: PlotStyle['moves']): string {
   }).join(',') + ')'
 }
 export function exportR(source: string, style: PlotStyle): string {
-  return `${source}\n\n${dragSource}\nfigweave_plot <- ${styleExpression(style)}\nfigweave_result <- figweave_scene(figweave_plot, ${movesExpression(style.moves)}, ${style.width}, ${style.height})\ngrid::grid.newpage()\ngrid::grid.draw(figweave_result)\n`
+  // Replay on the active device, just like preview. Recording on a temporary PDF
+  // here switches font metrics and interferes with webR's canvas capture device.
+  // The PDF download uses figweave_scene separately to guarantee one final page.
+  return `${source}\n\n${dragSource}\nfigweave_plot <- ${styleExpression(style)}\n# For file output, open a device at width = ${style.width}, height = ${style.height} inches.\nfigweave_draw(figweave_plot, ${movesExpression(style.moves)}, ${style.width}, ${style.height})\nfigweave_result <- grid::grid.grab()\n`
 }
 interface Shelter {
   captureR(code: string, opts: object): Promise<{ images: ImageBitmap[]; output: { type: string; data: string }[] }>
@@ -63,6 +83,8 @@ export class RPlotClient {
   private closed = false
   private stop: (() => void) | null = null
 
+  get isClosed() { return this.closed }
+
   close() {
     this.closed = true
     this.runtime?.close()
@@ -83,7 +105,7 @@ export class RPlotClient {
 
   async load(source: string, phase: (key: 'loadingRuntime' | 'loadingPackages' | 'running') => void) {
     if (new TextEncoder().encode(source).length > 256 * 1024) throw new Error('R source exceeds 256 KiB')
-    return this.bounded(async () => {
+    const version = await this.bounded(async () => {
       phase('loadingRuntime')
       const mod = await import(/* @vite-ignore */ `${lock.base_url}webr.mjs`) as {
         WebR: new (options: object) => WebR
@@ -97,16 +119,19 @@ export class RPlotClient {
       const version = await this.runtime.evalRString('as.character(utils::packageVersion("ggplot2"))')
       if (version !== lock.ggplot2_version) throw new Error(`ggplot2 version mismatch: ${version}`)
       await this.runtime.evalRVoid(dragSource)
-      phase('running')
-      await this.runtime.evalRVoid(`local({
+      return version
+    }, 240_000)
+    phase('running')
+    await this.bounded(async () => {
+      await this.runtime!.evalRVoid(`local({
         env <- new.env(parent = globalenv())
         eval(parse(text = ${JSON.stringify(source)}), envir = env)
         if (!exists("p", envir = env, inherits = FALSE) || !inherits(env$p, "ggplot"))
           stop("Assign the ggplot2 plot to an object named p")
         assign(".fw_original", env$p, envir = globalenv())
       })`)
-      return version
-    }, 240_000)
+    }, 30_000)
+    return version
   }
 
   async render(style: PlotStyle): Promise<Blob> {

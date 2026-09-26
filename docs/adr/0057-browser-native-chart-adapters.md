@@ -22,3 +22,15 @@ adapters do not imply offline native Plotly / ECharts / R desktop support.
 
 Validation: real-browser Python run/edit/undo/PNG/JSON/Python replay, real webR
 text/legend/point/curve movement and undo, PNG/PDF/R exports, responsive layouts.
+
+2026-09-26 R refinement: unset typography and legend controls preserve the source
+plot rather than silently applying 12 pt and a right-hand legend. Explicit generic
+font families and inside-corner legend placements use the same style expression
+for preview and R export. Layout changes still invalidate ordinal drag identities
+and now explain that reset; individual offset resets participate in normal history.
+Dependency preparation has a separate deadline from the 30-second user-code budget.
+Exported R scripts draw on the active device with the same replay function as the
+preview, then capture `figweave_result` from that display list. A temporary PDF
+device is used only by the PDF download: opening it in an R script loses webR's
+canvas capture and changes text metrics. For R file output, the exported comment
+records the requested device size; the receiving device controls physical size.

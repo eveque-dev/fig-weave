@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto'
 // Subject: the built standalone site, including navigation under a path prefix.
 // No backend or DNS is involved. A missing build must fail, not skip this check.
 const dist = path.resolve(import.meta.dirname, '..', 'dist-site')
+const rRuntime = JSON.parse(readFileSync(path.resolve(import.meta.dirname, '../../packaging/r-browser-runtime.json'), 'utf8')) as { base_url: string }
 test.use({ channel: process.env.PLAYWRIGHT_CHANNEL || undefined, video: 'off' })
 let server: Server
 let origin: string
@@ -196,7 +197,10 @@ p <- ggplot(data.frame(x=1:5,y=c(2,4,3,6,5),group="A"),aes(x,y,colour=group))+ge
     // Deterministic ordinal in this fixture; every category is exercised.
     const target = targets.nth(0)
     const id = await target.getAttribute('data-r-object')
-    const before = await target.boundingBox()
+    // SVG geometry ignores document scrolling and the wider transparent hit
+    // stroke, which narrows when a curve is focused. DOM bounding boxes do not.
+    const relativeX = () => page.locator(`[data-r-object="${id}"]`).evaluate((element) => (element as SVGGraphicsElement).getBBox().x / 1000)
+    const before = await relativeX()
     const readPng = () => page.locator('[data-r-preview]').evaluate(async (img) => {
       const bytes = await (await fetch((img as HTMLImageElement).src)).arrayBuffer()
       return Array.from(new Uint8Array(bytes))
@@ -206,8 +210,8 @@ p <- ggplot(data.frame(x=1:5,y=c(2,4,3,6,5),group="A"),aes(x,y,colour=group))+ge
     await target.press('ArrowRight')
     await expect(page.locator('[data-r-run]')).toBeEnabled()
     await expect(page.locator('[data-r-error]')).toHaveCount(0)
-    const after = await page.locator(`[data-r-object="${id}"]`).boundingBox()
-    expect(after!.x).toBeGreaterThan(before!.x + 1)
+    const after = await relativeX()
+    expect(after - before).toBeCloseTo(.005, 4)
     expect(await readPng()).not.toEqual(baselinePng)
     const exported = page.waitForEvent('download')
     await page.locator('[data-r-export]').click()
@@ -215,10 +219,118 @@ p <- ggplot(data.frame(x=1:5,y=c(2,4,3,6,5),group="A"),aes(x,y,colour=group))+ge
     expect(code).toContain(`"${id}" = c(0.005,0)`)
     await page.locator('[data-r-undo]').click()
     await expect(page.locator('[data-r-run]')).toBeEnabled()
-    const undone = await page.locator(`[data-r-object="${id}"]`).boundingBox()
-    expect(undone!.x).toBeCloseTo(before!.x, 1)
+    expect(await relativeX()).toBeCloseTo(before, 4)
     expect(await readPng()).toEqual(baselinePng)
   }
+})
+
+test('ggplot2 preserves source styling, places legends, resets one move and replays exported R', async ({ page }) => {
+  test.setTimeout(360_000)
+  const source = `library(ggplot2)
+p <- ggplot(data.frame(x=1:5,y=c(2,4,3,6,5),group="A"),aes(x,y,colour=group)) +
+  geom_line() + geom_point(size=3) + labs(title="Original 18 pt mono") +
+  theme_minimal(base_size=18,base_family="mono") + theme(legend.position="bottom")`
+  await page.goto(`${origin}/r/?lang=en`)
+  await page.locator('[data-r-source]').fill(source)
+  await page.locator('[data-r-run]').click()
+  const ready = async () => {
+    await expect(page.locator('[data-r-run]')).toBeEnabled({ timeout: 280_000 })
+    await expect(page.locator('[data-r-error]')).toHaveCount(0)
+  }
+  await ready()
+  const pixels = () => page.locator('[data-r-preview]').evaluate(async (node) => {
+    const image = node as HTMLImageElement
+    await image.decode()
+    const canvas = document.createElement('canvas'); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight
+    const context = canvas.getContext('2d')!; context.drawImage(image, 0, 0)
+    return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', context.getImageData(0, 0, canvas.width, canvas.height).data)))
+  })
+  const baseline = await pixels()
+  await expect(page.locator('[data-r-number="fontSize"]')).toHaveValue('')
+  const oracle = await page.evaluateHandle(async ({ base, repo, source }) => {
+    const { WebR, ChannelType } = await import(base + 'webr.mjs')
+    const r = new WebR({ baseUrl: base, repoUrl: repo, channelType: ChannelType.PostMessage })
+    await r.init(); await r.installPackages(['ggplot2']); await r.evalRVoid(source)
+    return r
+  }, { base: rRuntime.base_url, repo: `${origin}/r/packages/`, source })
+  try {
+    const capture = (code: string) => oracle.evaluate(async (r, code) => {
+      const shelter = await new r.Shelter()
+      const result = await shelter.captureR(code, { captureGraphics: { width: 504, height: 360 }, withAutoprint: false })
+      try {
+        const image = result.images.at(-1)!
+        if (!image) throw new Error(JSON.stringify(result.output))
+        const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height
+        const context = canvas.getContext('2d')!; context.drawImage(image, 0, 0)
+        return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', context.getImageData(0, 0, canvas.width, canvas.height).data)))
+      } finally { result.images.forEach((image: ImageBitmap) => image.close()); await shelter.purge() }
+    }, code)
+    // Independent oracle: the original ggplot rendered directly, without adapter styles.
+    expect(baseline).toEqual(await capture('grid::grid.draw(ggplot2::ggplotGrob(p))'))
+    await page.locator('[data-r-legend] button').click()
+    await page.locator('[data-select-option="bottomLeft"]').click()
+    await ready()
+    const frame = (await page.locator('[data-r-preview]').boundingBox())!
+    const legend = page.locator('[data-r-object="legend:0"]')
+    const box = (await legend.boundingBox())!
+    expect(box.x + box.width / 2).toBeLessThan(frame.x + frame.width / 2)
+    expect(box.y + box.height / 2).toBeGreaterThan(frame.y + frame.height / 2)
+    await page.locator('[data-r-font] button').click()
+    await page.locator('[data-select-option="sans"]').click()
+    await ready()
+    await page.locator('[data-r-number="fontSize"]').fill('10')
+    await page.locator('[data-r-number="fontSize"]').press('Enter')
+    await ready()
+    const beforeMoves = await pixels()
+    await legend.focus(); await legend.press('ArrowRight'); await ready()
+    const legendMoved = await pixels()
+    expect(legendMoved).not.toEqual(beforeMoves)
+    // First point in this fixed five-point fixture has a stable measured identity.
+    const pointId = await page.locator('[data-r-kind="point"]').nth(0).getAttribute('data-r-object')
+    const point = page.locator(`[data-r-object="${pointId}"]`)
+    await point.focus(); await point.press('ArrowDown'); await ready()
+    expect(await pixels()).not.toEqual(legendMoved)
+    await page.locator('[data-r-reset-selected]').click(); await ready()
+    expect(await pixels()).toEqual(legendMoved)
+    await page.locator('[data-r-undo]').click(); await ready()
+    expect(await pixels()).not.toEqual(legendMoved)
+    await page.locator('[data-r-redo]').click(); await ready()
+    expect(await pixels()).toEqual(legendMoved)
+    // Escape cancels the in-progress pointer move without creating history.
+    const pointBox = (await point.boundingBox())!
+    await page.mouse.move(pointBox.x + pointBox.width / 2, pointBox.y + pointBox.height / 2)
+    await page.mouse.down(); await page.mouse.move(pointBox.x + 30, pointBox.y + 20)
+    await page.keyboard.press('Escape'); await page.mouse.up(); await ready()
+    expect(await pixels()).toEqual(legendMoved)
+    const download = page.waitForEvent('download')
+    await page.locator('[data-r-export]').click()
+    const exported = readFileSync((await (await download).path())!, 'utf8')
+    expect(exported.startsWith(source)).toBe(true)
+    // Real R execution; inspect the resulting ggplot values rather than source substrings.
+    expect(await capture(exported)).toEqual(legendMoved)
+    expect(await oracle.evaluate(async (r) => r.evalRString('paste(figweave_plot$theme$text$size, figweave_plot$theme$text$family, figweave_plot$theme$legend.position)'))).toBe('10 sans inside')
+    await page.locator('[data-r-reset-moves]').click(); await ready()
+    expect(await pixels()).toEqual(beforeMoves)
+    await page.locator('[data-r-reset]').click(); await ready()
+    expect(await pixels()).toEqual(baseline)
+    await page.screenshot({ path: test.info().outputPath('ggplot2-original-restored.png'), fullPage: true })
+  } finally { await oracle.evaluate((r) => r.close()); await oracle.dispose() }
+})
+
+test('ggplot2 stops non-terminating user code and can run again', async ({ page }) => {
+  test.setTimeout(180_000)
+  await page.goto(`${origin}/r/?lang=en`)
+  await page.locator('[data-r-source]').fill('while (TRUE) {}')
+  await page.locator('[data-r-run]').click()
+  await expect(page.locator('[data-r-status]')).toHaveText('Running script…', { timeout: 120_000 })
+  await expect(page.locator('[data-r-error]')).toContainText('timed out', { timeout: 45_000 })
+  await expect(page.locator('[data-r-run]')).toBeEnabled()
+  await expect(page.locator('[data-r-png]')).toBeDisabled()
+  await page.locator('[data-r-source]').fill('library(ggplot2)\np <- ggplot(mtcars, aes(wt, mpg)) + geom_point()')
+  await page.locator('[data-r-run]').click()
+  await expect(page.locator('[data-r-status]')).toHaveText('Preview ready', { timeout: 120_000 })
+  await expect(page.locator('[data-r-error]')).toHaveCount(0)
+  await expect(page.locator('[data-r-png]')).toBeEnabled()
 })
 
 test('Plotly and pyecharts execute Python, edit, undo and export', async ({ page }) => {
