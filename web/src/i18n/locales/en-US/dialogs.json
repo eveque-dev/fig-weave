@@ -1575,7 +1575,7 @@
     "downloadMac": "macOS Apple Silicon · DMG",
     "downloadAccess": "Public downloads, no GitHub sign-in required. Checksums and build details are included in the Release.",
     "releaseNotes": "Release notes, source and SHA-256 checksums",
-    "promoLabel": "32-second demo · Sound effects, no voiceover",
+    "promoLabel": "33-second demo · Sound effects, no voiceover",
     "promoTitle": "Plot with code. Refine on the web.",
     "promoBody": "Run a script in your browser, adjust text size and move a legend, then export an R script that replays the edits. Explore three workspaces for your plotting library.",
     "promoVideo": "Play the figure editing demo",

@@ -13,6 +13,11 @@ import {
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import path from "node:path";
+const timing = JSON.parse(
+  readFileSync(new URL("../timing.json", import.meta.url)),
+);
+const totalFrames = timing.coverFrames + timing.contentFrames;
+const duration = totalFrames / timing.fps;
 const root = process.cwd();
 const out = path.join(root, "out");
 const preview = path.join(out, "browser-preview");
@@ -22,7 +27,7 @@ await build({
   bundle: true,
   format: "iife",
   outdir: preview,
-  loader: { ".woff2": "file", ".woff": "file" },
+  loader: { ".woff2": "file", ".woff": "file", ".png": "file" },
   assetNames: "fonts/[name]-[hash]",
   define: { "process.env.NODE_ENV": '"production"' },
   logLevel: "warning",
@@ -95,7 +100,7 @@ try {
   await page.evaluate(async () => {
     await Promise.all([...document.fonts].map((f) => f.load()));
   });
-  const reviews = [45, 150, 270, 360, 480, 570, 675, 820, 915];
+  const reviews = timing.reviewFrames;
   for (const frame of reviews) {
     await seek(frame);
     await page.screenshot({ path: path.join(out, `frame-${frame}.png`) });
@@ -113,7 +118,7 @@ try {
         "-vcodec",
         "mjpeg",
         "-framerate",
-        "30",
+        String(timing.fps),
         "-i",
         "pipe:0",
         "-i",
@@ -135,7 +140,7 @@ try {
         "-b:a",
         "192k",
         "-t",
-        "32",
+        String(duration),
         "-movflags",
         "+faststart",
         path.join(out, "FigWeave-promo-1080p.mp4"),
@@ -150,24 +155,27 @@ try {
       errors.push(e.message);
     });
     const ended = once(encoder, "close");
-    for (let frame = 0; frame < 960; frame++) {
+    for (let frame = 0; frame < totalFrames; frame++) {
       await seek(frame);
       const png = await page.screenshot({ type: "jpeg", quality: 94 });
       if (!encoder.stdin.write(png)) await once(encoder.stdin, "drain");
-      if (frame % 120 === 0) console.log(`Rendered ${frame}/960 frames`);
+      if (frame % 120 === 0)
+        console.log(`Rendered ${frame}/${totalFrames} frames`);
     }
     encoder.stdin.end();
     const [exit] = await ended;
     if (exit !== 0) throw Error(errorLog);
-    console.log("Rendered 32 s / 1080p / 30 fps / H.264 + original SFX");
+    console.log(
+      `Rendered ${duration} s / 1080p / ${timing.fps} fps / H.264 + original SFX`,
+    );
   }
   if (errors.length) throw Error(errors.join("\n"));
   writeFileSync(
     path.join(out, "browser-verification.json"),
     JSON.stringify(
       {
-        frames: 960,
-        fps: 30,
+        frames: totalFrames,
+        fps: timing.fps,
         width: 1920,
         height: 1080,
         reviewFrames: reviews,

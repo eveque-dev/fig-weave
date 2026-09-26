@@ -1,0 +1,6 @@
+{
+  "fps": 30,
+  "coverFrames": 30,
+  "contentFrames": 960,
+  "reviewFrames": [0, 15, 29, 30, 75, 180, 300, 390, 510, 600, 705, 850, 945]
+}

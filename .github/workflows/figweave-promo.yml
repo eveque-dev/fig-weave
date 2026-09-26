@@ -25,7 +25,7 @@ jobs:
       - run: npm run render -- --concurrency=2
       - name: Render review frames and poster
         run: |
-          for frame in 45 150 270 360 480 570 675 820 915; do
+          for frame in $(node -p "require('./timing.json').reviewFrames.join(' ')"); do
             npx remotion still FigWeavePromo out/frame-${frame}.png --frame=${frame}
           done
           cp ../assets/figweave/promo-cover-v3.png out/FigWeave-promo-poster.png

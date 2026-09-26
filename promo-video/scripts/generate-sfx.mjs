@@ -1,7 +1,11 @@
 // Original procedural SFX: no recordings, voice, music or repeating sound bed.
-import { writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+const timing = JSON.parse(
+  readFileSync(new URL("../timing.json", import.meta.url)),
+);
 const rate = 48000,
-  duration = 32;
+  duration = (timing.coverFrames + timing.contentFrames) / timing.fps;
+let timeOffset = 0;
 const left = new Float64Array(rate * duration),
   right = new Float64Array(rate * duration);
 let seed = 1427;
@@ -11,6 +15,7 @@ const noise = () => {
 };
 const events = [];
 function sound(at, kind, length, gain = 1, pan = 0) {
+  at += timeOffset;
   events.push({ at, kind, length, gain, pan });
   let low = 0,
     smooth = 0;
@@ -89,6 +94,9 @@ function sound(at, kind, length, gain = 1, pan = 0) {
   }
 }
 sound(0.12, "open", 0.52, 0.95);
+sound(timing.coverFrames / timing.fps - 0.25, "air", 0.4, 0.7);
+timeOffset = timing.coverFrames / timing.fps;
+sound(0.12, "open", 0.52, 0.95);
 [0.89, 1.04, 1.19, 1.38, 1.6, 1.79, 2.08].forEach((at, i) =>
   sound(at, "key", 0.08, 0.46 + (i % 3) * 0.13, -0.3 + (i % 4) * 0.1),
 );
@@ -153,5 +161,5 @@ const report = {
 };
 writeFileSync("out/sound-design.json", JSON.stringify(report, null, 2) + "\n");
 console.log(
-  `32 s / ${report.timbres.length} original timbres / ${events.length} synchronized gestures / peak -6.74 dBFS / RMS ${report.rmsDb.toFixed(2)} dBFS`,
+  `${duration} s / ${report.timbres.length} original timbres / ${events.length} synchronized gestures / peak -6.74 dBFS / RMS ${report.rmsDb.toFixed(2)} dBFS`,
 );

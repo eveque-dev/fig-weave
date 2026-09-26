@@ -32,7 +32,7 @@ GitHub：eveque-dev/fig-weave
 
 ## 发布备注（不放正文）
 
-- 配图/封面：使用独立设计的“代码画图，网页改图。”封面（`assets/figweave/promo-cover-v3.png`）；视频为 32 秒横版，10 类原创合成音效、无配乐、无人声。
+- 配图/封面：使用独立设计的“代码画图，网页改图。”封面（`assets/figweave/promo-cover-v3.png`）；封面已嵌入片头 1 秒，视频为 33 秒横版，10 类原创合成音效、无配乐、无人声。
 - Arial 是痛点举例；本片实测演示的是 ggplot2 字号和图例显示偏移，不暗示每个引擎都具备同样字体控件。
 - 不使用“所有拖拽都会自动改原始代码”的表述。R 导出保留原脚本并追加样式/偏移重放代码；Plotly/pyecharts 按当前配置重建图表。
 - 不说 Illustrator 的矢量 PDF 放大会失真。若需要比较：Illustrator 适合通用矢量编辑，FigWeave 侧重脚本绘图工作流及可复现修改。

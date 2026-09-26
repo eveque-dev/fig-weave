@@ -3,6 +3,7 @@ import { Player, type PlayerRef } from "@remotion/player";
 import "@fontsource-variable/noto-sans-sc";
 import "./index.css";
 import { Promo } from "./Composition";
+import timing from "../timing.json";
 declare global {
   interface Window {
     figweavePlayer: PlayerRef | null;
@@ -15,10 +16,10 @@ createRoot(document.getElementById("root")!).render(
     }}
     component={Promo}
     inputProps={{ silent: true }}
-    durationInFrames={960}
+    durationInFrames={timing.coverFrames + timing.contentFrames}
     compositionWidth={1920}
     compositionHeight={1080}
-    fps={30}
+    fps={timing.fps}
     controls={false}
     autoPlay={false}
     acknowledgeRemotionLicense

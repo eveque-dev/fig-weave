@@ -1556,7 +1556,7 @@
     "downloadMac": "macOS Apple Silicon · DMG",
     "downloadAccess": "公开下载，无需登录 GitHub。Release 页面提供校验文件和构建信息。",
     "releaseNotes": "发行说明、源码与 SHA-256 校验",
-    "promoLabel": "32 秒演示 · 只有音效，无人声",
+    "promoLabel": "33 秒演示 · 只有音效，无人声",
     "promoTitle": "代码画图，网页改图。",
     "promoBody": "从浏览器运行脚本，到调整字号、拖动图例，再导出可重放修改的 R 脚本。认识三个在线入口，选择适合你的绘图库。",
     "promoVideo": "播放图形编辑演示",

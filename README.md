@@ -19,12 +19,12 @@ FigWeave 是面向科研与数据可视化的图表编辑项目。直接打开�
 
 *首页通过滚动演示图表对象选择、字号调整、图例移动与导出；工作台仍可直接打开。*
 
-## 32 秒看看怎么用
+## 33 秒看看怎么用
 
 [![代码画图，网页改图。](assets/figweave/promo-poster.png)](https://fig-weave.com/#film)
 
 **“图例放左下角”“字号再小一点”——少补几轮 prompt，直接在图上调。**
-第三版采用独立设计的“代码与图形编织”封面和开场，展示真实 R 编辑与脚本导出，再介绍三个网页入口；10 类原创合成音效随操作变化，无配乐、无人声。
+第三版将独立设计的“代码与图形编织”封面嵌入视频前 1 秒，接着展示真实 R 编辑与脚本导出，再介绍三个网页入口；10 类原创合成音效随操作变化，无配乐、无人声。
 [观看 / 下载 MP4](https://github.com/eveque-dev/fig-weave/releases/download/figweave-preview-0.15.0-20260922/FigWeave-promo-1080p.mp4) ·
 [下载封面](assets/figweave/promo-cover-v3.png) · [视频源码与复现方式](promo-video/README.md) · [小红书文案](docs/promo/xiaohongshu.md)
 

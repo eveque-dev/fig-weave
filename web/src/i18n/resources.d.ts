@@ -1594,7 +1594,7 @@ export default interface Resources {
       "privacyTag": "本地执行 · 开源可查",
       "privacyTitle": "你的图，在你的浏览器里运行。",
       "promoBody": "从浏览器运行脚本，到调整字号、拖动图例，再导出可重放修改的 R 脚本。认识三个在线入口，选择适合你的绘图库。",
-      "promoLabel": "32 秒演示 · 只有音效，无人声",
+      "promoLabel": "33 秒演示 · 只有音效，无人声",
       "promoTitle": "代码画图，网页改图。",
       "promoVideo": "播放图形编辑演示",
       "pythonBody": "基于 Matplotlib 的散点图、统计图和网络图，复用同一个图内元素编辑器。",
