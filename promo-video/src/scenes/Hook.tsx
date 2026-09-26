@@ -1,121 +1,172 @@
 import { useCurrentFrame } from "remotion";
-import { Stage, Footer, Picture, ramp, BLUE } from "../shared";
-const messages = [
-  { at: 24, text: "字体不要新罗马，换 Arial", x: 130, y: 330, rotate: -3 },
-  { at: 57, text: "图例放左下角", x: 1210, y: 130, rotate: 3 },
-  { at: 88, text: "字号再小一点", x: 1160, y: 700, rotate: -2 },
-  { at: 121, text: "再往左一点", x: 130, y: 750, rotate: 2 },
-  { at: 147, text: "等等，标题也要改", x: 900, y: 430, rotate: -3 },
+import { Stage, Footer, Picture, ramp, BLUE, MUTED } from "../shared";
+const lines = [
+  "library(ggplot2)",
+  "p <- ggplot(df, aes(time, response,",
+  "            colour = condition)) +",
+  "  geom_line() + geom_point() +",
+  "  # … 其余样式",
+  "  theme_minimal(base_size = 12)",
 ];
 export function Hook() {
   const f = useCurrentFrame();
-  const out = ramp(f, 211, 240);
+  const out = 1 - ramp(f, 226, 240);
   return (
     <Stage>
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          transform: `scale(${1 + out * 0.15})`,
-          opacity: 1 - out,
-          filter: `blur(${out * 12}px)`,
-        }}
-      >
+      <div style={{ opacity: out }}>
         <div
           style={{
             position: "absolute",
             left: 104,
-            top: 92,
-            fontSize: 79,
+            top: 94,
+            fontSize: 76,
             fontWeight: 650,
             letterSpacing: -2,
             opacity: ramp(f, 0, 15),
           }}
         >
-          图画好了。
+          让代码与图形，继续对话。
         </div>
         <div
           style={{
             position: "absolute",
-            left: 560 - ramp(f, 70, 190, 0, 30),
-            top: 230 - ramp(f, 40, 190, 0, 42),
-            width: 1010,
-            transform: `perspective(1800px) rotateY(${ramp(f, 0, 170, -6, 2)}deg) rotateZ(${ramp(f, 0, 160, 2, -2)}deg) scale(${ramp(f, 0, 190, 0.89, 1.04)})`,
-            boxShadow: "0 35px 90px #000b",
+            left: 108,
+            top: 207,
+            fontSize: 29,
+            color: MUTED,
+            opacity: ramp(f, 12, 29),
           }}
         >
-          <Picture />
+          AI 写好初稿。最后的细节，在网页里调整。
+        </div>
+        <div
+          style={{
+            position: "absolute",
+            left: 104,
+            top: 336,
+            width: 618,
+            height: 422,
+            background: "#13171c",
+            border: "1px solid #36414c",
+            borderRadius: 12,
+            transform: `translateY(${ramp(f, 12, 35, 35, 0)}px)`,
+            opacity: ramp(f, 12, 35),
+          }}
+        >
+          <div
+            style={{
+              borderBottom: "1px solid #343d46",
+              padding: "22px 26px",
+              fontSize: 22,
+              display: "flex",
+              justifyContent: "space-between",
+            }}
+          >
+            <span>01 / 脚本输入</span>
+            <span style={{ color: BLUE }}>Python · R</span>
+          </div>
+          <pre
+            style={{
+              fontSize: 23,
+              lineHeight: 1.75,
+              padding: "22px 26px",
+              margin: 0,
+              color: "#b6c7dc",
+              fontFamily: "monospace",
+            }}
+          >
+            {lines.map((line, i) => (
+              <div
+                key={line}
+                style={{ opacity: ramp(f, 26 + i * 7, 36 + i * 7) }}
+              >
+                {line || " "}
+              </div>
+            ))}
+          </pre>
           <div
             style={{
               position: "absolute",
-              right: 20,
-              bottom: 18,
-              padding: "10px 16px",
-              background: "#fff",
-              fontSize: 19,
-              color: "#555",
+              bottom: 25,
+              left: 26,
+              fontSize: 21,
+              color: MUTED,
             }}
-          >{`figure_v${Math.min(8, 1 + Math.floor(f / 27))}.R`}</div>
+          >
+            R 示例 · 代码节选
+          </div>
         </div>
-        {messages.map((m, i) => {
-          const a = ramp(f, m.at, m.at + 12);
-          return (
-            <div
-              key={m.text}
-              style={{
-                position: "absolute",
-                left: m.x,
-                top: m.y,
-                opacity: a,
-                transform: `translateY(${(1 - a) * 28}px) rotate(${m.rotate}deg)`,
-                padding: "25px 33px",
-                border: "1px solid #42464d",
-                borderRadius: 13,
-                background: i % 2 ? "#edf2fa" : "#1b1e23",
-                color: i % 2 ? "#15191f" : "#f5f6f7",
-                fontSize: 36,
-                fontWeight: 500,
-                boxShadow: "0 12px 36px #0006",
-              }}
-            >
-              {m.text}
-            </div>
-          );
-        })}
+        <svg
+          style={{
+            position: "absolute",
+            left: 722,
+            top: 357,
+            width: 420,
+            height: 398,
+          }}
+          viewBox="0 0 420 398"
+        >
+          {Array.from({ length: 11 }, (_, i) => (
+            <path
+              key={i}
+              d={`M 0 ${40 + i * 27} C 155 ${40 + i * 27}, 242 ${345 - i * 26}, 420 ${345 - i * 26}`}
+              fill="none"
+              stroke={i % 3 === 0 ? "#9fcfc9" : BLUE}
+              strokeWidth={i % 3 === 0 ? 2.4 : 1.4}
+              pathLength={1}
+              strokeDasharray={1}
+              strokeDashoffset={1 - ramp(f, 53 + i * 2, 111 + i * 2)}
+              opacity={0.42 + i * 0.035}
+            />
+          ))}
+        </svg>
         <div
           style={{
             position: "absolute",
-            left: 205,
-            top: 630,
-            background: "#121519",
-            border: "1px solid #363c46",
-            padding: "17px 30px",
-            fontFamily: "monospace",
-            fontSize: 23,
-            color: BLUE,
-            opacity: ramp(f, 75, 88),
+            left: 1142,
+            top: 313,
+            width: 674,
+            border: "1px solid #53606e",
+            borderRadius: 10,
+            overflow: "hidden",
+            opacity: ramp(f, 75, 105),
+            transform: `translateX(${ramp(f, 75, 112, 34, 0)}px)`,
           }}
         >
-          $ Rscript figure_v{Math.min(8, 1 + Math.floor(f / 27))}.R{" "}
-          <span style={{ color: "#b1b7c0", marginLeft: 80 }}>重新运行…</span>
+          <div
+            style={{
+              padding: "16px 20px",
+              background: "#161c22",
+              fontSize: 21,
+              display: "flex",
+              justifyContent: "space-between",
+            }}
+          >
+            <span>02 / 图形编辑</span>
+            <span style={{ color: BLUE }}>浏览器工作台</span>
+          </div>
+          <Picture />
+        </div>
+        <div
+          style={{
+            position: "absolute",
+            left: 108,
+            top: 844,
+            right: 108,
+            display: "flex",
+            alignItems: "center",
+            gap: 48,
+            fontSize: 31,
+            opacity: ramp(f, 133, 157),
+          }}
+        >
+          <span style={{ color: BLUE }}>那些零散要求</span>
+          <span>“字体换 Arial”</span>
+          <span>“字号小一些”</span>
+          <span>“图例放左下”</span>
         </div>
       </div>
-      <div
-        style={{
-          position: "absolute",
-          left: 104,
-          top: 795,
-          padding: "18px 26px",
-          background: "#090a0bea",
-          borderLeft: "3px solid #9cbfff",
-          fontSize: 46,
-          fontWeight: 600,
-          opacity: ramp(f, 175, 195) * (1 - out),
-        }}
-      >
-        为了几处小改动，又补了一轮 prompt。
-      </div>
-      <Footer label="AI 写初稿，细节还在来回改" />
+      <Footer label="脚本 → 图形 → 支持的修改随导出保留 · 流程示意" />
     </Stage>
   );
 }

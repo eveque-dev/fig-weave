@@ -17,9 +17,9 @@ export function Direct() {
           opacity: ramp(f, 0, 16),
         }}
       >
-        把最后几步，
+        打开网页，
         <br />
-        <span style={{ color: BLUE }}>交给鼠标。</span>
+        <span style={{ color: BLUE }}>接着改图。</span>
       </div>
       <div
         style={{

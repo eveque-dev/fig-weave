@@ -21,12 +21,15 @@ FigWeave 是面向科研与数据可视化的图表编辑项目。直接打开�
 
 ## 32 秒看看怎么用
 
-[![图画好了，还在补 prompt？](assets/figweave/promo-poster.png)](https://fig-weave.com/#film)
+[![代码画图，网页改图。](assets/figweave/promo-poster.png)](https://fig-weave.com/#film)
 
 **“图例放左下角”“字号再小一点”——少补几轮 prompt，直接在图上调。**
-新版短片以曜石黑为主色，只有音效、无人声；同一张图贯穿零散 prompt、字号与图例调整、实际 R 脚本导出和成品展示。
+第三版采用独立设计的“代码与图形编织”封面和开场，展示真实 R 编辑与脚本导出，再介绍三个网页入口；10 类原创合成音效随操作变化，无配乐、无人声。
 [观看 / 下载 MP4](https://github.com/eveque-dev/fig-weave/releases/download/figweave-preview-0.15.0-20260922/FigWeave-promo-1080p.mp4) ·
-[视频源码与复现方式](promo-video/README.md) · [小红书文案](docs/promo/xiaohongshu.md)
+[下载封面](assets/figweave/promo-cover-v3.png) · [视频源码与复现方式](promo-video/README.md) · [小红书文案](docs/promo/xiaohongshu.md)
+
+FigWeave 是基于 Tavotto 的独立派生项目。当前扩展方向是多绘图库在线工作台、
+按引擎导出和中文体验；核心对象编辑能力保留上游来源，详见 [差异与素材说明](docs/promo/identity-and-sources.md)。
 
 ## 现在可以做什么
 

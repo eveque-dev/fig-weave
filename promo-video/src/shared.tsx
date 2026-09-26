@@ -7,8 +7,12 @@ import {
   useCurrentFrame,
 } from "remotion";
 import type { CSSProperties, ReactNode } from "react";
-import { PRODUCT_NAME, WEBSITE_URL } from "../../web/src/lib/brand";
-export { PRODUCT_NAME, WEBSITE_URL };
+import {
+  PRODUCT_NAME,
+  UPSTREAM_PRODUCT_NAME,
+  WEBSITE_URL,
+} from "../../web/src/lib/brand";
+export { PRODUCT_NAME, UPSTREAM_PRODUCT_NAME, WEBSITE_URL };
 export const INK = "#f5f6f7";
 export const MUTED = "#a8adb4";
 export const BLUE = "#9cbfff";

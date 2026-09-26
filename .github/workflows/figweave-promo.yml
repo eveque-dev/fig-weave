@@ -28,9 +28,9 @@ jobs:
           for frame in 45 150 270 360 480 570 675 820 915; do
             npx remotion still FigWeavePromo out/frame-${frame}.png --frame=${frame}
           done
-          cp out/frame-360.png out/FigWeave-promo-poster.png
+          cp ../assets/figweave/promo-cover-v3.png out/FigWeave-promo-poster.png
           ffprobe -v error -show_format -show_streams -of json out/FigWeave-promo-1080p.mp4 > out/media-info.json
-          (cd out && sha256sum FigWeave-promo-1080p.mp4 > SHA256SUMS-video.txt)
+          (cd out && sha256sum FigWeave-promo-1080p.mp4 FigWeave-promo-poster.png > SHA256SUMS-video.txt)
       - uses: actions/upload-artifact@v7
         with:
           name: FigWeave-promo-1080p

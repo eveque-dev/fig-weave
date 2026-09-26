@@ -1,5 +1,13 @@
 import { useCurrentFrame } from "remotion";
-import { Stage, Brand, WEBSITE_URL, BLUE, ramp } from "../shared";
+import {
+  Stage,
+  Brand,
+  PRODUCT_NAME,
+  UPSTREAM_PRODUCT_NAME,
+  WEBSITE_URL,
+  BLUE,
+  ramp,
+} from "../shared";
 export function Closing() {
   const f = useCurrentFrame();
   return (
@@ -25,13 +33,14 @@ export function Closing() {
             letterSpacing: -1,
           }}
         >
-          少补一轮 prompt。多一点直接。
+          代码画图，网页改图。
         </div>
         <div style={{ fontSize: 42, marginTop: 55, color: BLUE }}>
           {WEBSITE_URL.replace("https://", "")}
         </div>
         <div style={{ fontSize: 24, marginTop: 24, color: "#a8adb4" }}>
-          在线体验 · 默认中文 · 曜石黑
+          {PRODUCT_NAME} 独立派生项目 · 基于 {UPSTREAM_PRODUCT_NAME} ·
+          AGPL-3.0-only
         </div>
       </div>
     </Stage>
