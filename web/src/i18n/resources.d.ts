@@ -1615,6 +1615,48 @@ export default interface Resources {
       "stepExportBody": "Python 体验版支持查看修改记录与撤销；R 实验版可导出 PNG、PDF 与带样式的 R 脚本。",
       "stepSource": "从真实绘图开始",
       "stepSourceBody": "选一个内置案例，或打开独立绘图脚本。在浏览器里运行，无需配置本地环境。",
+      "story": {
+        "chapters": "演示步骤",
+        "export": {
+          "body": "点击右上角的导出按钮，下载包含当前修改的高清 PNG，让最后一步在这里完成。",
+          "detail": "演示到这里结束。进入工作台，试试你自己的图。",
+          "title": "改到满意，直接导出。"
+        },
+        "fontSize": "字号",
+        "kicker": "从代码到成图",
+        "legend": {
+          "body": "从右下角移到左上角。看着图调整位置，直到布局符合你的判断。",
+          "detail": "每一次调整都可以撤销。",
+          "title": "图例的位置，你说了算。"
+        },
+        "legendPosition": "图例位置",
+        "lowerRight": "右下角",
+        "objectAxes": "坐标轴",
+        "objectLegend": "图例",
+        "objectSeries": "数据系列",
+        "objectTitle": "标题",
+        "outputSize": "PNG · 宽 2400 像素",
+        "previewLabel": "真实 Matplotlib 图表 · 滚动演示",
+        "reducedHint": "点击步骤，查看改图过程",
+        "scrollHint": "向下滚动，看图表如何改变",
+        "select": {
+          "body": "标题、坐标轴、曲线、图例，都是可以选中的对象。选中它，右侧就是对应的属性。",
+          "detail": "编辑的是图表对象，原始脚本仍然保留。",
+          "title": "点到哪里，就改哪里。"
+        },
+        "skip": "跳过演示，查看支持范围",
+        "source": {
+          "body": "AI 写出第一版 Python 图表。剩下的字号、图例和布局，直接在图上调整。",
+          "detail": "从一张普通的 Matplotlib 图开始。",
+          "title": "图画好了，最后一步用手调。"
+        },
+        "type": {
+          "body": "选中标题，把 9 pt 调到 12 pt。图表即时呈现变化，不必为这一步重新描述一轮 prompt。",
+          "detail": "文字、颜色和样式，在同一个工作台里调整。",
+          "title": "“字号大一点。”这次不用再问。"
+        },
+        "upperLeft": "左上角"
+      },
       "supportIntro": "为你的绘图方式，选择合适的入口。",
       "supportTitle": "当前支持范围",
       "tagline": "让科研图表的最后一步，更直观。",

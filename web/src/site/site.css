@@ -97,3 +97,7 @@
 :root[data-online-background='black'] .site-paper-label { color:#5c5c55; }
 :root[data-online-background='black'] .site-figure-detail { color:#2868b7; border-color:#dfe2e6; }
 :root[data-online-background='black'] .site-example-pair img { background:#fff; border-radius:var(--radius-sm); }
+/* Keep navigation in place while the product scene advances with page scroll. */
+.site-header { position:sticky; top:0; z-index:40; min-height:64px; background:var(--color-bg); }
+.site-header.site-container { max-width:none; padding-inline:max(32px,calc((100vw - 1184px) / 2)); }
+@media(max-width:720px) { .site-header { position:relative; } .site-header.site-container { padding-inline:22px; } }

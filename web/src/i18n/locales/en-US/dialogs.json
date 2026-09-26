@@ -1585,7 +1585,49 @@
     "webChecks": "Web checks",
     "desktopBuild": "Desktop builds",
     "previewRelease": "Preview Release",
-    "issues": "Report an issue"
+    "issues": "Report an issue",
+    "story": {
+      "previewLabel": "Real Matplotlib renders · Scroll demonstration",
+      "kicker": "From code to figure",
+      "chapters": "Demo chapters",
+      "skip": "Skip demo and view supported libraries",
+      "scrollHint": "Scroll to see the figure change",
+      "reducedHint": "Choose a chapter to explore the workflow",
+      "objectTitle": "Title",
+      "objectAxes": "Axes",
+      "objectSeries": "Series",
+      "objectLegend": "Legend",
+      "fontSize": "Font size",
+      "legendPosition": "Legend position",
+      "upperLeft": "Upper left",
+      "lowerRight": "Lower right",
+      "outputSize": "PNG · 2400 pixels wide",
+      "source": {
+        "title": "Your plot is drawn. Finish it by hand.",
+        "body": "AI writes the first Python figure. Adjust the remaining typography, legend and layout directly on the chart.",
+        "detail": "Start with an ordinary Matplotlib figure."
+      },
+      "select": {
+        "title": "Point to it. Then change it.",
+        "body": "Titles, axes, curves and legends are selectable objects. Pick one to see its properties beside the canvas.",
+        "detail": "Edit figure objects while keeping the original script."
+      },
+      "type": {
+        "title": "“Make the title bigger.” Just do it.",
+        "body": "Select the title and change 9 pt to 12 pt. See the result directly, without another round of prompting.",
+        "detail": "Text, color and style in one workspace."
+      },
+      "legend": {
+        "title": "Put the legend where it belongs.",
+        "body": "Move it from the lower right to the upper left. Adjust its position by looking at the figure.",
+        "detail": "Every adjustment can be undone."
+      },
+      "export": {
+        "title": "Happy with it? Export it.",
+        "body": "Use the export button at the top right to download a high-resolution PNG with your current edits.",
+        "detail": "Now open the workspace and try your own figure."
+      }
+    }
   },
   "rStudio": {
     "title": "R / ggplot2 experimental",

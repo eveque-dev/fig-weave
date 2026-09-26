@@ -62,8 +62,8 @@ const RULES: Rule[] = [
         why: '轨道图标角上的问题计数：9px 是 28px 图标钮上唯一放得下两位数的字号',
       },
       '/src/site/SiteApp.tsx': {
-        count: 3,
-        why: '独立网站首页的展示标题：一处 28px 主标题、两处 19px 分区标题；不用于编辑器控件',
+        count: 2,
+        why: '独立网站首页的展示标题：两处 19px 分区标题；不用于编辑器控件',
       },
       '/src/playground/components/PlaygroundLanding.tsx': {
         count: 1,

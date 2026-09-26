@@ -20,7 +20,7 @@ test.beforeAll(async () => {
     if (!file.startsWith(dist + path.sep)) { res.writeHead(404).end(); return }
     try {
       const content = readFileSync(file)
-      const mime: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.webp': 'image/webp', '.zip': 'application/zip' }
+      const mime: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.png': 'image/png', '.zip': 'application/zip' }
       res.writeHead(200, { 'Content-Type': mime[path.extname(file)] ?? 'application/octet-stream' }).end(content)
     } catch { res.writeHead(404).end() }
   })
@@ -146,13 +146,15 @@ test('public workspaces remain readable at mobile and desktop widths', async ({ 
 })
 
 // Subject: fresh online browser with an English OS locale, then explicit preferences.
-test('online defaults to Chinese and preserves language and background choices', async ({ browser }) => {
+test('online always opens obsidian black and preserves language choice', async ({ browser }) => {
   const context = await browser.newContext({ locale: 'en-US', viewport: { width: 1280, height: 900 } })
   const page = await context.newPage()
   try {
     await page.addInitScript(() => {
       Object.defineProperty(navigator, 'connection', { configurable: true, value: { saveData: true } })
     })
+    await page.goto(origin)
+    await page.evaluate(() => localStorage.setItem('tavotto.onlineBackground', 'sage'))
     for (const route of ['', 'try/', 'r/', 'charts/']) {
       await page.goto(`${origin}/${route}`)
       await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
@@ -168,7 +170,7 @@ test('online defaults to Chinese and preserves language and background choices',
     }
     expect(colors.size).toBe(7)
     await page.reload()
-    await expect(page.locator('html')).toHaveAttribute('data-online-background', 'lavender')
+    await expect(page.locator('html')).toHaveAttribute('data-online-background', 'black')
     await page.locator('[data-site-language]').click()
     await expect(page.locator('html')).toHaveAttribute('lang', 'en-US')
     await page.reload()
@@ -176,7 +178,7 @@ test('online defaults to Chinese and preserves language and background choices',
     for (const route of ['try/', 'r/']) {
       await page.goto(`${origin}/${route}`)
       await expect(page.locator('html')).toHaveAttribute('lang', 'en-US')
-      await expect(page.locator('html')).toHaveAttribute('data-online-background', 'lavender')
+      await expect(page.locator('html')).toHaveAttribute('data-online-background', 'black')
     }
   } finally { await context.close() }
 })
@@ -300,4 +302,61 @@ test('Matplotlib PNG download includes edits and undo restores the original', as
   expect(await downloadPng()).toBe(original)
   await page.setViewportSize({ width: 390, height: 844 })
   await expect(button).toBeVisible()
+})
+
+// Subject: the built homepage's scene position and visible figure at real scroll offsets.
+// A changing chapter label alone is insufficient: the scene must stay pinned and the
+// rendered figure must change, then restore when scrolling back.
+test('homepage scroll keeps the workbench pinned and reverses figure changes', async ({ page }) => {
+  const { horizontalOffenders } = await import('./overflow')
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport)
+    await page.goto(`${origin}/?lang=zh`)
+    const story = page.locator('[data-scroll-story]')
+    const scene = page.locator('[data-story-scene]')
+    const paper = page.locator('[data-story-paper]')
+    await expect(story).toHaveAttribute('data-chapter', 'source')
+    await expect.poll(() => paper.locator('img').evaluateAll((images) => images.every((image) => (image as HTMLImageElement).naturalWidth > 0))).toBe(true)
+    const originalWidth = (await paper.boundingBox())!.width
+    await page.mouse.wheel(0, 800)
+    await expect.poll(() => paper.boundingBox().then((box) => box!.width)).toBeLessThan(originalWidth * 0.85)
+    await page.locator('[data-story-jump="select"]').click()
+    await expect(story).toHaveAttribute('data-chapter', 'select')
+    const pinnedY = (await scene.boundingBox())!.y
+    const selectedScroll = await page.evaluate(() => window.scrollY)
+    const visibleFigure = () => paper.locator('img').evaluateAll((images) => images.filter((img) => getComputedStyle(img).opacity === '1').map((img) => (img as HTMLImageElement).src))
+    const sourceFigure = await visibleFigure()
+    expect(sourceFigure).toHaveLength(1)
+    for (const chapter of ['type', 'legend', 'export']) {
+      await page.locator(`[data-story-jump="${chapter}"]`).click()
+      await expect(story).toHaveAttribute('data-chapter', chapter)
+      expect((await scene.boundingBox())!.y).toBeCloseTo(pinnedY, 0)
+      expect(await visibleFigure()).not.toEqual(sourceFigure)
+      expect(await horizontalOffenders(page, '#root')).toEqual([])
+    }
+    await page.screenshot({ path: test.info().outputPath(`scroll-export-${viewport.width}.png`) })
+    await page.mouse.wheel(0, selectedScroll - await page.evaluate(() => window.scrollY))
+    await expect(story).toHaveAttribute('data-chapter', 'select')
+    expect(await visibleFigure()).toEqual(sourceFigure)
+    expect((await scene.boundingBox())!.y).toBeCloseTo(pinnedY, 0)
+    await page.locator('[data-story-skip]').click()
+    await expect(page).toHaveURL(/#support$/)
+    await expect.poll(async () => (await page.locator('#support').boundingBox())!.y).toBeLessThan(100)
+  }
+})
+
+test('homepage reduced motion uses keyboard chapters without a pinned scroll scene', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`${origin}/?lang=zh`)
+  const story = page.locator('[data-scroll-story]')
+  await expect(story).toHaveAttribute('data-chapter', 'source')
+  await expect.poll(() => page.locator('[data-story-pin]').evaluate((el) => getComputedStyle(el).position)).toBe('relative')
+  const chapter = page.locator('[data-story-jump="legend"]')
+  await chapter.focus()
+  const before = await page.evaluate(() => window.scrollY)
+  await chapter.press('Enter')
+  await expect(story).toHaveAttribute('data-chapter', 'legend')
+  expect(await page.evaluate(() => window.scrollY)).toBe(before)
+  await expect(page.locator('[data-site-try]')).toBeInViewport()
 })

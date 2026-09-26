@@ -5,9 +5,9 @@ import { setOnlineLocale } from '@/lib/onlineLocale'
 import { DESKTOP_PREVIEW, FIGWEAVE_REPO_URL, FIGWEAVE_WEB_CHECKS_URL, FIGWEAVE_DESKTOP_BUILDS_URL, PRODUCT_NAME, REPO_URL, UPSTREAM_PRODUCT_NAME, WEBSITE_URL } from '@/lib/brand'
 import { BackgroundPicker } from '@/components/ui/BackgroundPicker'
 import { Button } from '@/components/ui/Button'
-import { ArrowUpRight, Check, FileCodeCorner, MousePointerClick, Download, ShieldCheck } from '@/components/ui/icons'
+import { ArrowUpRight, FileCodeCorner, MousePointerClick, Download, ShieldCheck } from '@/components/ui/icons'
 import { ICON_SIZE } from '@/components/ui/Icon'
-import preview from '@/playground/generated/kinetics.webp'
+import { ScrollShowcase } from './ScrollShowcase'
 import calibration from '@/playground/generated/calibration.webp'
 import spectrum from '@/playground/generated/spectrum.webp'
 import exampleManifest from '@/playground/generated/examples-manifest.json'
@@ -15,8 +15,6 @@ import promoPoster from '../../../assets/figweave/promo-poster.png'
 import promoVideo from '../../../assets/figweave/promo.mp4'
 import './site.css'
 
-const PREVIEW_FILENAME = 'kinetics.py'
-const PREVIEW_INDEX = '01 / 03'
 const R_LIBRARY = 'ggplot2'
 
 /** Public entry point: previews are real example covers; execution starts in /try/. */
@@ -50,27 +48,7 @@ export function SiteApp() {
       </header>
 
       <main id="main" className="site-container">
-        <section className="site-hero">
-          <div className="site-hero-copy">
-            <p className="site-eyebrow"><span className="site-dot" aria-hidden />{t('site.previewLabel')}</p>
-            <h1 className="site-headline text-[28px]">{t('site.tagline')}</h1>
-            <p className="site-intro">{t('site.intro')}</p>
-            <div className="site-actions">
-              <a data-site-try href={tryHref} className="site-primary">{t('site.tryAction')}<ArrowUpRight aria-hidden size={ICON_SIZE.md} /></a>
-              <a href="#workflow" className="site-text-link">{t('site.workflow')}<ArrowUpRight aria-hidden /></a>
-            </div>
-            <p className="site-note">{t('site.tryNote')}</p>
-          </div>
-          <figure className="site-figure">
-            <div className="site-figure-bar"><span className="site-file"><FileCodeCorner aria-hidden size={ICON_SIZE.md} />{PREVIEW_FILENAME}</span><span>{t('site.figurePreview')}</span></div>
-            <div className="site-figure-paper">
-              <div className="site-paper-label"><span>{t('site.figureLabel')}</span><span aria-hidden>{PREVIEW_INDEX}</span></div>
-              <img src={preview} width={exampleManifest.kinetics.width} height={exampleManifest.kinetics.height} alt={t('site.previewAlt')} fetchPriority="high" />
-              <div className="site-figure-detail"><MousePointerClick aria-hidden size={ICON_SIZE.md} /><span>{t('site.editHint')}</span></div>
-            </div>
-            <figcaption><Check aria-hidden /><span>{t('site.previewCaption')}</span></figcaption>
-          </figure>
-        </section>
+        <ScrollShowcase tryHref={tryHref} />
 
         <div className="site-library-strip">
           <p>{t('site.libraryLabel')}</p>
@@ -85,7 +63,7 @@ export function SiteApp() {
           </video>
         </section>
 
-        <section id="workflow" className="site-section">
+        <section id="guide" className="site-section">
           <div className="site-section-heading"><p className="site-eyebrow">{t('site.workflow')}</p><h2>{t('site.workflowTitle')}</h2><p>{t('site.workflowIntro')}</p></div>
           <div className="site-workflow-grid">
             <article><span className="site-step">01</span><FileCodeCorner aria-hidden size={ICON_SIZE.lg} /><h3>{t('site.stepSource')}</h3><p>{t('site.stepSourceBody')}</p></article>

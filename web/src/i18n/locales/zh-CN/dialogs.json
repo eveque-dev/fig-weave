@@ -1566,7 +1566,49 @@
     "webChecks": "网页检查",
     "desktopBuild": "桌面构建",
     "previewRelease": "预览 Release",
-    "issues": "反馈问题"
+    "issues": "反馈问题",
+    "story": {
+      "previewLabel": "真实 Matplotlib 图表 · 滚动演示",
+      "kicker": "从代码到成图",
+      "chapters": "演示步骤",
+      "skip": "跳过演示，查看支持范围",
+      "scrollHint": "向下滚动，看图表如何改变",
+      "reducedHint": "点击步骤，查看改图过程",
+      "objectTitle": "标题",
+      "objectAxes": "坐标轴",
+      "objectSeries": "数据系列",
+      "objectLegend": "图例",
+      "fontSize": "字号",
+      "legendPosition": "图例位置",
+      "upperLeft": "左上角",
+      "lowerRight": "右下角",
+      "outputSize": "PNG · 宽 2400 像素",
+      "source": {
+        "title": "图画好了，最后一步用手调。",
+        "body": "AI 写出第一版 Python 图表。剩下的字号、图例和布局，直接在图上调整。",
+        "detail": "从一张普通的 Matplotlib 图开始。"
+      },
+      "select": {
+        "title": "点到哪里，就改哪里。",
+        "body": "标题、坐标轴、曲线、图例，都是可以选中的对象。选中它，右侧就是对应的属性。",
+        "detail": "编辑的是图表对象，原始脚本仍然保留。"
+      },
+      "type": {
+        "title": "“字号大一点。”这次不用再问。",
+        "body": "选中标题，把 9 pt 调到 12 pt。图表即时呈现变化，不必为这一步重新描述一轮 prompt。",
+        "detail": "文字、颜色和样式，在同一个工作台里调整。"
+      },
+      "legend": {
+        "title": "图例的位置，你说了算。",
+        "body": "从右下角移到左上角。看着图调整位置，直到布局符合你的判断。",
+        "detail": "每一次调整都可以撤销。"
+      },
+      "export": {
+        "title": "改到满意，直接导出。",
+        "body": "点击右上角的导出按钮，下载包含当前修改的高清 PNG，让最后一步在这里完成。",
+        "detail": "演示到这里结束。进入工作台，试试你自己的图。"
+      }
+    }
   },
   "rStudio": {
     "title": "R / ggplot2 实验版",
