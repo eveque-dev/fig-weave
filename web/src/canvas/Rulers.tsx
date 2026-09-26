@@ -1,3 +1,4 @@
+import { useOnlineBackground } from '@/lib/onlineAppearance'
 import { useEffect, useRef } from 'react'
 import { useDocumentStore } from '@/store/documentStore'
 import { useInteractionStore } from '@/store/interactionStore'
@@ -51,7 +52,7 @@ function draw(
   // 页面范围底纹，一眼看出纸面在哪
   const p0 = axis === 'x' ? mmToViewX(0, t) : mmToViewY(0, t)
   const p1 = axis === 'x' ? mmToViewX(pageMm, t) : mmToViewY(pageMm, t)
-  ctx.fillStyle = '#FFFFFF'
+  ctx.fillStyle = css.getPropertyValue('--color-surface').trim() || '#FFFFFF'
   if (axis === 'x') ctx.fillRect(p0, 0, p1 - p0, h)
   else ctx.fillRect(0, p0, w, p1 - p0)
 
@@ -132,6 +133,7 @@ function draw(
 }
 
 function useRuler(axis: 'x' | 'y', lengthPx: number, pageMm: number) {
+  const appearance = useOnlineBackground()
   const ref = useRef<HTMLCanvasElement>(null)
   const zoom = useViewportStore((s) => s.zoom)
   const panX = useViewportStore((s) => s.panX)
@@ -143,7 +145,7 @@ function useRuler(axis: 'x' | 'y', lengthPx: number, pageMm: number) {
     if (!canvas || !lengthPx) return
     const t: ViewTransform = { zoom, panX, panY, originX: 0, originY: 0 }
     draw(canvas, axis, t, lengthPx, pageMm, cursor ? (axis === 'x' ? cursor.x : cursor.y) : null)
-  }, [axis, lengthPx, pageMm, zoom, panX, panY, cursor])
+  }, [axis, lengthPx, pageMm, zoom, panX, panY, cursor, appearance])
 
   return ref
 }

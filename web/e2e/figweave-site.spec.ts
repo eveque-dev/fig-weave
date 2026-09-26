@@ -156,16 +156,17 @@ test('online defaults to Chinese and preserves language and background choices',
     for (const route of ['', 'try/', 'r/', 'charts/']) {
       await page.goto(`${origin}/${route}`)
       await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
+      await expect(page.locator('html')).toHaveAttribute('data-online-background', 'black')
     }
     await page.goto(origin)
     const colors = new Set<string>()
-    for (const choice of ['paper', 'white', 'slate', 'blue', 'sage', 'lavender']) {
+    for (const choice of ['black', 'paper', 'white', 'slate', 'blue', 'sage', 'lavender']) {
       await page.locator('[data-background-picker]').click()
       await page.locator(`[data-background-choice="${choice}"]`).click()
       await expect(page.locator('html')).toHaveAttribute('data-online-background', choice)
       colors.add(await page.locator('.site-page').evaluate((el) => getComputedStyle(el).backgroundColor))
     }
-    expect(colors.size).toBe(6)
+    expect(colors.size).toBe(7)
     await page.reload()
     await expect(page.locator('html')).toHaveAttribute('data-online-background', 'lavender')
     await page.locator('[data-site-language]').click()

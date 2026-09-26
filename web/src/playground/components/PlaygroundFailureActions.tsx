@@ -37,7 +37,7 @@ export function PlaygroundFailureActions({
       </button>
       <a
         href={playgroundDesktopHref(currentLocale())}
-        className="flex h-7 items-center gap-1.5 rounded-sm bg-ink px-3 text-xs text-white transition-opacity hover:opacity-90"
+        className="flex h-7 items-center gap-1.5 rounded-sm bg-ink px-3 text-xs text-on-primary transition-opacity hover:opacity-90"
       >
         <Download size={ICON_SIZE.sm} aria-hidden />
         {pg('downloadDesktop')}

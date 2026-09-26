@@ -1,5 +1,11 @@
+import './workspace.css'
+import { Button, IconButton } from '@/components/ui/Button'
+import { useViewportStore } from '@/store/viewportStore'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  Layers,
+  SlidersHorizontal,
+  MousePointerClick,
   Check,
   Download,
   FileCodeCorner,
@@ -21,7 +27,7 @@ import { useEngineSync } from '@/hooks/useEngineSync'
 import { runUndoRedo } from '@/hooks/useKeyboard'
 import { currentLocale, formatMessage, msg, t as translate, type UiMessage } from '@/i18n'
 import { PRODUCT_NAME, playgroundHomeHref, playgroundDesktopHref } from '@/lib/brand'
-import { cn } from '@/lib/utils'
+import { cn, MOD } from '@/lib/utils'
 import { useDocumentStore } from '@/store/documentStore'
 import { usePanelRender } from '@/store/renderStore'
 import type { PanelObject } from '@/types/document'
@@ -309,7 +315,7 @@ export function PlaygroundApp() {
         </button>
         <a
           href={playgroundDesktopHref(currentLocale())}
-          className="flex h-7 items-center gap-1.5 rounded-sm bg-ink px-2.5 text-xs text-white"
+          className="flex h-7 items-center gap-1.5 rounded-sm bg-ink px-2.5 text-xs text-on-primary"
         >
           <Download size={ICON_SIZE.sm} />
           {pg('downloadDesktop')}
@@ -582,6 +588,7 @@ function EditorView({
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  const zoom = useViewportStore((s) => s.readoutZoom)
   const overrideCount = panel?.overrides.length ?? 0
 
   /**
@@ -640,59 +647,35 @@ function EditorView({
   }
 
   return (
-    <div className="flex h-full w-full flex-col bg-bg text-ink">
-      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-surface px-3">
-        <BrandLink />
-        <span className="hidden text-xs text-ink-3 sm:inline">{pg('title')}</span>
-
-        <span className="mx-1 h-4 w-px bg-border" />
-        <button
-          onClick={openSourceDialog}
-          className="flex h-7 items-center gap-1.5 rounded-sm px-2 font-mono text-xs text-ink-2 hover:bg-surface-2"
-          title={pg('sourceNote')}
-        >
-          <FileCodeCorner size={ICON_SIZE.sm} aria-hidden />
-          <span className="max-w-[16ch] truncate">{session.scriptName}</span>
-          <IntegrityBadge integrity={integrity} />
-        </button>
-        <button
-          onClick={() => setShowPatches((v) => !v)}
-          className="h-7 rounded-sm px-2 font-mono text-xs text-ink-3 hover:bg-surface-2"
-        >
-          {pg('overrides', { count: overrideCount })}
-        </button>
-
-        <span className="mx-1 h-4 w-px bg-border" />
-        <IconButton label={translate('topbar.undo', { ns: 'workspace' })} disabled={!canUndo} onClick={() => runUndoRedo(false)}>
-          <Undo2 size={ICON_SIZE.md} />
-        </IconButton>
-        <IconButton label={translate('topbar.redo', { ns: 'workspace' })} disabled={!canRedo} onClick={() => runUndoRedo(true)}>
-          <Redo2 size={ICON_SIZE.md} />
-        </IconButton>
-        <button
-          onClick={resetEdits}
-          disabled={overrideCount === 0}
-          className="h-7 rounded-sm px-2 text-xs text-ink-2 hover:bg-surface-2 disabled:opacity-40"
-        >
-          {pg('resetEdits')}
-        </button>
-
-        <span className="flex-1" />
-        <RenderState rendering={rendering} pending={pending} error={renderError} />
-        <button onClick={onLoadAnother} className="h-7 rounded-sm px-2 text-xs text-ink-2 hover:bg-surface-2">
-          {backLabel(origin)}
-        </button>
-        <BackgroundPicker />
-        <button
-          onClick={onSwitchLocale}
-          className="h-7 rounded-sm px-2 text-xs text-ink-3 hover:bg-surface-2"
-          lang={currentLocale() === 'zh-CN' ? 'en' : 'zh-Hans'}
-        >
-          {currentLocale() === 'zh-CN' ? 'EN' : '中文'}
-        </button>
+    <div className="fw-workspace flex h-full w-full flex-col bg-bg text-ink" data-playground-workspace>
+      <header className="fw-filebar">
+        <div className="fw-brand"><BrandLink /><span>{pg('workspaceTitle')}</span></div>
+        <Button data-playground-source onClick={openSourceDialog} className="fw-document" title={pg('sourceNote')}>
+          <FileCodeCorner size={ICON_SIZE.md} aria-hidden />
+          <span className="truncate">{session.scriptName}</span>
+          <span className="fw-integrity"><IntegrityBadge integrity={integrity} /></span>
+        </Button>
+        <div className="fw-export-slot"><PlaygroundExport client={session.client} panelId={panelId} busy={busy} /></div>
       </header>
-
-      <PlaygroundExport client={session.client} panelId={panelId} busy={busy} />
+      <div className="fw-toolbar">
+        <div className="fw-toolgroup">
+          <Button data-playground-another onClick={onLoadAnother}>{backLabel(origin)}</Button>
+          <span className="fw-divider" aria-hidden />
+          <IconButton label={translate('topbar.undo', { ns: 'workspace' })} disabled={!canUndo} onClick={() => runUndoRedo(false)}>
+            <Undo2 size={ICON_SIZE.md} />
+          </IconButton>
+          <IconButton label={translate('topbar.redo', { ns: 'workspace' })} disabled={!canRedo} onClick={() => runUndoRedo(true)}>
+            <Redo2 size={ICON_SIZE.md} />
+          </IconButton>
+          <Button onClick={resetEdits} disabled={overrideCount === 0}>{pg('resetEdits')}</Button>
+        </div>
+        <div className="fw-toolgroup fw-preferences">
+          <BackgroundPicker />
+          <Button data-playground-locale onClick={onSwitchLocale} lang={currentLocale() === 'zh-CN' ? 'en' : 'zh-Hans'}>
+            {currentLocale() === 'zh-CN' ? 'EN' : '中文'}
+          </Button>
+        </div>
+      </div>
 
       {/* 不变式失效：Tavotto 保证碰不到源文件，而工作区里那个文件确实变了。
           这不是一条提示，是「别再信这个会话」——所以常驻、不可关、带技术细节。 */}
@@ -728,14 +711,16 @@ function EditorView({
       <p className="shrink-0 border-b border-border bg-surface px-3 py-1.5 text-xs text-ink-3 md:hidden">
         {pg('mobileNote')}
       </p>
-      <div className="flex min-h-0 flex-1">
-        <aside className="hidden w-[224px] shrink-0 flex-col overflow-y-auto border-r border-border bg-surface lg:flex">
-          <ElementTree />
+      <div className="fw-workarea flex min-h-0 flex-1">
+        <aside className="fw-panel fw-layers hidden w-[240px] shrink-0 flex-col bg-surface lg:flex">
+          <div className="fw-panel-heading"><Layers size={ICON_SIZE.md} aria-hidden /><h2>{pg('workspaceLayers')}</h2></div>
+          <p className="fw-panel-caption">{pg('workspaceLayersHint')}</p>
+          <div className="min-h-0 flex-1 overflow-y-auto"><ElementTree /></div>
         </aside>
         {/* CanvasStage 的根是 flex-1：外面必须是 flex 容器（见 McpApp 的注）。
             relative 是给首次引导那张小卡定位用的——它浮在画布左下角，
             不遮树、不遮属性页、无全屏遮罩 */}
-        <div className="relative flex min-h-0 min-w-0 flex-1">
+        <div className="fw-canvas relative flex min-h-0 min-w-0 flex-1">
           <CanvasStage />
           {/* 属性页收起时不出引导：第 2 步指的字号控件就在属性页里，窄屏上
               它整个不存在。引导跟着属性页走，不自己另定一个宽度（同源对见
@@ -754,9 +739,20 @@ function EditorView({
             />
           )}
         </div>
-        <aside className="hidden w-[304px] shrink-0 flex-col overflow-y-auto border-l border-border bg-surface md:flex">
-          <ElementInspector panel={panel} />
+        <aside className="fw-panel fw-inspector hidden w-[304px] shrink-0 flex-col bg-surface md:flex">
+          <div className="fw-panel-heading"><SlidersHorizontal size={ICON_SIZE.md} aria-hidden /><h2>{pg('workspaceProperties')}</h2></div>
+          <p className="fw-panel-caption">{pg('workspacePropertiesHint')}</p>
+          <div className="min-h-0 flex-1 overflow-y-auto"><ElementInspector panel={panel} /></div>
         </aside>
+      </div>
+
+      <div className="fw-statusbar">
+        <RenderState rendering={rendering} pending={pending} error={renderError} />
+        <Button data-playground-patches onClick={() => setShowPatches((v) => !v)} active={showPatches}>
+          {pg('overrides', { count: overrideCount })}
+        </Button>
+        <span className="fw-canvas-hint"><MousePointerClick size={ICON_SIZE.sm} aria-hidden />{pg('workspaceGestureHint', { mod: MOD })}</span>
+        <span className="fw-zoom">{Math.round(zoom * 100)}%</span>
       </div>
 
       {overrideCount > 0 && !cueDismissed && (
@@ -905,30 +901,6 @@ function SourceDialog({
         <IntegrityDetails integrity={integrity} />
       </div>
     </div>
-  )
-}
-
-function IconButton({
-  label,
-  disabled,
-  onClick,
-  children,
-}: {
-  label: string
-  disabled?: boolean
-  onClick: () => void
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-ink-2 hover:bg-surface-2 disabled:opacity-40"
-    >
-      {children}
-    </button>
   )
 }
 

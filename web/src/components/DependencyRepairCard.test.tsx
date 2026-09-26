@@ -340,8 +340,8 @@ describe('这台机器上已有的解释器（ADR 0044）', () => {
     expect(row.textContent).toContain('/usr/local/bin/python3')
     expect(row.textContent).toContain('Python 3.12.4')
     // 它是首选：不装、不联网、不改任何环境，比两种安装都便宜
-    expect(button!.className).toContain('text-white') // primary
-    expect(byName(en('repairUseProjectEnv'))!.className).not.toContain('text-white')
+    expect(button!.className).toContain('text-on-primary') // primary
+    expect(byName(en('repairUseProjectEnv'))!.className).not.toContain('text-on-primary')
   })
 
   it('点下去走项目环境 PATCH（带 module），不经安装计划，并把失败的渲染重新排上', async () => {

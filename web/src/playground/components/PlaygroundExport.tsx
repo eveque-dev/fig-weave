@@ -65,13 +65,13 @@ export function PlaygroundExport({ client, panelId, busy }: {
     }
   }
 
-  return <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-2">
-    <Button variant="primary" data-playground-export disabled={busy || exporting} onClick={() => void download()}>
+  return <div className="fw-export">
+    <Button variant="primary" title={pg('exportPngNote')} data-playground-export disabled={busy || exporting} onClick={() => void download()}>
       {exporting ? <LoaderCircle size={ICON_SIZE.sm} aria-hidden /> : <Download size={ICON_SIZE.sm} aria-hidden />}
       {pg(exporting ? 'exportingPng' : 'exportPng')}
     </Button>
-    <span className="text-xs text-ink-3">{pg('exportPngNote')}</span>
-    {ready && <a data-playground-download href={ready.url} download={ready.filename} className="text-xs text-ink underline">{pg('downloadPngReady')}</a>}
-    {failed && <span role="alert" className="text-xs text-danger">{pg('exportPngFailed')}</span>}
+    <span className="fw-export-note">{pg('exportPngNote')}</span>
+    {ready && <a data-playground-download href={ready.url} download={ready.filename} className="fw-download-ready text-xs text-ink underline">{pg('downloadPngReady')}</a>}
+    {failed && <span role="alert" className="fw-download-ready text-xs text-danger">{pg('exportPngFailed')}</span>}
   </div>
 }

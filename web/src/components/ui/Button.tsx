@@ -42,7 +42,7 @@ const VARIANTS: Record<Variant, string> = {
   secondary:
     'border border-border bg-surface text-ink hover:border-border-strong hover:bg-surface-hover active:bg-surface-active data-[state=open]:bg-surface-active',
   // 主动作用近黑色；蓝色只留给选择 / 焦点 / 链接
-  primary: 'bg-ink text-white hover:bg-ink/90 active:bg-ink/95',
+  primary: 'bg-ink text-on-primary hover:bg-ink/90 active:bg-ink/95',
   danger: 'text-danger hover:bg-danger-subtle active:bg-danger/15',
 }
 

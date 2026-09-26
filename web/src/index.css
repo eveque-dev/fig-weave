@@ -57,6 +57,7 @@
   --color-field: #f1f0ec;
   --color-field-hover: #edece8;
 
+  --color-on-primary: #ffffff;
   --color-ink: #1b1b18;
   /* 次级正文：≥5.9:1（#f2f2ef 上），可放心用于说明文字 */
   --color-ink-2: #5c5c55;
@@ -702,10 +703,41 @@
 :root[data-online-background='blue'] { --color-bg: var(--online-bg-blue); --color-field: #e7eff9; --color-field-hover: #e0eaf5; --color-canvas: #dce7f4; }
 :root[data-online-background='sage'] { --color-bg: var(--online-bg-sage); --color-field: #e6eee7; --color-field-hover: #e0e9e1; --color-canvas: #dde8df; }
 :root[data-online-background='lavender'] { --color-bg: var(--online-bg-lavender); --color-field: #eee8f5; --color-field-hover: #e7dfef; --color-canvas: #e5dfee; }
-:root[data-online-background]:not([data-online-background='paper']) { --color-ink-3: #585c63; }
+:root[data-online-background]:not([data-online-background='paper']):not([data-online-background='black']) { --color-ink-3: #585c63; }
 [data-background-swatch='paper'] { background: var(--online-bg-paper); }
 [data-background-swatch='white'] { background: var(--online-bg-white); }
 [data-background-swatch='slate'] { background: var(--online-bg-slate); }
 [data-background-swatch='blue'] { background: var(--online-bg-blue); }
 [data-background-swatch='sage'] { background: var(--online-bg-sage); }
 [data-background-swatch='lavender'] { background: var(--online-bg-lavender); }
+
+/* FigWeave's dark online theme changes application chrome, never figure colors. */
+:root[data-online-background='black'] {
+  color-scheme:dark;
+  --color-bg:#090a0b;
+  --color-canvas:#101214;
+  --color-surface:#17191c;
+  --color-surface-2:#1e2125;
+  --color-field:#26292e;
+  --color-field-hover:#30343a;
+  --color-ink:#f5f6f7;
+  --color-ink-2:#c3c7ce;
+  --color-ink-3:#a7aeb8;
+  --color-ink-faint:#707780;
+  --color-on-primary:#101214;
+  --color-border:rgba(255,255,255,.12);
+  --color-border-strong:rgba(255,255,255,.22);
+  --color-border-control:#737e8d;
+  --color-accent:#a9caff;
+  --color-accent-subtle:#203049;
+  --color-sel:#2f6fed;
+  --color-danger:#ff9b87;
+  --color-danger-subtle:#3c2523;
+  --color-ok:#93d9af;
+  --color-ok-subtle:#1d3529;
+  --color-warn:#f3c578;
+  --color-warn-subtle:#392e1d;
+  --shadow-pop:0 0 0 1px rgba(255,255,255,.12),0 8px 24px rgba(0,0,0,.3);
+  --shadow-dialog:0 0 0 1px rgba(255,255,255,.12),0 24px 64px rgba(0,0,0,.5);
+}
+[data-background-swatch='black'] { background:#090a0b; }

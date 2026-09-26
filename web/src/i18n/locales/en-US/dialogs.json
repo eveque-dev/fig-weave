@@ -439,7 +439,13 @@
     "exportingPng": "Generating…",
     "exportPngNote": "2400 px wide · Includes edits at the time you click export",
     "exportPngFailed": "Export failed. Please retry. If the session has ended, run the script again.",
-    "downloadPngReady": "Image ready — download PNG"
+    "downloadPngReady": "Image ready — download PNG",
+    "workspaceTitle": "Figure studio",
+    "workspaceLayers": "Figure elements",
+    "workspaceLayersHint": "Select an object here or on the canvas",
+    "workspaceProperties": "Style & properties",
+    "workspacePropertiesHint": "Select an object to adjust text, color and position",
+    "workspaceGestureHint": "Click to select · Drag to adjust · {{mod}} + scroll to zoom"
   },
   "presets": {
     "insertSymbolAria": "Insert symbol {{symbol}}",
@@ -1636,7 +1642,8 @@
     "blue": "Blue",
     "sage": "Sage",
     "lavender": "Lavender",
-    "note": "Changes the interface background, not your figures or exports."
+    "note": "Changes the interface background, not your figures or exports.",
+    "black": "Obsidian"
   },
   "charts": {
     "source": "Python script",

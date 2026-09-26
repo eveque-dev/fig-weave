@@ -21,6 +21,7 @@
 | surface-hover | `surface-hover` | ink 5% | hover。三档里最弱 |
 | surface-active | `surface-active` | ink 8% | 按下、小 chip 的静态底 |
 | surface-selected | `selected` | ink 10% | 选中：hover 的两倍，白面板与纸底上都成立（2026-09-15 打磨批次 A，此前固定 #ebebe6 在纸底上只有 1.07:1）；配字重 / 对勾再说一遍 |
+| 主动作文字 | `on-primary` | `#ffffff` | 主按钮文字；在线黑色主题覆盖为深黑，配浅色主按钮 |
 | ink-1 | `ink` | `#1b1b18` | 主文字，不是纯黑 |
 | ink-2 | `ink-2` | `#5c5c55` | 次级文字、标签 |
 | ink-3 | `ink-3` | `#6b6b64` | 元数据、单位、占位。仍 ≥4.5:1 |
@@ -736,3 +737,12 @@ reduced-motion 契约）；68/85 命中 `foundation.test`（533 处）；弹簧 
 官网、Python 在线体验、R 工作区共用 `BackgroundPicker`。六种浅色背景的颜色值只在
 `index.css` 声明，由色块与页面共同消费；偏好只存 `tavotto.onlineBackground`，不进文档。
 只调整应用底、输入框底和工作区底；白色图纸、图内属性和导出颜色不受影响。
+
+## FigWeave 在线工作台（2026-09-26）
+
+用户要求黑底白字。在线默认曜石黑，覆盖背景、面板、输入框与文字等语义 token；
+既有手动主题偏好保留。桌面默认值不变，图表画纸与导出颜色不跟随 UI 主题。
+主按钮文字统一使用 `on-primary`；浅色主题为白字，深色主题为黑字。
+在线编辑器采用文件栏、工具栏、图内元素／画布／属性三区与底部状态栏，导出固定在右上角。
+品牌标题为 18px，图内元素与属性标题 13px；交互控件继续复用公共原语。
+设计参考：https://github.com/penpot/penpot 与 https://github.com/excalidraw/excalidraw 。

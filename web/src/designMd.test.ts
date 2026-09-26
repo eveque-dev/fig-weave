@@ -237,7 +237,8 @@ function expectedClasses(prop: string, raw: string): string[] {
       if (!ref || ref[0] !== 'colors') throw new Error(`backgroundColor 只认 {colors.x}：${raw}`)
       return [`bg-${ref[1]}`]
     case 'textColor':
-      if (value === '#ffffff') return ['text-white']
+      // Preserve semantic token identity even when its light-theme value is white.
+      if (!ref && value === '#ffffff') return ['text-white']
       if (!ref || ref[0] !== 'colors') throw new Error(`textColor 只认 {colors.x} 或 #ffffff：${raw}`)
       return [`text-${ref[1]}`]
     default:

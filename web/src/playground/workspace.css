@@ -1,0 +1,36 @@
+/* Online editor chrome; shared canvas and property controls retain their behavior. */
+.fw-workspace { isolation:isolate; }
+.fw-filebar { display:flex; align-items:center; gap:24px; min-height:68px; padding:12px 24px; background:var(--color-surface); border-bottom:1px solid var(--color-border); z-index:30; }
+.fw-brand { display:flex; align-items:baseline; gap:12px; flex-shrink:0; }
+.fw-brand > a { font-size:18px; letter-spacing:-.6px; }
+.fw-brand > span { font-size:11px; color:var(--color-ink-3); }
+.fw-document { min-width:0; max-width:420px; border-left:1px solid var(--color-border); border-radius:0; }
+.fw-integrity { font-size:11px; font-weight:400; }
+.fw-export-slot { margin-left:auto; flex-shrink:0; }
+.fw-export { position:relative; display:flex; align-items:center; gap:12px; }
+.fw-export-note { display:none; }
+.fw-export [data-playground-export] { padding-inline:18px; }
+.fw-download-ready { position:absolute; top:calc(100% + 16px); right:0; width:max-content; max-width:min(300px,90vw); padding:12px 16px; border-radius:var(--radius-md); background:var(--color-surface); box-shadow:var(--shadow-pop); }
+.fw-toolbar { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; padding:8px 20px; background:var(--color-surface); border-bottom:1px solid var(--color-border); }
+.fw-toolgroup { display:flex; align-items:center; gap:4px; }
+.fw-divider { height:18px; width:1px; margin:0 10px; background:var(--color-border); }
+.fw-workarea { padding:12px; gap:12px; }
+.fw-panel { border:1px solid var(--color-border); border-radius:var(--radius-md); overflow:hidden; }
+.fw-panel-heading { display:flex; align-items:center; gap:8px; padding:16px 14px 8px; font-size:13px; font-weight:500; }
+.fw-panel-caption { padding:0 14px 14px; color:var(--color-ink-3); font-size:11px; line-height:1.6; border-bottom:1px solid var(--color-border); margin-bottom:8px; }
+.fw-canvas { border:1px solid var(--color-border); border-radius:var(--radius-md); overflow:hidden; }
+.fw-statusbar { display:flex; align-items:center; gap:12px; min-height:36px; padding:0 24px; background:var(--color-surface); border-top:1px solid var(--color-border); font-size:11px; }
+.fw-canvas-hint { display:flex; align-items:center; gap:6px; margin-left:auto; color:var(--color-ink-3); }
+.fw-zoom { font-variant-numeric:tabular-nums; border-left:1px solid var(--color-border); padding-left:16px; margin-left:auto; }
+@media(max-width:1100px) { .fw-brand > span,.fw-integrity { display:none; } .fw-filebar { gap:16px; } }
+@media(max-width:767px) {
+  .fw-filebar { min-height:60px; padding:12px; gap:8px; flex-wrap:wrap; }
+  .fw-brand > a { font-size:16px; }
+  .fw-document { order:3; flex-basis:100%; max-width:100%; justify-content:flex-start; border-left:0; padding-left:0; }
+  .fw-toolbar { padding:6px 8px; }
+  .fw-divider { margin:0 2px; }
+  .fw-preferences { margin-left:auto; }
+  .fw-workarea { padding:6px; gap:6px; }
+  .fw-statusbar { padding:0 12px; gap:8px; }
+  .fw-canvas-hint { display:none; }
+}

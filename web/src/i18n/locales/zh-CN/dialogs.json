@@ -435,7 +435,13 @@
     "exportingPng": "正在生成…",
     "exportPngNote": "宽 2400 像素 · 包含点击导出时的修改",
     "exportPngFailed": "导出失败，请稍后重试。若会话已失效，请重新运行脚本。",
-    "downloadPngReady": "图片已生成，点击下载"
+    "downloadPngReady": "图片已生成，点击下载",
+    "workspaceTitle": "绘图工作台",
+    "workspaceLayers": "图内元素",
+    "workspaceLayersHint": "从列表或画布选择要调整的对象",
+    "workspaceProperties": "样式与属性",
+    "workspacePropertiesHint": "选中对象后，调整文字、颜色与位置",
+    "workspaceGestureHint": "点击选择 · 拖拽调整 · {{mod}} + 滚轮缩放"
   },
   "presets": {
     "insertSymbolAria": "插入符号 {{symbol}}",
@@ -1617,7 +1623,8 @@
     "blue": "浅蓝",
     "sage": "鼠尾草绿",
     "lavender": "淡紫",
-    "note": "只改变界面背景，不改变图表或导出颜色。"
+    "note": "只改变界面背景，不改变图表或导出颜色。",
+    "black": "曜石黑"
   },
   "charts": {
     "source": "Python 脚本",

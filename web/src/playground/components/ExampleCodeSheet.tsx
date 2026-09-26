@@ -81,7 +81,7 @@ export function ExampleCodeSheet({
           </button>
           <button
             onClick={() => onStart(example)}
-            className="flex h-7 items-center gap-1.5 rounded-sm bg-ink px-3 text-xs font-medium text-white transition-opacity hover:opacity-90"
+            className="flex h-7 items-center gap-1.5 rounded-sm bg-ink px-3 text-xs font-medium text-on-primary transition-opacity hover:opacity-90"
           >
             <Play size={ICON_SIZE.sm} aria-hidden />
             {pg('codeStart')}

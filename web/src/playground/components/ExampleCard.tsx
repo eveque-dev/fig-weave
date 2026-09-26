@@ -178,7 +178,7 @@ export function ExampleCard({
         <div className="flex items-baseline gap-2">
           <h3 className="text-base font-medium text-ink">{title}</h3>
           {example.difficulty === 'starter' && (
-            <span className="rounded-sm bg-sel/10 px-1.5 py-0.5 text-xs font-medium text-sel">
+            <span className="rounded-sm bg-sel/10 px-1.5 py-0.5 text-xs font-medium text-accent">
               {pg('starterBadge')}
             </span>
           )}
@@ -205,7 +205,7 @@ export function ExampleCard({
               e.stopPropagation()
               onLaunch(example)
             }}
-            className="h-7 rounded-sm bg-ink px-3 text-xs font-medium text-white transition-opacity hover:opacity-90"
+            className="h-7 rounded-sm bg-ink px-3 text-xs font-medium text-on-primary transition-opacity hover:opacity-90"
           >
             {pg('startExample')}
           </button>

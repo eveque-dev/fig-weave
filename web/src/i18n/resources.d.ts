@@ -181,6 +181,7 @@ export default interface Resources {
   },
   "dialogs": {
     "appearance": {
+      "black": "曜石黑",
       "blue": "浅蓝",
       "lavender": "淡紫",
       "note": "只改变界面背景，不改变图表或导出颜色。",
@@ -760,7 +761,13 @@ export default interface Resources {
       "uploadScope": "查看支持范围",
       "uploadScopeBad": "不支持：读取本地文件（pd.read_csv(\"data.csv\")、np.load(...)、open(...)）；同目录自定义模块；本地图片与字体；项目级相对路径；完整 Conda 项目。",
       "uploadScopeGood": "适合：单个 UTF-8 编码的 .py；NumPy、Matplotlib 与运行时明确支持的包；数据写在脚本里或由代码生成。",
-      "viewCode": "查看代码"
+      "viewCode": "查看代码",
+      "workspaceGestureHint": "点击选择 · 拖拽调整 · {{mod}} + 滚轮缩放",
+      "workspaceLayers": "图内元素",
+      "workspaceLayersHint": "从列表或画布选择要调整的对象",
+      "workspaceProperties": "样式与属性",
+      "workspacePropertiesHint": "选中对象后，调整文字、颜色与位置",
+      "workspaceTitle": "绘图工作台"
     },
     "presets": {
       "insertSymbolAria": "插入符号 {{symbol}}",

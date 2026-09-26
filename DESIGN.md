@@ -9,6 +9,7 @@ colors:
   field: "#f1f0ec"
   field-hover: "#edece8"
   border-control: "#8a8a82"
+  on-primary: "#ffffff"
   ink: "#1b1b18"
   ink-2: "#5c5c55"
   ink-3: "#6b6b64"
@@ -71,7 +72,7 @@ spacing:
 components:
   button-primary:
     backgroundColor: "{colors.ink}"
-    textColor: "#ffffff"
+    textColor: "{colors.on-primary}"
     rounded: "{rounded.sm}"
     height: "{spacing.control}"
   button-secondary:

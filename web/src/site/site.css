@@ -92,3 +92,8 @@
 .site-project-badges a { display: inline-flex; align-items: center; min-height: 32px; gap: 8px; padding: 5px 12px; border: 1px solid var(--color-border); border-radius: 6px; color: var(--color-ink-2); font-size: 12px; }
 .site-project-badges img { height: 20px; width: auto; max-width: 100%; }
 .site-open-source { border-top: 1px solid var(--color-border); }
+/* Figure previews keep a paper surface even when the application is dark. */
+:root[data-online-background='black'] .site-figure-paper { background:#fff; color:#1b1b18; }
+:root[data-online-background='black'] .site-paper-label { color:#5c5c55; }
+:root[data-online-background='black'] .site-figure-detail { color:#2868b7; border-color:#dfe2e6; }
+:root[data-online-background='black'] .site-example-pair img { background:#fff; border-radius:var(--radius-sm); }

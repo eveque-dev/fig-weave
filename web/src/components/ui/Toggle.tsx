@@ -66,7 +66,7 @@ export function Toggle({
             白钮带 shadow-thumb（与分段选择器的 thumb 同一份）：两家的 thumb 都有 0 1px 2px 的投影，白钮才浮得起来 */}
         <span
           className={cn(
-            'absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow-thumb transition-transform duration-base',
+            'absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-on-primary shadow-thumb transition-transform duration-base',
             checked ? 'translate-x-3' : 'translate-x-0',
           )}
         />

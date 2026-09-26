@@ -1,9 +1,9 @@
 import { useSyncExternalStore } from 'react'
 
-export const ONLINE_BACKGROUNDS = ['paper', 'white', 'slate', 'blue', 'sage', 'lavender'] as const
+export const ONLINE_BACKGROUNDS = ['black', 'paper', 'white', 'slate', 'blue', 'sage', 'lavender'] as const
 export type OnlineBackground = (typeof ONLINE_BACKGROUNDS)[number]
 const STORAGE_KEY = 'tavotto.onlineBackground'
-const DEFAULT_BACKGROUND: OnlineBackground = 'sage'
+const DEFAULT_BACKGROUND: OnlineBackground = 'black'
 const listeners = new Set<() => void>()
 let background: OnlineBackground = DEFAULT_BACKGROUND
 
