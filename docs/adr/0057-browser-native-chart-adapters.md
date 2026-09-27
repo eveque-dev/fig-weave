@@ -34,3 +34,29 @@ preview, then capture `figweave_result` from that display list. A temporary PDF
 device is used only by the PDF download: opening it in an R script loses webR's
 canvas capture and changes text metrics. For R file output, the exported comment
 records the requested device size; the receiving device controls physical size.
+
+
+2026-09-27 priority refinement supersedes the ordinal-offset and canvas-font
+behaviors above. User-selected CSV/TSV/RDS and TTF/OTF assets are bounded, validated,
+and mounted into a fresh worker's `/workspace`; they never enter browser persistent
+storage or app upload requests. The loaded asset snapshot remains authoritative
+until the next successful run. Source reruns reset edits.
+
+Object identities now use normalized grid ancestry, occurrence within that path,
+and vector index. Styling preserves matching offsets and text edits; hidden or
+unmatched edits remain dormant with a notice. Text vectors are edited by index,
+including legend labels, through the shared TypographyControls and vocabulary.
+The R adapter retains its own render-before-commit history.
+
+Locked sysfonts/showtext/font files produce final PDF outlines. Actual Unicode
+cmap coverage (formats 4/12; first TTC face for the bundled Chinese font) drives
+whole-label fallback and missing-glyph notices; plotmath coverage stays unverified.
+PDF.js rasterizes this exact single-page PDF for preview/PNG. A webR canvas cannot
+reliably display showtext outlines, so it is no longer the preview device. PDF
+exports reuse the successful rendered bytes. Exported R uses the same font setup,
+scene edits and physical PDF device, creating figure-styled.pdf with companion
+files; it no longer claims canvas-capture replay or editable PDF text.
+
+Verification includes real RDS generation/import, CSV/TSV equality, imported
+open fonts and Chinese fallback, individual title/legend changes, retained offsets,
+undo, and pixel-identical exported R replay on the PDF preview pipeline.

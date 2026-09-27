@@ -41,6 +41,7 @@
     "echarts": "^6.1.0",
     "i18next": "^26.3.6",
     "immer": "^11.1.16",
+    "pdfjs-dist": "6.3.289",
     "plotly.js-dist-min": "^4.1.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

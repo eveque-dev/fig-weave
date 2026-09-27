@@ -19,7 +19,7 @@ export function DragOverlay({ objects, disabled, selected, select, move }: { obj
     {objects.map((object) => {
       const c = object.coords.map((v) => v * 1000)
       const props = {
-        'data-r-object': object.id, 'data-r-kind': object.kind, tabIndex: disabled ? -1 : 0,
+        'data-r-object': object.id, 'data-r-kind': object.kind, 'data-r-text': object.text, tabIndex: disabled ? -1 : 0,
         role: 'button', 'aria-label': t(`rStudio.drag${object.kind}`),
         className: `r-drag-object${selected === object.id ? ' selected' : ''}`,
         transform: offset?.id === object.id ? `translate(${offset.x * 1000} ${offset.y * 1000})` : undefined,

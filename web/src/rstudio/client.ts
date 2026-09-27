@@ -1,33 +1,38 @@
 import dragSource from './drag.R?raw'
+import fontSource from './fonts.R?raw'
+import { validateAssets, type RAsset } from './assets'
+import { fontCoverage } from './fontCoverage'
+import { coerceTypography } from '@/lib/typography'
 import lock from '../../../packaging/r-browser-runtime.json'
 
 export const LEGEND_POSITIONS = ['original', 'right', 'left', 'top', 'bottom', 'bottomLeft', 'bottomRight', 'topLeft', 'topRight', 'none'] as const
-export const FONT_FAMILIES = ['original', 'sans', 'serif', 'mono'] as const
+export const FONT_FAMILIES = ['original', 'sans', 'serif', 'mono', 'wqy-microhei'] as const
 
 export interface PlotStyle {
   moves: Record<string, [number, number]>
+  textEdits: Record<string, TextEdit>
   title: string | null
   x: string | null
   y: string | null
   theme: 'original' | 'minimal' | 'classic' | 'bw'
   fontSize: number | null
-  fontFamily: typeof FONT_FAMILIES[number]
+  fontFamily: string
   legend: typeof LEGEND_POSITIONS[number]
   width: number
   height: number
 }
 export const DEFAULT_STYLE: PlotStyle = {
-  moves: {}, title: null, x: null, y: null, theme: 'original', fontSize: null,
+  moves: {}, textEdits: {}, title: null, x: null, y: null, theme: 'original', fontSize: null,
   fontFamily: 'original', legend: 'original', width: 7, height: 5,
 }
 
 /** A closed set of styling operations, shared by preview and exported R code. */
-export function styleExpression(s: PlotStyle, plot = 'p'): string {
+export function styleExpression(s: PlotStyle, plot = 'p', families: readonly string[] = FONT_FAMILIES): string {
   if (![s.width, s.height].every((n) => Number.isFinite(n) && n >= 1 && n <= 20)
     || (s.fontSize !== null && (!Number.isFinite(s.fontSize) || s.fontSize < 6 || s.fontSize > 48)))
     throw new Error('Invalid plot dimensions or font size')
   if (!['original', 'minimal', 'classic', 'bw'].includes(s.theme)
-    || !LEGEND_POSITIONS.includes(s.legend) || !FONT_FAMILIES.includes(s.fontFamily)) throw new Error('Invalid plot style')
+    || !LEGEND_POSITIONS.includes(s.legend) || !families.includes(s.fontFamily)) throw new Error('Invalid plot style')
   const labels = (['title', 'x', 'y'] as const)
     .filter((k) => s[k] !== null).map((k) => `${k} = ${JSON.stringify(s[k])}`)
   const text = [
@@ -49,22 +54,39 @@ export function styleExpression(s: PlotStyle, plot = 'p'): string {
     + (theme.length ? ` + ggplot2::theme(${theme.join(', ')})` : '')
 }
 
-export interface RObject { id: string; kind: 'text' | 'legend' | 'point' | 'curve'; coords: number[]; breaks: number[] }
+export interface TextEdit { text?: string; sizePt?: number; fontFamily?: string; color?: string }
+export interface RObject {
+  id: string; role?: 'title' | 'x' | 'y' | ''; kind: 'text' | 'legend' | 'point' | 'curve'; coords: number[]; breaks: number[]
+  text?: string; editable?: boolean; typography?: Required<Omit<TextEdit, 'text'>>
+  font?: { requested: string; actual: string; missing: string; checked: boolean }
+}
+const validId = (key: string) => key.length <= 2048 && /^[a-zA-Z0-9_:%./-]+$/.test(key)
 export function movesExpression(moves: PlotStyle['moves']): string {
   return 'list(' + Object.entries(moves).map(([key, xy]) => {
-    if (!/^(?:\d+|legend):\d+$/.test(key) || xy.length !== 2 || !xy.every((v) => Number.isFinite(v) && Math.abs(v) <= 2)) throw new Error('Invalid visual offset')
+    if (!validId(key) || xy.length !== 2 || !xy.every((v) => Number.isFinite(v) && Math.abs(v) <= 2)) throw new Error('Invalid visual offset')
     return `${JSON.stringify(key)} = c(${xy.join(',')})`
   }).join(',') + ')'
 }
-export function exportR(source: string, style: PlotStyle): string {
-  // Replay on the active device, just like preview. Recording on a temporary PDF
-  // here switches font metrics and interferes with webR's canvas capture device.
-  // The PDF download uses figweave_scene separately to guarantee one final page.
-  return `${source}\n\n${dragSource}\nfigweave_plot <- ${styleExpression(style)}\n# For file output, open a device at width = ${style.width}, height = ${style.height} inches.\nfigweave_draw(figweave_plot, ${movesExpression(style.moves)}, ${style.width}, ${style.height})\nfigweave_result <- grid::grid.grab()\n`
+export function textExpression(edits: PlotStyle['textEdits'], families: readonly string[] = FONT_FAMILIES): string {
+  for (const [id, edit] of Object.entries(edits)) {
+    if (!validId(id)) throw new Error('Invalid text identity')
+    for (const [key, value] of Object.entries(edit)) {
+      if (key === 'text') {
+        if (typeof value !== 'string' || value.length > 2048) throw new Error('Invalid text')
+      } else if (!['sizePt', 'fontFamily', 'color'].includes(key)
+        || !coerceTypography(key as 'sizePt' | 'fontFamily' | 'color', value, { min: 6, max: 72, options: families.filter((f) => f !== 'original') }).ok) throw new Error('Invalid typography')
+    }
+  }
+  return `jsonlite::fromJSON(${JSON.stringify(JSON.stringify(edits))}, simplifyVector = FALSE)`
 }
-interface Shelter {
-  captureR(code: string, opts: object): Promise<{ images: ImageBitmap[]; output: { type: string; data: string }[] }>
-  purge(): Promise<void>
+export interface FontEnvironment {
+  imported: { name: string; family: string }[]
+  coverage: Record<string, [number, number][][]>
+}
+const fontSetup = (fonts: FontEnvironment) => `${fontSource}\nfigweave_font_files(jsonlite::fromJSON(${JSON.stringify(JSON.stringify(fonts.imported))}, simplifyVector = FALSE))\n.fw_font_coverage <- jsonlite::fromJSON(${JSON.stringify(JSON.stringify(fonts.coverage))}, simplifyVector = FALSE)\n`
+export function exportR(source: string, style: PlotStyle, fonts: FontEnvironment): string {
+  const families = [...FONT_FAMILIES, ...fonts.imported.map((f) => f.family)]
+  return `# Keep imported data and font files beside this script; run from that folder.\n${fontSetup(fonts)}\n${source}\n\n${dragSource}\nfigweave_plot <- ${styleExpression(style, 'p', families)}\nfigweave_result <- figweave_scene(figweave_plot, ${movesExpression(style.moves)}, ${style.width}, ${style.height}, FALSE, ${textExpression(style.textEdits, families)})\nfigweave_write_pdf(figweave_result, "figure-styled.pdf", ${style.width}, ${style.height})\n`
 }
 interface WebR {
   init(): Promise<void>
@@ -72,13 +94,16 @@ interface WebR {
   installPackages(packages: string[]): Promise<void>
   evalRVoid(code: string): Promise<void>
   evalRString(code: string): Promise<string>
-  FS: { readFile(path: string): Promise<Uint8Array> }
-  Shelter: new () => Promise<Shelter>
+  FS: { readFile(path: string): Promise<Uint8Array>; writeFile(path: string, bytes: Uint8Array): Promise<void> }
 }
 
 /** Each source gets its own R worker. Closing also invalidates all pending work. */
 export class RPlotClient {
   objects: RObject[] = []
+  fonts: FontEnvironment = { imported: [], coverage: {} }
+  private pdfBytes: Uint8Array | null = null
+  private renderedStyle = ''
+  get families(): string[] { return [...FONT_FAMILIES, ...this.fonts.imported.map((f) => f.family)] }
   private runtime: WebR | null = null
   private closed = false
   private stop: (() => void) | null = null
@@ -103,7 +128,8 @@ export class RPlotClient {
     finally { clearTimeout(timer); this.stop = null }
   }
 
-  async load(source: string, phase: (key: 'loadingRuntime' | 'loadingPackages' | 'running') => void) {
+  async load(source: string, phase: (key: 'loadingRuntime' | 'loadingPackages' | 'running') => void, data: RAsset[] = [], fonts: RAsset[] = []) {
+    validateAssets(data, 'data'); validateAssets(fonts, 'font')
     if (new TextEncoder().encode(source).length > 256 * 1024) throw new Error('R source exceeds 256 KiB')
     const version = await this.bounded(async () => {
       phase('loadingRuntime')
@@ -115,10 +141,25 @@ export class RPlotClient {
       this.runtime = new mod.WebR({ baseUrl: lock.base_url, repoUrl: new URL('../packages/', import.meta.url).href, channelType: mod.ChannelType.PostMessage })
       await this.runtime.init()
       phase('loadingPackages')
-      await this.runtime.installPackages(['ggplot2'])
+      await this.runtime.installPackages(['ggplot2', 'showtext', 'jsonlite'])
       const version = await this.runtime.evalRString('as.character(utils::packageVersion("ggplot2"))')
       if (version !== lock.ggplot2_version) throw new Error(`ggplot2 version mismatch: ${version}`)
-      await this.runtime.evalRVoid(dragSource)
+      const r = this.runtime
+      await r.evalRVoid('dir.create("/workspace", showWarnings = FALSE); setwd("/workspace")')
+      for (const file of [...data, ...fonts]) await r.FS.writeFile(`/workspace/${file.name}`, new Uint8Array(file.bytes))
+      this.fonts.imported = fonts.map((file) => ({ name: file.name, family: file.family! }))
+      await r.evalRVoid(fontSource)
+      const files = JSON.parse(await r.evalRString(`as.character(jsonlite::toJSON(figweave_font_files(jsonlite::fromJSON(${JSON.stringify(JSON.stringify(this.fonts.imported))}, simplifyVector = FALSE)), auto_unbox = TRUE))`)) as Record<string, string[]>
+      const cache = new Map<string, [number, number][]>()
+      for (const [family, paths] of Object.entries(files)) {
+        this.fonts.coverage[family] = []
+        for (const path of paths) {
+          if (!cache.has(path)) cache.set(path, fontCoverage(await r.FS.readFile(path)))
+          this.fonts.coverage[family].push(cache.get(path)!)
+        }
+      }
+      await r.evalRVoid(`.fw_font_coverage <- jsonlite::fromJSON(${JSON.stringify(JSON.stringify(this.fonts.coverage))}, simplifyVector = FALSE)`)
+      await r.evalRVoid(dragSource)
       return version
     }, 240_000)
     phase('running')
@@ -137,39 +178,21 @@ export class RPlotClient {
   async render(style: PlotStyle): Promise<Blob> {
     return this.bounded(async () => {
       const r = this.runtime!
-      await r.evalRVoid(`.fw_plot <- ${styleExpression(style, '.fw_original')}`)
-      const shelter = await new r.Shelter()
-      let images: ImageBitmap[] = []
-      try {
-        const result = await shelter.captureR(`figweave_draw(.fw_plot, ${movesExpression(style.moves)}, ${style.width}, ${style.height}, TRUE)`, {
-          captureGraphics: { width: style.width * 72, height: style.height * 72 },
-          captureConditions: false,
-          withAutoprint: false,
-          captureStreams: true,
-        })
-        const geometry = await r.evalRString('.fw_geometry')
-        this.objects = geometry ? geometry.split('\n').map((row) => {
-          const [id, kind, coords, breaks] = row.split('\t')
-          return { id, kind: kind as RObject['kind'], coords: coords.split(/[;,]/).map(Number), breaks: breaks ? breaks.split(',').map(Number) : [] }
-        }) : []
-        images = result.images
-        if (!images.length) throw new Error(result.output.map((x) => x.data).join('\n') || 'No plot produced')
-        const image = images[images.length - 1]
-        const canvas = document.createElement('canvas')
-        canvas.width = image.width; canvas.height = image.height
-        canvas.getContext('2d')!.drawImage(image, 0, 0)
-        return await new Promise<Blob>((resolve, reject) => canvas.toBlob(
-          (blob) => blob ? resolve(blob) : reject(new Error('PNG encoding failed')), 'image/png'))
-      } finally { images.forEach((img) => img.close()); await shelter.purge() }
+      await r.evalRVoid(`.fw_plot <- ${styleExpression(style, '.fw_original', this.families)}
+        .fw_scene <- figweave_scene(.fw_plot, ${movesExpression(style.moves)}, ${style.width}, ${style.height}, TRUE, ${textExpression(style.textEdits, this.families)})
+        figweave_write_pdf(.fw_scene, "/tmp/figweave.pdf", ${style.width}, ${style.height})`)
+      const objects = JSON.parse(await r.evalRString('.fw_geometry')) as RObject[]
+      const bytes = await r.FS.readFile('/tmp/figweave.pdf')
+      const { pdfPreview } = await import('./pdfPreview')
+      const preview = await pdfPreview(bytes)
+      if (this.closed) throw new Error('R session closed')
+      this.objects = objects; this.pdfBytes = bytes; this.renderedStyle = JSON.stringify(style)
+      return preview
     }, 30_000)
   }
 
   async pdf(style: PlotStyle): Promise<Blob> {
-    return this.bounded(async () => {
-      const r = this.runtime!
-      await r.evalRVoid(`ggplot2::ggsave("/tmp/figweave.pdf", plot = figweave_scene(${styleExpression(style, '.fw_original')}, ${movesExpression(style.moves)}, ${style.width}, ${style.height}), device = "pdf", width = ${style.width}, height = ${style.height}, units = "in")`)
-      const bytes = await r.FS.readFile('/tmp/figweave.pdf')
-      return new Blob([new Uint8Array(bytes)], { type: 'application/pdf' })
-    }, 30_000)
+    if (this.closed || !this.pdfBytes || this.renderedStyle !== JSON.stringify(style)) throw new Error('Render this style before exporting')
+    return new Blob([new Uint8Array(this.pdfBytes)], { type: 'application/pdf' })
   }
 }

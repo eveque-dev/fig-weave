@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { BackgroundPicker } from '@/components/ui/BackgroundPicker'
+import { Details, Summary } from '@/components/ui/Details'
 import { Button } from '@/components/ui/Button'
 import { TextArea, TextInput } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { currentLocale } from '@/i18n'
 import { PRODUCT_NAME, playgroundHomeHref } from '@/lib/brand'
 import { DEFAULT_STYLE, FONT_FAMILIES, LEGEND_POSITIONS, RPlotClient, exportR, type PlotStyle, type RObject } from './client'
+import { AssetError, assetSignature, mergeAssets, readAssets, readSnippet, type RAsset, type AssetKind } from './assets'
+import { TextInspector } from './TextInspector'
 import { DragOverlay } from './DragOverlay'
 import example from './example.R?raw'
 import './studio.css'
@@ -23,7 +26,10 @@ export function RStudio() {
   const { t } = useTranslation('dialogs')
   const [objects, setObjects] = useState<RObject[]>([])
   const [selected, setSelected] = useState('')
-  const [layoutReset, setLayoutReset] = useState(false)
+  const [data, setData] = useState<RAsset[]>([])
+  const [fonts, setFonts] = useState<RAsset[]>([])
+  const [reading, setReading] = useState(false)
+  const [loadedAssets, setLoadedAssets] = useState('')
   const [source, setSource] = useState(example)
   const [loadedSource, setLoadedSource] = useState('')
   const [style, setStyle] = useState<PlotStyle>({ ...DEFAULT_STYLE })
@@ -37,7 +43,22 @@ export function RStudio() {
   const client = useRef<RPlotClient | null>(null)
   const seq = useRef(0)
   const pending = useRef(false)
-  const active = !!loadedSource && !busy
+  const active = !!loadedSource && !busy && !reading
+  const families = client.current?.families ?? [...FONT_FAMILIES]
+  const selectedObject = objects.find((object) => object.id === selected)
+  const unmatched = Object.keys({ ...style.moves, ...style.textEdits }).filter((id) => !objects.some((o) => o.id === id)).length
+  const fontWarnings = objects.filter((o) => o.font && (o.font.requested !== o.font.actual || o.font.missing || !o.font.checked))
+  const assetsKey = assetSignature([...data, ...fonts])
+  const importFiles = async (files: File[], kind: AssetKind) => {
+    if (!files.length || reading || busy) return
+    setReading(true); setError('')
+    try {
+      const incoming = await readAssets(files, kind)
+      const next = mergeAssets(kind === 'data' ? data : fonts, incoming, kind)
+      if (kind === 'data') setData(next); else setFonts(next)
+    } catch (e) { setError(e instanceof AssetError ? t(`rStudio.assetError.${e.code}`, { name: e.filename }) : String(e)) }
+    finally { setReading(false) }
+  }
   useEffect(() => () => { seq.current++; client.current?.close() }, [])
   useEffect(() => {
     const url = preview ? URL.createObjectURL(preview) : ''
@@ -51,20 +72,20 @@ export function RStudio() {
 
   const cancel = () => {
     seq.current++; client.current?.close(); client.current = null
-    pending.current = false; setObjects([]); setSelected(''); setLayoutReset(false)
+    pending.current = false; setObjects([]); setSelected('')
     setBusy(false); setLoadedSource(''); setPreview(null); setPhase('idle')
   }
   const run = async () => {
     const id = ++seq.current
     client.current?.close()
     const r = new RPlotClient(); client.current = r
-    pending.current = true; setObjects([]); setSelected(''); setLayoutReset(false)
+    pending.current = true; setObjects([]); setSelected('')
     setBusy(true); setError(''); setLoadedSource(''); setPreview(null)
     try {
-      await r.load(source, (key) => { if (seq.current === id) setPhase(key) })
+      await r.load(source, (key) => { if (seq.current === id) setPhase(key) }, data, fonts)
       const blob = await r.render(DEFAULT_STYLE)
       if (seq.current !== id) return
-      setObjects(r.objects); setPreview(blob); setLoadedSource(source); setStyle({ ...DEFAULT_STYLE })
+      setObjects(r.objects); setPreview(blob); setLoadedSource(source); setLoadedAssets(assetsKey); setStyle({ ...DEFAULT_STYLE })
       setHistory([]); setFuture([]); setPhase('ready')
     } catch (e) {
       r.close()
@@ -74,8 +95,6 @@ export function RStudio() {
   const apply = async (next: PlotStyle, direction: 'edit' | 'undo' | 'redo' = 'edit') => {
     if (!client.current || pending.current || !loadedSource) return
     if (JSON.stringify(next) === JSON.stringify(style)) return
-    const clearsMoves = direction === 'edit' && next.moves === style.moves && Object.keys(style.moves).length > 0
-    if (direction === 'edit' && next.moves === style.moves) next = { ...next, moves: {} }
     const id = seq.current
     pending.current = true
     setBusy(true); setError('')
@@ -86,8 +105,7 @@ export function RStudio() {
       else if (direction === 'redo') { setFuture(future.slice(0, -1)); setHistory([...history, style]) }
       else { setHistory([...history, style].slice(-50)); setFuture([]) }
       setObjects(client.current.objects); setStyle(next); setPreview(blob)
-      setLayoutReset(clearsMoves)
-      if (clearsMoves || !client.current.objects.some((object) => object.id === selected)) setSelected('')
+      if (!client.current.objects.some((object) => object.id === selected)) setSelected('')
     } catch (e) {
       if (id === seq.current) {
         if (client.current?.isClosed) cancel()
@@ -120,26 +138,47 @@ export function RStudio() {
         <p className="r-studio-scope text-sm leading-relaxed text-ink-2">{t('rStudio.scope')}</p>
         <div className="r-studio-layout grid gap-6 lg:grid-cols-[minmax(280px,360px)_1fr]">
           <section className="r-studio-controls space-y-4">
+            {selectedObject?.typography && <TextInspector key={selectedObject.id} object={selectedObject} edit={style.textEdits[selected] ?? {}} families={families} disabled={!active} commit={(patch) => { const textEdits = { ...style.textEdits }; if (Object.keys(patch).length) textEdits[selected] = patch; else delete textEdits[selected]; void apply({ ...style, textEdits }) }} />}
             <label className="block space-y-2">
               <span className="text-sm font-medium">{t('rStudio.source')}</span>
-              <TextArea data-r-source aria-label={t('rStudio.source')} value={source} disabled={busy} onChange={(e) => setSource(e.target.value)} className="min-h-[260px] font-mono text-sm" />
+              <TextArea data-r-source aria-label={t('rStudio.source')} value={source} disabled={busy || reading} onChange={(e) => setSource(e.target.value)} className="min-h-[260px] font-mono text-sm" />
             </label>
             <label className="block text-sm">
               {t('rStudio.upload')}
-              <input data-r-upload type="file" accept=".r,.R" disabled={busy} className="mt-2 block w-full text-sm" onChange={async (e) => {
+              <input data-r-upload type="file" accept=".r,.R" disabled={busy || reading} className="mt-2 block w-full text-sm" onChange={async (e) => {
                 const file = e.target.files?.[0]
                 if (!file) return
                 if (file.size > 256 * 1024) { setError(t('rStudio.tooLarge')); return }
-                setSource(await file.text())
+                setReading(true)
+                try { setSource(await file.text()) } catch (e) { setError(String(e)) } finally { setReading(false) }
               }} />
             </label>
+            <div className="space-y-3 border-t border-border pt-3">
+              {(['data', 'font'] as const).map((kind) => <div key={kind} className="space-y-2 text-sm">
+                <label className="block space-y-2"><span>{t(kind === 'data' ? 'rStudio.dataFiles' : 'rStudio.fontFiles')}</span>
+                  <input data-r-assets={kind} type="file" multiple accept={kind === 'data' ? '.csv,.tsv,.rds' : '.ttf,.otf'} disabled={busy || reading} className="block w-full text-sm" onChange={(e) => {
+                    const files = Array.from(e.target.files ?? []); e.target.value = ''; void importFiles(files, kind)
+                  }} />
+                </label>
+                <p className="text-xs text-ink-3">{t(kind === 'data' ? 'rStudio.dataHint' : 'rStudio.fontImportHint')}</p>
+                {(kind === 'data' ? data : fonts).map((file) => <div data-r-asset={file.name} key={file.name} className="r-asset space-y-1">
+                  <div className="flex items-center justify-between gap-2"><span className="break-all">{file.name}</span>
+                    <Button disabled={busy || reading} aria-label={t('rStudio.removeFile', { name: file.name })} onClick={() => {
+                      if (kind === 'data') setData(data.filter((f) => f !== file)); else setFonts(fonts.filter((f) => f !== file))
+                    }}>{t('rStudio.remove')}</Button>
+                  </div>
+                  {kind === 'data' && <code className="block break-all text-xs">{readSnippet(file.name)}</code>}
+                </div>)}
+              </div>)}
+              <p className="text-xs text-ink-3">{t('rStudio.sessionFiles')}</p>
+            </div>
             <div className="flex flex-wrap gap-2">
-              <Button data-r-run variant="primary" disabled={busy || !source.trim()} onClick={() => void run()}>{t('rStudio.run')}</Button>
+              <Button data-r-run variant="primary" disabled={busy || reading || !source.trim()} onClick={() => void run()}>{t('rStudio.run')}</Button>
               {busy && <Button data-r-cancel onClick={cancel}>{t('rStudio.cancel')}</Button>}
-              <Button disabled={busy} onClick={() => setSource(example)}>{t('rStudio.example')}</Button>
+              <Button disabled={busy || reading} onClick={() => setSource(example)}>{t('rStudio.example')}</Button>
             </div>
             <p data-r-status className="text-sm text-ink-3">{t(`rStudio.${phase}`)}</p>
-            {loadedSource && source !== loadedSource && <p className="text-sm text-ink-2">{t('rStudio.changed')}</p>}
+            {loadedSource && (source !== loadedSource || assetsKey !== loadedAssets) && <p className="text-sm text-ink-2">{t('rStudio.changed')}</p>}
             {error && <pre data-r-error role="alert" className="whitespace-pre-wrap break-words text-sm text-danger">{error}</pre>}
             <fieldset disabled={!active} className="space-y-3 border-t border-border pt-4">
               <legend className="text-sm font-medium">{t('rStudio.style')}</legend>
@@ -148,7 +187,14 @@ export function RStudio() {
                   <span>{t(`rStudio.${key === 'title' ? 'plotTitle' : key}`)}</span>
                   <TextInput data-r-label={key} key={`${key}:${style[key]}`} defaultValue={style[key] ?? ''} placeholder={t('rStudio.keepOriginal')} onBlur={(e) => {
                     const value = e.target.value
-                    if (value !== (style[key] ?? '')) void apply({ ...style, [key]: value })
+                    if (value !== (style[key] ?? '')) {
+                      const textEdits = { ...style.textEdits }
+                      for (const object of objects.filter((o) => o.role === key)) {
+                        const patch = { ...textEdits[object.id] }; delete patch.text
+                        if (Object.keys(patch).length) textEdits[object.id] = patch; else delete textEdits[object.id]
+                      }
+                      void apply({ ...style, [key]: value, textEdits })
+                    }
                   }} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }} />
                 </label>
               ))}
@@ -159,7 +205,7 @@ export function RStudio() {
               </div>
               <div data-r-font className="space-y-1 text-sm">
                 <span>{t('rStudio.fontFamily')}</span>
-                <Select ariaLabel={t('rStudio.fontFamily')} disabled={!active} value={style.fontFamily} onChange={(fontFamily) => void apply({ ...style, fontFamily })} options={FONT_FAMILIES.map((value) => ({ value, label: value === 'original' ? t('rStudio.keepStyle') : t(`rStudio.${value}`) }))} />
+                <Select ariaLabel={t('rStudio.fontFamily')} disabled={!active} value={style.fontFamily} onChange={(fontFamily) => void apply({ ...style, fontFamily })} options={families.map((value) => ({ value, label: value === 'original' ? t('rStudio.keepStyle') : ['sans', 'serif', 'mono', 'wqy-microhei'].includes(value) ? t(`rStudio.${value as 'sans' | 'serif' | 'mono' | 'wqy-microhei'}`) : value }))} />
                 <p className="text-xs text-ink-3">{t('rStudio.fontHint')}</p>
               </div>
               {(['fontSize', 'width', 'height'] as const).map((key) => (
@@ -186,7 +232,7 @@ export function RStudio() {
             <div className="flex flex-wrap gap-2">
               <Button data-r-png disabled={!active || !preview} onClick={() => { if (preview) download(preview, 'figure.png') }}>{t('rStudio.png')}</Button>
               <Button data-r-pdf disabled={!active} onClick={() => void exportPdf()}>{t('rStudio.pdf')}</Button>
-              <Button data-r-export disabled={!active} onClick={() => download(new Blob([exportR(loadedSource, style)], { type: 'text/plain;charset=utf-8' }), 'figure-styled.R')}>{t('rStudio.exportR')}</Button>
+              <Button data-r-export disabled={!active} onClick={() => download(new Blob([exportR(loadedSource, style, client.current!.fonts)], { type: 'text/plain;charset=utf-8' }), 'figure-styled.R')}>{t('rStudio.exportR')}</Button>
             </div>
             <p className="text-sm text-ink-2">{t('rStudio.dragHint')}</p>
             <div className="flex flex-wrap gap-2">
@@ -196,7 +242,15 @@ export function RStudio() {
               }}>{t('rStudio.resetSelected')}</Button>
               <Button data-r-reset-moves disabled={!active || !Object.keys(style.moves).length} onClick={() => void apply({ ...style, moves: {} })}>{t('rStudio.resetMoves')}</Button>
             </div>
-            {layoutReset && <p data-r-layout-reset role="status" className="text-sm text-ink-2">{t('rStudio.layoutReset')}</p>}
+            {!!unmatched && <p data-r-unmatched role="status" className="text-sm text-ink-2">{t('rStudio.unmatched', { count: unmatched })}</p>}
+            <p className="text-xs text-ink-3">{t('rStudio.pdfFontHint')}</p>
+            {(data.length > 0 || fonts.length > 0) && <p className="text-xs text-ink-3">{t('rStudio.companionFiles')}</p>}
+            {fontWarnings.length > 0 && <Details data-r-font-warnings className="text-sm text-ink-2"><Summary>{t('rStudio.fontWarnings', { count: fontWarnings.length })}</Summary>
+              <ul>{fontWarnings.map((o) => <li key={o.id}>{o.text}: {o.font!.requested} → {o.font!.actual}{o.font!.missing ? ` · ${t('rStudio.missingGlyphs', { chars: o.font!.missing })}` : ''}{!o.font!.checked ? ` · ${t('rStudio.mathFontUnchecked')}` : ''}</li>)}</ul>
+            </Details>}
+            {objects.length > 0 && <div data-r-object-picker><Select ariaLabel={t('rStudio.selectObject')} placeholder={t('rStudio.selectObject')} value={selected} disabled={!active} onChange={setSelected} options={[
+              ...objects.filter((o) => o.kind === 'text' || o.kind === 'legend').map((o) => ({ value: o.id, label: o.kind === 'legend' ? t('rStudio.legend') : o.text || t('rStudio.emptyText') })),
+            ]} /></div>}
             <div className="r-studio-preview flex min-h-[350px] items-center justify-center rounded-md border border-border bg-surface p-4">
               {previewUrl ? <div className="r-drag-frame"><img data-r-preview src={previewUrl} alt={t('rStudio.preview')} className="h-auto max-w-full" /><DragOverlay objects={objects} selected={selected} select={setSelected} disabled={!active} move={(id, dx, dy) => {
                 const previous = style.moves[id] ?? [0, 0]

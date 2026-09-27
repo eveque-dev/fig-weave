@@ -8,6 +8,12 @@ import { createHash } from 'node:crypto'
 // Subject: the built standalone site, including navigation under a path prefix.
 // No backend or DNS is involved. A missing build must fail, not skip this check.
 const dist = path.resolve(import.meta.dirname, '..', 'dist-site')
+const previewModuleName = () => {
+  const html = readFileSync(path.join(dist, 'r/index.html'), 'utf8')
+  const entry = html.match(/src="([^\"]+[.]js)"/)![1]
+  const code = readFileSync(path.resolve(dist, 'r', entry), 'utf8')
+  return code.match(/pdfPreview-[\w-]+[.]js/)![0]
+}
 const rRuntime = JSON.parse(readFileSync(path.resolve(import.meta.dirname, '../../packaging/r-browser-runtime.json'), 'utf8')) as { base_url: string }
 test.use({ channel: process.env.PLAYWRIGHT_CHANNEL || undefined, video: 'off' })
 let server: Server
@@ -21,7 +27,7 @@ test.beforeAll(async () => {
     if (!file.startsWith(dist + path.sep)) { res.writeHead(404).end(); return }
     try {
       const content = readFileSync(file)
-      const mime: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.png': 'image/png', '.zip': 'application/zip' }
+      const mime: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.png': 'image/png', '.zip': 'application/zip' }
       res.writeHead(200, { 'Content-Type': mime[path.extname(file)] ?? 'application/octet-stream' }).end(content)
     } catch { res.writeHead(404).end() }
   })
@@ -247,26 +253,34 @@ p <- ggplot(data.frame(x=1:5,y=c(2,4,3,6,5),group="A"),aes(x,y,colour=group)) +
   })
   const baseline = await pixels()
   await expect(page.locator('[data-r-number="fontSize"]')).toHaveValue('')
-  const oracle = await page.evaluateHandle(async ({ base, repo, source }) => {
+  const initialDownload = page.waitForEvent('download')
+  await page.locator('[data-r-export]').click()
+  const initialExport = readFileSync((await (await initialDownload).path())!, 'utf8')
+  const setup = initialExport.slice(0, initialExport.indexOf(source))
+  const previewModule = previewModuleName()
+  const oracle = await page.evaluateHandle(async ({ base, repo, source, setup }) => {
     const { WebR, ChannelType } = await import(base + 'webr.mjs')
     const r = new WebR({ baseUrl: base, repoUrl: repo, channelType: ChannelType.PostMessage })
-    await r.init(); await r.installPackages(['ggplot2']); await r.evalRVoid(source)
+    await r.init(); await r.installPackages(['ggplot2', 'showtext', 'jsonlite']); await r.evalRVoid(setup + source)
     return r
-  }, { base: rRuntime.base_url, repo: `${origin}/r/packages/`, source })
+  }, { base: rRuntime.base_url, repo: `${origin}/r/packages/`, source, setup })
   try {
-    const capture = (code: string) => oracle.evaluate(async (r, code) => {
-      const shelter = await new r.Shelter()
-      const result = await shelter.captureR(code, { captureGraphics: { width: 504, height: 360 }, withAutoprint: false })
-      try {
-        const image = result.images.at(-1)!
-        if (!image) throw new Error(JSON.stringify(result.output))
+    const capture = async (code: string, filename = '/tmp/oracle.pdf') => {
+      const bytes = await oracle.evaluate(async (r, { code, filename }) => {
+        await r.evalRVoid(code)
+        return Array.from(await r.FS.readFile(filename)) as number[]
+      }, { code, filename })
+      return page.evaluate(async ({ bytes, url }) => {
+        const { pdfPreview } = await import(url)
+        const blob = await pdfPreview(new Uint8Array(bytes))
+        const image = await createImageBitmap(blob)
         const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height
-        const context = canvas.getContext('2d')!; context.drawImage(image, 0, 0)
+        const context = canvas.getContext('2d')!; context.drawImage(image, 0, 0); image.close()
         return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', context.getImageData(0, 0, canvas.width, canvas.height).data)))
-      } finally { result.images.forEach((image: ImageBitmap) => image.close()); await shelter.purge() }
-    }, code)
-    // Independent oracle: the original ggplot rendered directly, without adapter styles.
-    expect(baseline).toEqual(await capture('grid::grid.draw(ggplot2::ggplotGrob(p))'))
+      }, { bytes, url: `${origin}/r/assets/${previewModule}` })
+    }
+    // Independent original ggplot, same physical PDF device and actual font files.
+    expect(baseline).toEqual(await capture('grDevices::pdf("/tmp/oracle.pdf",width=7,height=5,useDingbats=FALSE); showtext::showtext_begin(); grid::grid.draw(ggplot2::ggplotGrob(p)); showtext::showtext_end(); grDevices::dev.off()'))
     await page.locator('[data-r-legend] button').click()
     await page.locator('[data-select-option="bottomLeft"]').click()
     await ready()
@@ -305,9 +319,9 @@ p <- ggplot(data.frame(x=1:5,y=c(2,4,3,6,5),group="A"),aes(x,y,colour=group)) +
     const download = page.waitForEvent('download')
     await page.locator('[data-r-export]').click()
     const exported = readFileSync((await (await download).path())!, 'utf8')
-    expect(exported.startsWith(source)).toBe(true)
+    expect(exported).toContain(source)
     // Real R execution; inspect the resulting ggplot values rather than source substrings.
-    expect(await capture(exported)).toEqual(legendMoved)
+    expect(await capture(exported, 'figure-styled.pdf')).toEqual(legendMoved)
     expect(await oracle.evaluate(async (r) => r.evalRString('paste(figweave_plot$theme$text$size, figweave_plot$theme$text$family, figweave_plot$theme$legend.position)'))).toBe('10 sans inside')
     await page.locator('[data-r-reset-moves]').click(); await ready()
     expect(await pixels()).toEqual(beforeMoves)
@@ -471,4 +485,123 @@ test('homepage reduced motion uses keyboard chapters without a pinned scroll sce
   await expect(story).toHaveAttribute('data-chapter', 'legend')
   expect(await page.evaluate(() => window.scrollY)).toBe(before)
   await expect(page.locator('[data-site-try]')).toBeInViewport()
+})
+
+test('ggplot2 imports data and fonts, edits one label, and retains offsets through layout changes', async ({ page }) => {
+  test.setTimeout(420_000)
+  await page.goto(`${origin}/r/?lang=en`)
+  const ready = async () => {
+    await expect(page.locator('[data-r-run]')).toBeEnabled({ timeout: 280_000 })
+    await expect(page.locator('[data-r-error]')).toHaveCount(0)
+  }
+  // Generate a real RDS file and obtain the bundled open font from the same locked runtime.
+  const oracle = await page.evaluateHandle(async ({ base, repo }) => {
+    const { WebR, ChannelType } = await import(base + 'webr.mjs')
+    const r = new WebR({ baseUrl: base, repoUrl: repo, channelType: ChannelType.PostMessage })
+    await r.init(); await r.installPackages(['ggplot2', 'showtext', 'jsonlite'])
+    return r
+  }, { base: rRuntime.base_url, repo: `${origin}/r/packages/` })
+  try {
+    const assets = await oracle.evaluate(async (r) => {
+      await r.evalRVoid('saveRDS(data.frame(x=1:3,y=c(2L,4L,3L)),"/tmp/input.rds")')
+      const font = await r.evalRString('system.file("fonts/LiberationSans-Regular.ttf",package="sysfonts")')
+      return { rds: Array.from(await r.FS.readFile('/tmp/input.rds')) as number[], font: Array.from(await r.FS.readFile(font)) as number[] }
+    })
+    const csv = 'x,y\n1,2\n2,4\n3,3\n', tsv = 'x\ty\n1\t2\n2\t4\n3\t3\n'
+    await page.locator('[data-r-assets="data"]').setInputFiles([
+      { name: '实验.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) },
+      { name: 'table.tsv', mimeType: 'text/tab-separated-values', buffer: Buffer.from(tsv) },
+      { name: 'input.rds', mimeType: 'application/octet-stream', buffer: Buffer.from(assets.rds) },
+    ])
+    await expect(page.locator('[data-r-asset]')).toHaveCount(3)
+    await page.locator('[data-r-assets="font"]').setInputFiles({ name: 'ImportedSans.ttf', mimeType: 'font/ttf', buffer: Buffer.from(assets.font) })
+    await expect(page.locator('[data-r-asset]')).toHaveCount(4)
+    const source = `library(ggplot2)
+a <- read.csv("实验.csv"); b <- read.delim("table.tsv"); d <- readRDS("input.rds")
+stopifnot(identical(a,b), identical(a,d))
+p <- ggplot(a,aes(x,y,colour="Group A")) + geom_point(size=3) + geom_line() +
+  labs(title="中文图表",x="Input X",y="Input Y",colour="Group") + theme_minimal(base_family="ImportedSans")`
+    await page.locator('[data-r-source]').fill(source)
+    await page.locator('[data-r-run]').click(); await ready()
+    await expect(page.locator('[data-r-kind="point"]')).toHaveCount(3)
+    await expect(page.locator('[data-r-font-warnings]')).toContainText('wqy-microhei')
+    const title = page.locator('[data-r-text="中文图表"]')
+    const id = (await title.getAttribute('data-r-object'))!
+    const text = page.locator(`[data-r-object="${id}"]`)
+    const x = () => text.evaluate((el) => (el as SVGGraphicsElement).getBBox().x / 1000)
+    await title.focus(); await title.press('ArrowRight'); await ready()
+    const moved = await x()
+    await expect(page.locator('[data-r-text-editor]')).toBeVisible()
+    await expect(page.locator('[data-r-actual-font]')).toContainText('wqy-microhei')
+    await page.locator('[data-r-text-editor] [data-prop="fontsize"] input').fill('22')
+    await page.locator('[data-r-text-editor] [data-prop="fontsize"] input').press('Enter')
+    await expect(page.locator('[data-r-run]')).toBeDisabled(); await ready()
+    await page.locator('[data-r-text-editor] [data-prop="color"] input[type="color"]').fill('#CC2255')
+    await page.locator('[data-r-text-editor] [data-prop="color"] input[type="color"]').blur()
+    await expect(page.locator('[data-r-run]')).toBeDisabled(); await ready()
+    // Font/content edits must stay bound to this title, not move onto a tick or legend label.
+    await page.locator('[data-r-text-content]').fill('Edited Arial-like title')
+    await page.locator('[data-r-text-content]').press('Enter'); await ready()
+    await expect(text).toHaveAttribute('data-r-text', 'Edited Arial-like title')
+    await expect(page.locator('[data-r-actual-font]')).toContainText('ImportedSans')
+    expect(await x()).toBeCloseTo(moved, 5)
+    await page.locator('[data-r-label="title"]').fill('Global title')
+    await page.locator('[data-r-label="title"]').press('Enter'); await ready()
+    await expect(text).toHaveAttribute('data-r-text', 'Global title')
+    await expect(page.locator('[data-r-text-editor] [data-prop="fontsize"] input')).toHaveValue('22')
+    await page.locator('[data-r-number="fontSize"]').fill('14')
+    await page.locator('[data-r-number="fontSize"]').press('Enter'); await ready()
+    await page.locator('[data-r-label="x"]').fill('Changed X')
+    await page.locator('[data-r-label="x"]').press('Enter'); await ready()
+    await expect(page.locator('[data-r-unmatched]')).toHaveCount(0)
+    const afterLayout = await x()
+    await text.focus(); await page.locator('[data-r-reset-selected]').click(); await ready()
+    expect(afterLayout - await x()).toBeCloseTo(.005, 5)
+    await page.locator('[data-r-undo]').click(); await ready()
+    expect(await x()).toBeCloseTo(afterLayout, 5)
+    // One legend label is independently editable, and can be restored by undo.
+    await page.locator('[data-r-text="Group A"]').focus()
+    await page.locator('[data-r-text-content]').fill('Changed group')
+    await page.locator('[data-r-text-content]').press('Enter'); await ready()
+    await expect(page.locator('[data-r-text="Changed group"]')).toHaveCount(1)
+    await page.locator('[data-r-undo]').click(); await ready()
+    await expect(page.locator('[data-r-text="Group A"]')).toHaveCount(1)
+    // Exported code runs with the same companion assets and generates the same pixels.
+    const download = page.waitForEvent('download'); await page.locator('[data-r-export]').click()
+    const exported = readFileSync((await (await download).path())!, 'utf8')
+    const pdfBytes = await oracle.evaluate(async (r, { csv, tsv, assets, exported }) => {
+      await r.FS.writeFile('实验.csv', new TextEncoder().encode(csv)); await r.FS.writeFile('table.tsv', new TextEncoder().encode(tsv))
+      await r.FS.writeFile('input.rds', new Uint8Array(assets.rds)); await r.FS.writeFile('ImportedSans.ttf', new Uint8Array(assets.font))
+      await r.evalRVoid(exported)
+      // Inspect the replayed grid object itself, independently of UI draft values.
+      await r.evalRVoid(`local({
+        grDevices::pdf(NULL, width=7, height=5)
+        showtext::showtext_begin()
+        on.exit({ showtext::showtext_end(); grDevices::dev.off() })
+        grid::grid.draw(figweave_result); grid::grid.force()
+        listing <- grid::grid.ls(print=FALSE)
+        all <- lapply(seq_along(listing$name), function(i) {
+          full <- paste(c(if(nzchar(listing$gPath[i])) listing$gPath[i], listing$name[i]),collapse="::")
+          grid::grid.get(do.call(grid::gPath, as.list(strsplit(full,"::",fixed=TRUE)[[1]])),strict=TRUE)
+        })
+        all <- Filter(function(g) inherits(g,"text"),all)
+        title <- Filter(function(g) any(as.character(g$label) == "Global title"), all)
+        stopifnot(length(title) == 1L, title[[1]]$gp$fontsize == 22,
+          all(grDevices::col2rgb(title[[1]]$gp$col) == c(204L,34L,85L)), title[[1]]$gp$fontfamily == "ImportedSans")
+        others <- Filter(function(g) !any(as.character(g$label) == "Global title"), all)
+        stopifnot(length(others) > 0, !any(vapply(others, function(g) any(toupper(g$gp$col) == "#CC2255"), FALSE)))
+      })`)
+      return Array.from(await r.FS.readFile('figure-styled.pdf')) as number[]
+    }, { csv, tsv, assets, exported })
+    const module = previewModuleName()
+    const equal = await page.evaluate(async ({ pdfBytes, url }) => {
+      const { pdfPreview } = await import(url)
+      const output = await pdfPreview(new Uint8Array(pdfBytes))
+      const current = await (await fetch((document.querySelector('[data-r-preview]') as HTMLImageElement).src)).blob()
+      return Array.from(new Uint8Array(await output.arrayBuffer())).join(',') === Array.from(new Uint8Array(await current.arrayBuffer())).join(',')
+    }, { pdfBytes, url: `${origin}/r/assets/${module}` })
+    expect(equal).toBe(true)
+    await text.focus()
+    await page.screenshot({ path: test.info().outputPath('ggplot2-data-text-fonts.png'), fullPage: true })
+  } finally { await oracle.evaluate((r) => r.close()); await oracle.dispose() }
 })

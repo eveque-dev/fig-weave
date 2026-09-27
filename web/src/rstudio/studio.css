@@ -25,3 +25,7 @@
 path.r-drag-object { fill: none; stroke-width: 12; pointer-events: stroke; }
 .r-drag-object:hover, .r-drag-object:focus-visible, .r-drag-object.selected { stroke: var(--color-accent); outline: none; }
 path.r-drag-object:hover, path.r-drag-object:focus-visible, path.r-drag-object.selected { stroke-width: 4; }
+.r-asset { padding:8px 10px; border:1px solid var(--color-border); border-radius:var(--radius-sm); }
+.r-text-inspector { padding:16px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-md); }
+.r-text-inspector legend { padding:0 8px; }
+.r-studio-output details ul { max-height:160px; overflow:auto; padding:12px 20px; }
