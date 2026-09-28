@@ -1,5 +1,9 @@
 # Outward-facing product images — inventory and capture status
 
+> **Upstream historical inventory.** The dates and `current` labels below refer to Tavotto on
+> 2026-09-19, not today's FigWeave. FigWeave's README uses the [current capture set](../figweave/README.md).
+> These upstream images remain as provenance and historical evidence, not current FigWeave screenshots.
+
 Written 2026-09-19 for the website / README update v2. Every image the product
 repository, the website and the plugin documentation show of the product, where
 it came from, and whether it shows the product as it ships now. Update it when

@@ -7,7 +7,7 @@
 
 - 网站默认中文，支持中英文、七种界面背景（默认曜石黑），提供 Matplotlib、Plotly/pyecharts 与实验性 R 工作台。
 - `/try/` 复用现有编辑器与 Pyodide worker；首页不加载 Python 运行时。
-- 在线页面里的桌面入口统一指向本站 `#downloads`，明确安装包尚未发布。
+- 在线页面里的桌面入口统一指向本站 `#downloads`，提供已发布的未签名桌面预览包，说明平台与能力范围。
 - 显示名与官网地址在 Python / TypeScript 品牌常量中保持一致。
 - 上游仓库地址仍用于来源、既有引擎开发与历史文档，不是 FigWeave 发行仓库。
 
@@ -63,7 +63,7 @@ python scripts/mirror_pyodide_runtime.py /var/www/fig-weave/runtime/pyodide/v314
 核对版本与 SHA-256；不会下载整个包仓库。Nginx 将 `/runtime/` 映射到该目录的
 `runtime/` 根，允许静态资源跨域读取，以支持本地预览。浏览器仍在本机执行代码，
 服务器只提供静态文件。运行时目录独立于网站发布目录，以便切换版本和回滚。
-网站同时发布 `/source/figweave-source.zip`，Git 工作区发布时内容对应 `version.txt` 中的 Git 提交；无 Git 的源码快照发布时，
+网站同时发布 `/source/figweave-source.zip`，Git 工作区发布时内容对应 `version.json` 中的 Git 提交；无 Git 的源码快照发布时，
 该文件明确记录 `git_commit: null`、源码包 SHA-256 和 playground 指纹，不冒充提交。
 
 ## 验证

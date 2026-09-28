@@ -1,5 +1,10 @@
 # ggplot2 online refinement — 2026-09-26
 
+> Historical implementation report, not the current capability list. The September 27 update added
+> CSV/TSV/RDS import, individual text editing, custom fonts and retained matching offsets across
+> layout changes, and switched preview/export to the same PDF-based rendering pipeline.
+> See [current online capabilities](figweave-online.md) and the [September 28 review](figweave-review-2026-09-28.md).
+
 The online R workspace now preserves the source plot's typography and legend
 position on first run. Users can explicitly choose a generic font family, base
 font size, an outside legend edge or an inside corner, and restore the original

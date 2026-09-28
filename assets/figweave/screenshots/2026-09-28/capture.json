@@ -1,0 +1,101 @@
+{
+  "captured_at": "2026-09-28T04:26:00.586Z",
+  "base_url": "https://fig-weave.com/",
+  "deployed_commit": "72401c66e4dfc3b6bb615c1a1ea119896c05a8ad",
+  "deployed_release": "20260928-download-72401c6",
+  "browser": "153.0.8010.53",
+  "locale": "zh-CN",
+  "images": [
+    {
+      "file": "homepage.png",
+      "description": "首页滚动演示：调整字号；该区域是产品演示，不是编辑器。",
+      "url": "https://fig-weave.com/?lang=zh",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "sha256": "afa385f4206b5aaa8f330aea837b4ada686deee6b604decf1e18066885022596"
+    },
+    {
+      "file": "matplotlib.png",
+      "description": "Matplotlib 实际运行 kinetics.py，选中标题，右上角导出 PNG。",
+      "url": "https://fig-weave.com/try/?lang=zh",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "sha256": "7a8f50c7e67fc5596ed7d1e40c55b058c9b464703052b706ad5c6d7019f1e7db"
+    },
+    {
+      "file": "backgrounds.png",
+      "description": "曜石黑工作台与七种背景选择；白色图纸独立。",
+      "url": "https://fig-weave.com/try/?lang=zh",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "sha256": "445a5a46ddc4680c4aab7e151fbcdf8ccb359db517ce76fdd69284843e6b83d8"
+    },
+    {
+      "file": "plotly.png",
+      "description": "plotly 自带示例真实运行，中文黑色界面，PNG / Python / JSON 导出入口。",
+      "url": "https://fig-weave.com/charts/?lang=zh",
+      "viewport": {
+        "width": 1440,
+        "height": 1100
+      },
+      "sha256": "22f9a24165c147a7fbc8374250993a9411a37ed6cc6962f8d85749b8a6873c00"
+    },
+    {
+      "file": "pyecharts.png",
+      "description": "pyecharts 自带示例真实运行，中文黑色界面，PNG / Python / JSON 导出入口。",
+      "url": "https://fig-weave.com/charts/?lang=zh",
+      "viewport": {
+        "width": 1440,
+        "height": 1100
+      },
+      "sha256": "d21e1b3076b6a8edcf330a67a02e8c31051b49a5d2fac65bf89a41fb544ab194"
+    },
+    {
+      "file": "ggplot2.png",
+      "description": "导入 CSV 后运行 ggplot2，选中文字并修改字号，显示数据、字体与三种导出入口。",
+      "url": "https://fig-weave.com/r/?lang=zh",
+      "viewport": {
+        "width": 1440,
+        "height": 1100
+      },
+      "sha256": "6630918c442b3bba9c42050f2a2c1da1bba347dfa76234638c9ec8a549c96ca0"
+    }
+  ],
+  "downloads": [
+    {
+      "engine": "Matplotlib",
+      "filename": "kinetics.png",
+      "width": 2400,
+      "height": 1764,
+      "sha256": "ecab98e8d32390af7b0ce6119d25c2aed8b6525e37c0f9f520852e72081c58a4"
+    },
+    {
+      "engine": "plotly",
+      "filename": "figure.png",
+      "width": 1200,
+      "height": 800,
+      "sha256": "78817176608a33cce5df2170e2b62bc9d0be9fe48dec10baea7e65416bf6aeb3"
+    },
+    {
+      "engine": "pyecharts",
+      "filename": "figure.png",
+      "width": 1832,
+      "height": 1036,
+      "sha256": "642c857c5cfa009342b0964b9312492bbfd3b5d9ce4c3fb95ae33c97960cd3ab"
+    },
+    {
+      "engine": "ggplot2",
+      "filename": "figure.png",
+      "width": 1008,
+      "height": 720,
+      "sha256": "736790bd15d9f6e89e8591dd325b3c4237ca21d1f0a5c4965f1f8c440a701f4c"
+    }
+  ],
+  "page_errors": []
+}

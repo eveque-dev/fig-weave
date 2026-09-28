@@ -15,7 +15,7 @@ FigWeave 是面向科研与数据可视化的图表编辑项目。直接打开�
 [打开官网](https://fig-weave.com) · [Matplotlib 编辑器](https://fig-weave.com/try/) ·
 [Plotly / pyecharts 工作台](https://fig-weave.com/charts/) · [ggplot2 工作台](https://fig-weave.com/r/)
 
-![FigWeave 中文首页与真实科研图预览](assets/figweave/homepage.png)
+![FigWeave 中文首页与真实科研图预览](assets/figweave/screenshots/2026-09-28/homepage.png)
 
 *首页通过滚动演示图表对象选择、字号调整、图例移动与导出；工作台仍可直接打开。*
 
@@ -55,21 +55,30 @@ Plotly / pyecharts 导出的 Python 用当前配置重建图表，不包含原�
 
 ## 工作台实景
 
+以下截图拍摄于 **2026-09-28**，来自当前线上中文、曜石黑界面；四个绘图库都实际运行并验证了 PNG 下载。
+[截图版本与复现方式](assets/figweave/README.md)。首页图片为滚动演示，下面是可操作的工作台。
+
+### Python · Matplotlib
+
+![Matplotlib 工作台选中标题，右侧显示字号属性，右上角提供导出 PNG](assets/figweave/screenshots/2026-09-28/matplotlib.png)
+
+直接选择图内元素，在右侧调整样式；右上角的「导出 PNG」下载带当前修改的高清图片。
+
 ### Python · Plotly
 
-![在 FigWeave 中运行并编辑 Plotly 折线图](assets/figweave/plotly.png)
+![在 FigWeave 中运行并编辑 Plotly 折线图](assets/figweave/screenshots/2026-09-28/plotly.png)
 
 运行 `fig` 后修改标题、坐标轴和原生配置，也可直接编辑图中文字与图例。
 
 ### Python · pyecharts
 
-![在 FigWeave 中运行并编辑 pyecharts 图表](assets/figweave/pyecharts.png)
+![在 FigWeave 中运行并编辑 pyecharts 图表](assets/figweave/screenshots/2026-09-28/pyecharts.png)
 
 运行 `chart` 后编辑图表，导出 PNG、JSON 或可重新执行的 Python 脚本。
 
 ### R · ggplot2
 
-![FigWeave ggplot2 工作台与可移动的散点](assets/figweave/ggplot2.png)
+![FigWeave ggplot2 工作台导入 CSV 后编辑中文标题和字号](assets/figweave/screenshots/2026-09-28/ggplot2.png)
 
 选中标题、轴名或图例文字后可单独修改字体、字号、颜色和内容；拖动或用方向键微调位置。
 数据文件与字体均在当前浏览器会话中读取，改完可撤销并导出。
@@ -87,7 +96,7 @@ Plotly / pyecharts 导出的 Python 用当前配置重建图表，不包含原�
 
 ## 选择自己的工作背景
 
-![FigWeave 黑色绘图工作台](assets/figweave/dark-workspace.png)
+![FigWeave 曜石黑工作台打开七种背景选择](assets/figweave/screenshots/2026-09-28/backgrounds.png)
 
 背景选择包含曜石黑、纸白、纯白、灰、蓝、绿、紫七种方案；每次打开页面默认曜石黑，图纸本身的颜色不变。
 
@@ -147,7 +156,7 @@ python3 scripts/build_browser_playground.py --check
 ```
 
 更多目录规则见 [AGENTS.md](AGENTS.md)。当前改进记录见
-[项目审查与改进清单](docs/figweave-review-2026-09-22.md)。
+[项目审查与升级优先级（2026-09-28）](docs/figweave-review-2026-09-28.md)。
 
 ## 来源与许可证
 
