@@ -420,6 +420,12 @@ test('Matplotlib PNG download includes edits and undo restores the original', as
     return createHash('sha256').update(bytes).digest('hex')
   }
   const original = await downloadPng()
+  // A persistent download link must leave the toolbar reachable with a pointer.
+  await page.locator('[data-background-picker]').click()
+  await page.locator('[data-background-choice="sage"]').click()
+  await expect(page.locator('html')).toHaveAttribute('data-online-background', 'sage')
+  await page.locator('[data-background-picker]').click()
+  await page.locator('[data-background-choice="black"]').click()
   const title = page.locator('[data-element-svg] svg [id="axes_0.title"]')
   await expect(title).toHaveCount(1)
   const box = (await title.boundingBox())!
@@ -436,6 +442,8 @@ test('Matplotlib PNG download includes edits and undo restores the original', as
   expect(await downloadPng()).toBe(original)
   await page.setViewportSize({ width: 390, height: 844 })
   await expect(button).toBeVisible()
+  await page.locator('[data-background-picker]').click()
+  await expect(page.locator('[data-background-choice="sage"]')).toBeVisible()
 })
 
 // Subject: the built homepage's scene position and visible figure at real scroll offsets.

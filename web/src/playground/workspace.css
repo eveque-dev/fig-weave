@@ -7,10 +7,10 @@
 .fw-document { min-width:0; max-width:420px; border-left:1px solid var(--color-border); border-radius:0; }
 .fw-integrity { font-size:11px; font-weight:400; }
 .fw-export-slot { margin-left:auto; flex-shrink:0; }
-.fw-export { position:relative; display:flex; align-items:center; gap:12px; }
+.fw-export { display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
 .fw-export-note { display:none; }
 .fw-export [data-playground-export] { padding-inline:18px; }
-.fw-download-ready { position:absolute; top:calc(100% + 16px); right:0; width:max-content; max-width:min(300px,90vw); padding:12px 16px; border-radius:var(--radius-md); background:var(--color-surface); box-shadow:var(--shadow-pop); }
+.fw-download-ready { display:block; max-width:min(300px,80vw); text-align:right; }
 .fw-toolbar { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; padding:8px 20px; background:var(--color-surface); border-bottom:1px solid var(--color-border); }
 .fw-toolgroup { display:flex; align-items:center; gap:4px; }
 .fw-divider { height:18px; width:1px; margin:0 10px; background:var(--color-border); }
