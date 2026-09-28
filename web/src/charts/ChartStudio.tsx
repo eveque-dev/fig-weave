@@ -124,7 +124,9 @@ export function ChartStudio() {
             <Button data-chart-python disabled={!chart || busy} onClick={() => download(new Blob([exportPython(chart!, kind)], { type: 'text/plain;charset=utf-8' }), 'figure-edited.py')}>{t('charts.exportPython')}</Button>
             <Button data-chart-json disabled={!chart || busy} onClick={() => download(new Blob([JSON.stringify(chart, null, 2)], { type: 'application/json' }), 'figure.json')}>{t('charts.exportJson')}</Button>
           </div>
-          <div data-chart-preview ref={canvas} className="min-w-0 rounded-md border border-border bg-surface" style={{ height: 520 }} />
+          {/* The paper is independent of the workspace theme; transparent chart pixels
+              must stay readable and match the white PNG export backing. */}
+          <div data-chart-preview ref={canvas} className="min-w-0 rounded-md border border-border bg-white" style={{ height: 520 }} />
           {!chart && <p className="text-sm text-ink-3">{t('rStudio.empty')}</p>}
           <p className="text-sm text-ink-2">{t('charts.editHint')}</p>
           <Details><Summary className="cursor-pointer text-sm">{t('charts.options')}</Summary><TextArea data-chart-options aria-label={t('charts.options')} className="mt-3 min-h-[300px] font-mono text-sm" disabled={!chart || busy} value={options} onChange={(e) => setOptions(e.target.value)} /><Button disabled={!chart || busy} onClick={() => { try { void apply(parseChart(options, kind)) } catch (e) { setError(String(e)) } }}>{t('charts.apply')}</Button></Details>

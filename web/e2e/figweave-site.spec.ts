@@ -363,6 +363,14 @@ test('Plotly and pyecharts execute Python, edit, undo and export', async ({ page
       if (errors.length) throw new Error(errors.join('\n'))
       return page.locator('[data-chart-status]').innerText()
     }, { timeout: 280_000 }).toBe('Preview ready')
+    // Subject: the backing under transparent rendered chart pixels, in the
+    // actual browser after runtime execution. Workspace colors must not tint it.
+    for (const background of ['black', 'sage']) {
+      await page.locator('[data-background-picker]').click()
+      await page.locator(`[data-background-choice="${background}"]`).click()
+      await expect(page.locator('html')).toHaveAttribute('data-online-background', background)
+      await expect(page.locator('[data-chart-preview]')).toHaveCSS('background-color', 'rgb(255, 255, 255)')
+    }
     const original = await page.locator('[data-chart-label="title"]').inputValue()
     await page.locator('[data-chart-label="title"]').fill('Edited chart')
     await page.locator('[data-chart-apply]').click()
