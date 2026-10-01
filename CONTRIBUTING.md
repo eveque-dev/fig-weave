@@ -1,4 +1,4 @@
-# Contributing to Tavotto
+# Contributing to FigWeave
 
 Thanks for taking the time. Issues and pull requests are both welcome — a good
 bug report is worth as much as a patch.
@@ -7,7 +7,7 @@ bug report is worth as much as a patch.
 
 The most useful thing you can attach is the **diagnostics bundle**: in the app,
 **Settings → Privacy, diagnostics and About → Download diagnostics bundle**. It
-collects the version, your platform and encoding, how Tavotto was installed,
+collects the version, your platform and encoding, how FigWeave was installed,
 which Python interpreter is doing the rendering and what matplotlib it has, the
 last errors and the log. Keys and personal paths are redacted before it is
 written, so it is safe to attach to a public issue.
@@ -20,7 +20,7 @@ numbers is what we can actually work with.
 ## Getting set up
 
 ```sh
-git clone https://github.com/Tavotto/Tavotto.git && cd Tavotto
+git clone https://github.com/eveque-dev/fig-weave.git && cd fig-weave
 python -m venv .venv && .venv/bin/pip install -e ".[worker,dev]"
 python scripts/build_frontend.py     # needs node + pnpm
 .venv/bin/tavotto
@@ -178,7 +178,11 @@ names the symptom a user would have seen.
 
 ## Licence and contributor agreement
 
-**Tavotto is licensed under [AGPL-3.0-only](LICENSE), and that is not changing.**
+FigWeave inherits its licence and contributor-agreement arrangements from the
+upstream Tavotto project — see [docs/legal/README.md](docs/legal/README.md).
+Where this section names Tavotto, it refers to that upstream project.
+
+**FigWeave is licensed under [AGPL-3.0-only](LICENSE), and that is not changing.**
 
 **You keep the copyright in your contribution.** The Tavotto Contributor License
 Agreement gives Tavotto the additional rights needed to keep the community
