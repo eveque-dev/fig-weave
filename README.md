@@ -1,35 +1,72 @@
-# FigWeave
+<p align="center">
+  <a href="https://fig-weave.com">
+    <img src="web/public/favicon.svg" width="72" height="72" alt="FigWeave 标志" />
+  </a>
+</p>
 
-[![Web checks](https://github.com/eveque-dev/fig-weave/actions/workflows/figweave-web.yml/badge.svg?branch=main)](https://github.com/eveque-dev/fig-weave/actions/workflows/figweave-web.yml)
-[![Desktop builds](https://github.com/eveque-dev/fig-weave/actions/workflows/figweave-preview.yml/badge.svg)](https://github.com/eveque-dev/fig-weave/actions/workflows/figweave-preview.yml)
-[![Preview Release](https://img.shields.io/badge/Release-0.15.0_preview-6c8b76)](https://github.com/eveque-dev/fig-weave/releases/tag/figweave-preview-0.15.0-20260922)
-[![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-blue)](LICENSE)
-[![Website](https://img.shields.io/badge/Web-fig--weave.com-6c8b76)](https://fig-weave.com)
+<h1 align="center">FigWeave</h1>
 
-**把绘图脚本变成可以继续编辑的图表。**
+<p align="center">
+  <strong>代码画图，直接在图上完成最后一步。</strong><br />
+  面向科研与数据可视化的 Python / R 图表编辑器。
+</p>
 
-FigWeave 是面向科研与数据可视化的图表编辑项目。直接打开网页，运行 Python 或 R
-脚本，再调整图中文字、图例、样式与位置。在线界面默认简体中文和曜石黑主题，支持英文和七种
-背景色；界面背景与图纸背景分别管理。
+<p align="center">
+  <a href="https://github.com/eveque-dev/fig-weave/actions/workflows/figweave-web.yml"><img src="https://github.com/eveque-dev/fig-weave/actions/workflows/figweave-web.yml/badge.svg?branch=main" alt="Web checks" /></a>
+  <a href="https://github.com/eveque-dev/fig-weave/actions/workflows/figweave-preview.yml"><img src="https://github.com/eveque-dev/fig-weave/actions/workflows/figweave-preview.yml/badge.svg" alt="Desktop builds" /></a>
+  <a href="https://github.com/eveque-dev/fig-weave/releases/tag/figweave-preview-0.15.0-20260922"><img src="https://img.shields.io/badge/Release-0.15.0_preview-6c8b76" alt="Preview Release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0--only-blue" alt="License: AGPL-3.0-only" /></a>
+  <a href="https://www.buymeacoffee.com/eveque"><img src="https://img.shields.io/badge/Buy_Me_a_Coffee-eveque-FFDD00?logo=buymeacoffee&amp;logoColor=000000" alt="Buy Me a Coffee — 支持作者" /></a>
+</p>
 
-[打开官网](https://fig-weave.com) · [Matplotlib 编辑器](https://fig-weave.com/try/) ·
-[Plotly / pyecharts 工作台](https://fig-weave.com/charts/) · [ggplot2 工作台](https://fig-weave.com/r/)
+<p align="center">
+  <a href="https://fig-weave.com"><strong>在线体验</strong></a> ·
+  <a href="#开始使用">快速开始</a> ·
+  <a href="#现在可以做什么">功能范围</a> ·
+  <a href="#桌面预览安装包">桌面下载</a> ·
+  <a href="#本地开发">本地开发</a> ·
+  <a href="#支持与贡献">支持与贡献</a>
+</p>
+
+---
+
+运行一段 Python 或 R 绘图脚本，再直接选择图中的文字、图例和其他元素，调整样式与位置，导出当前结果。
+FigWeave 把代码的可复现性与图形界面的直观编辑结合起来，适合科研图表的最后一轮微调。
+
+- **熟悉的绘图库**：Matplotlib、seaborn、pandas、NetworkX、Plotly、pyecharts 和 ggplot2。
+- **在图上编辑**：选择元素、修改文字与样式、调整布局，支持撤销。
+- **浏览器内运行**：无需为在线体验配置本地 Python / R 环境；导出能力按绘图引擎区分。
+- **中文优先**：默认简体中文与曜石黑，支持英文和七种工作背景；界面与图纸背景独立。
 
 ![FigWeave 中文首页与真实科研图预览](assets/figweave/screenshots/2026-09-28/homepage.png)
 
-*首页通过滚动演示图表对象选择、字号调整、图例移动与导出；工作台仍可直接打开。*
+<p align="center"><sub>首页滚动演示图表微调；下方工作台截图来自真实运行。</sub></p>
+
+## 开始使用
+
+选择你的绘图库，无需安装即可在线体验：
+
+| Python · Matplotlib | Python · Plotly / pyecharts | R · ggplot2 |
+| :---: | :---: | :---: |
+| [打开工作台](https://fig-weave.com/try/) | [打开工作台](https://fig-weave.com/charts/) | [打开工作台](https://fig-weave.com/r/) |
+
+1. 打开对应工作台，先运行自带示例。
+2. 粘贴或上传独立的 `.py` / `.R` 脚本，按工作台约定命名图对象。
+3. 运行后编辑图表；不满意时撤销，再导出当前结果。
+
+首次使用需下载浏览器中的 Python / R 运行时和锁定的依赖。应用不会把脚本上传到
+服务器，也不会把脚本写入浏览器持久存储；脚本自己发起的网络请求不在此保证内。
+语言偏好保存在当前浏览器中；每次打开页面默认曜石黑，背景可在当前页面切换。刷新页面会丢失尚未导出的编辑会话。
 
 ## 33 秒看看怎么用
 
 [![代码画图，网页改图。](assets/figweave/promo-poster.png)](https://fig-weave.com/#film)
 
 **“图例放左下角”“字号再小一点”——少补几轮 prompt，直接在图上调。**
-第三版将独立设计的“代码与图形编织”封面嵌入视频前 1 秒，接着展示真实 R 编辑与脚本导出，再介绍三个网页入口；10 类原创合成音效随操作变化，无配乐、无人声。
-[观看 / 下载 MP4](https://github.com/eveque-dev/fig-weave/releases/download/figweave-preview-0.15.0-20260922/FigWeave-promo-1080p.mp4) ·
-[下载封面](assets/figweave/promo-cover-v3.png) · [视频源码与复现方式](promo-video/README.md) · [小红书文案](docs/promo/xiaohongshu.md)
+视频展示 R 图表编辑与脚本导出，并介绍三个在线入口；只有操作音效，无配乐、无人声。
 
-FigWeave 是基于 Tavotto 的独立派生项目。当前扩展方向是多绘图库在线工作台、
-按引擎导出和中文体验；核心对象编辑能力保留上游来源，详见 [差异与素材说明](docs/promo/identity-and-sources.md)。
+[观看 / 下载 MP4](https://github.com/eveque-dev/fig-weave/releases/download/figweave-preview-0.15.0-20260922/FigWeave-promo-1080p.mp4) ·
+[视频源码与复现方式](promo-video/README.md)
 
 ## 现在可以做什么
 
@@ -58,6 +95,9 @@ Plotly / pyecharts 导出的 Python 用当前配置重建图表，不包含原�
 以下截图拍摄于 **2026-09-28**，来自当前线上中文、曜石黑界面；四个绘图库都实际运行并验证了 PNG 下载。
 [截图版本与复现方式](assets/figweave/README.md)。首页图片为滚动演示，下面是可操作的工作台。
 
+<details>
+<summary>展开四个工作台的实景截图</summary>
+
 ### Python · Matplotlib
 
 ![Matplotlib 工作台选中标题，右侧显示字号属性，右上角提供导出 PNG](assets/figweave/screenshots/2026-09-28/matplotlib.png)
@@ -84,15 +124,7 @@ Plotly / pyecharts 导出的 Python 用当前配置重建图表，不包含原�
 数据文件与字体均在当前浏览器会话中读取，改完可撤销并导出。
 以上图片均来自实际工作台运行。
 
-## 开始使用
-
-1. 打开对应工作台，先运行自带示例。
-2. 粘贴或上传独立的 `.py` / `.R` 脚本，按工作台约定命名图对象。
-3. 运行后编辑图表；不满意时撤销，再导出当前结果。
-
-首次使用需下载浏览器中的 Python / R 运行时和锁定的依赖。应用不会把脚本上传到
-服务器，也不会把脚本写入浏览器持久存储；脚本自己发起的网络请求不在此保证内。
-语言偏好保存在当前浏览器中；每次打开页面默认曜石黑，背景可在当前页面切换。刷新页面会丢失尚未导出的编辑会话。
+</details>
 
 ## 选择自己的工作背景
 
@@ -158,6 +190,15 @@ python3 scripts/build_browser_playground.py --check
 更多目录规则见 [AGENTS.md](AGENTS.md)。当前改进记录见
 [项目审查与升级优先级（2026-09-28）](docs/figweave-review-2026-09-28.md)。
 
+## 支持与贡献
+
+如果 FigWeave 帮你省下了整理图表的时间，欢迎请作者喝杯咖啡。
+
+<a href="https://www.buymeacoffee.com/eveque"><img src="https://img.shields.io/badge/Buy_Me_a_Coffee-eveque-FFDD00?style=for-the-badge&amp;logo=buymeacoffee&amp;logoColor=000000" alt="Buy Me a Coffee — 请作者喝杯咖啡" /></a>
+
+也欢迎通过 [报告问题](https://github.com/eveque-dev/fig-weave/issues)、改进文档或提交代码来参与项目。
+提交改动前请阅读 [贡献指南](CONTRIBUTING.md)；本地开发与验证入口见上文。
+
 ## 来源与许可证
 
 FigWeave 基于 [Tavotto](https://github.com/Tavotto/Tavotto) 开发，保留其版权、
@@ -168,8 +209,9 @@ FigWeave 基于 [Tavotto](https://github.com/Tavotto/Tavotto) 开发，保留其
 不代表 FigWeave 使用上游的发行或自动更新渠道。上游教程、截图和安装包可在
 [Tavotto 原仓库](https://github.com/Tavotto/Tavotto) 查阅。
 
-
 上游插件用户可查阅 [在 Codex 中第一次使用 Tavotto](docs/upstream-codex-zh-CN.md)
 （[English](docs/upstream-codex-en.md)）；这不是 FigWeave 的安装渠道。
 上游 Tavotto™ 是未注册商标，见 [商标政策](TRADEMARKS.md)。
 贡献与授权资料：[贡献指南](CONTRIBUTING.md) · [上游法律文档](docs/legal/README.md)。
+
+FigWeave 是基于 Tavotto 的独立派生项目。多绘图库在线工作台、按引擎导出与中文体验的差异，以及展示素材来源，见 [差异与素材说明](docs/promo/identity-and-sources.md)。
