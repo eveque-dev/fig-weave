@@ -4,6 +4,7 @@
 功能范围、桌面预览安装包、开发步骤与许可证说明。
 
 - 官网：[fig-weave.com](https://fig-weave.com)
+- [支持作者 / Buy Me a Coffee](https://www.buymeacoffee.com/eveque)
 - [在线版能力与构建](docs/figweave-online.md)
 - [平台支持矩阵](docs/support-matrix.json)：请看 `figweave_distribution`。
 
