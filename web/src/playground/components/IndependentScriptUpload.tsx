@@ -54,6 +54,7 @@ export function IndependentScriptUpload({ onFile }: { onFile: (f: File) => void 
       </div>
       <input
         ref={inputRef}
+        data-playground-upload
         type="file"
         accept=".py"
         className="sr-only"

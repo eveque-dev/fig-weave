@@ -96,6 +96,22 @@ interface WebR {
   evalRString(code: string): Promise<string>
   FS: { readFile(path: string): Promise<Uint8Array>; writeFile(path: string, bytes: Uint8Array): Promise<void> }
 }
+interface WebRModule {
+  WebR: new (options: object) => WebR
+  ChannelType: { PostMessage: number }
+}
+let moduleAttempt = 0
+let runtimeModule: Promise<WebRModule> | null = null
+/** Browser module maps retain failed imports; a retry uses the same pinned resource with a fresh key. */
+function importRuntime(): Promise<WebRModule> {
+  if (!runtimeModule) {
+    const url = `${lock.base_url}webr.mjs${moduleAttempt ? `?retry=${moduleAttempt}` : ''}`
+    runtimeModule = (import(/* @vite-ignore */ url) as Promise<WebRModule>).catch((error) => {
+      runtimeModule = null; moduleAttempt++; throw error
+    })
+  }
+  return runtimeModule
+}
 
 /** Each source gets its own R worker. Closing also invalidates all pending work. */
 export class RPlotClient {
@@ -133,10 +149,7 @@ export class RPlotClient {
     if (new TextEncoder().encode(source).length > 256 * 1024) throw new Error('R source exceeds 256 KiB')
     const version = await this.bounded(async () => {
       phase('loadingRuntime')
-      const mod = await import(/* @vite-ignore */ `${lock.base_url}webr.mjs`) as {
-        WebR: new (options: object) => WebR
-        ChannelType: { PostMessage: number }
-      }
+      const mod = await importRuntime()
       if (this.closed) throw new Error('R session closed')
       this.runtime = new mod.WebR({ baseUrl: lock.base_url, repoUrl: new URL('../packages/', import.meta.url).href, channelType: mod.ChannelType.PostMessage })
       await this.runtime.init()
@@ -189,6 +202,12 @@ export class RPlotClient {
       this.objects = objects; this.pdfBytes = bytes; this.renderedStyle = JSON.stringify(style)
       return preview
     }, 30_000)
+  }
+
+  async png(style: PlotStyle, width: number): Promise<Blob> {
+    const pdf = await this.pdf(style)
+    const { pdfPreview } = await import('./pdfPreview')
+    return pdfPreview(new Uint8Array(await pdf.arrayBuffer()), width)
   }
 
   async pdf(style: PlotStyle): Promise<Blob> {

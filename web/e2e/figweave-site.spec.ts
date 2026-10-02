@@ -4,6 +4,7 @@ import { readFileSync, statSync } from 'node:fs'
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import { unzipSync, strFromU8 } from 'fflate'
 
 // Subject: the built standalone site, including navigation under a path prefix.
 // No backend or DNS is involved. A missing build must fail, not skip this check.
@@ -54,10 +55,20 @@ test('ggplot2 real runtime: style, undo, PNG, PDF and reproducible R export', as
   await page.locator('[data-r-export]').click()
   const rPath = await (await downloadR).path()
   expect(readFileSync(rPath!, 'utf-8')).toContain('title = "FigWeave edited title"')
+  const savedEvent = page.waitForEvent('download'); await page.locator('[data-project-save]').click()
+  const savedProject = (await (await savedEvent).path())!
+  const bundleEvent = page.waitForEvent('download'); await page.locator('[data-project-bundle]').click()
+  const bundle = await bundleEvent
+  await bundle.saveAs(test.info().outputPath('ggplot2-reproduction.zip'))
+  const entries = unzipSync(readFileSync((await bundle.path())!))
+  expect(strFromU8(entries['replay.R'])).toContain('FigWeave edited title')
+  expect(JSON.parse(strFromU8(entries['environment.json'])).runtime.webr_version).toBe(rRuntime.base_url.split('/v')[1].replace('/', ''))
   const png = page.waitForEvent('download')
   await page.locator('[data-r-png]').click()
   const changed = readFileSync((await (await png).path())!)
   expect(changed.subarray(1, 4).toString()).toBe('PNG')
+  expect(changed.readUInt32BE(16)).toBe(2400)
+  expect(changed.readUInt32BE(20)).toBe(Math.round(2400 * 5 / 7))
   const pdf = page.waitForEvent('download')
   await page.locator('[data-r-pdf]').click()
   expect(readFileSync((await (await pdf).path())!).subarray(0, 5).toString()).toBe('%PDF-')
@@ -68,13 +79,23 @@ test('ggplot2 real runtime: style, undo, PNG, PDF and reproducible R export', as
   await page.locator('[data-r-png]').click()
   const restored = readFileSync((await (await undoPng).path())!)
   expect(createHash('sha256').update(restored).digest('hex')).not.toBe(createHash('sha256').update(changed).digest('hex'))
+  await page.locator('[data-project-file]').setInputFiles(savedProject)
+  await expect(page.locator('[data-project-restored]')).toHaveCount(1)
+  await expect(page.locator('[data-r-status]')).toHaveText('Not running')
+  await page.locator('[data-r-run]').click()
+  await expect(page.locator('[data-r-status]')).toHaveText('Preview ready', { timeout: 240_000 })
+  await expect(page.locator('[data-r-label="title"]')).toHaveValue('FigWeave edited title')
+  const replayPng = page.waitForEvent('download'); await page.locator('[data-r-png]').click()
+  expect(readFileSync((await (await replayPng).path())!)).toEqual(changed)
+  await page.locator('[data-r-undo]').click(); await expect(page.locator('[data-r-run]')).toBeEnabled()
+  await expect(page.locator('[data-r-label="title"]')).toHaveValue('')
   await page.screenshot({ path: test.info().outputPath('ggplot2-editor.png'), fullPage: true })
 })
 
 test('seaborn, pandas plotting and NetworkX share the real Python editor', async ({ page }) => {
   test.setTimeout(420_000)
   await page.goto(`${origin}/try/?lang=en`)
-  await page.locator('input[type=file]').setInputFiles({
+  await page.locator('[data-playground-upload]').setInputFiles({
     name: 'libraries.py', mimeType: 'text/x-python',
     buffer: Buffer.from(`import matplotlib.pyplot as plt\nimport seaborn as sns\nimport pandas as pd\nimport networkx as nx\nfig, axes = plt.subplots(1, 3)\nsns.scatterplot(x=[1,2,3], y=[1,4,2], ax=axes[0])\npd.Series([1,3,2]).plot(ax=axes[1])\nnx.draw(nx.path_graph(4), ax=axes[2], pos={0:(0,0),1:(1,1),2:(2,0),3:(3,1)})\nfig.suptitle('Python libraries')\nfig.tight_layout()\n`),
   })
@@ -87,7 +108,37 @@ test.afterAll(async () => {
   if (server) await new Promise<void>((resolve) => server.close(() => resolve()))
 })
 
-test('built homepage → editor → homepage preserves language and desktop status', async ({ page }) => {
+test('failed R runtime download retains input and a retry recovers without reload', async ({ page }) => {
+  test.setTimeout(300_000)
+  let blocked = false
+  await page.route((url) => `${url.origin}${url.pathname}` === `${rRuntime.base_url}webr.mjs`, async (route) => {
+    if (!blocked) { blocked = true; await route.abort('failed') }
+    else await route.continue()
+  })
+  await page.goto(`${origin}/r/?lang=en`)
+  const source = await page.locator('[data-r-source]').inputValue()
+  await page.locator('[data-r-run]').click()
+  await expect(page.locator('[data-r-error]')).toBeVisible()
+  await expect(page.locator('[data-r-source]')).toHaveValue(source)
+  await page.locator('[data-load-retry]').click()
+  await expect(page.locator('[data-r-status]')).toHaveText('Preview ready', { timeout: 240_000 })
+  await expect(page.locator('[data-r-error]')).toHaveCount(0)
+  await expect(page.locator('[data-load-seconds]')).toContainText('Load time:')
+})
+
+test('built homepage → editor → homepage preserves language and desktop status', async ({ page, browser }) => {
+  const html = readFileSync(path.join(dist, 'index.html'), 'utf8')
+  expect(html).toContain('property="og:image"')
+  expect(html).toContain('https://fig-weave.com/share.png')
+  expect(html).toContain('Matplotlib、Plotly、pyecharts')
+  const staticContext = await browser.newContext({ javaScriptEnabled: false })
+  try {
+    const staticPage = await staticContext.newPage()
+    await staticPage.goto(`${origin}/preview/`)
+    await expect(staticPage.locator('[data-static-intro]')).toContainText('保存本地项目并下载复现包')
+    await expect(staticPage.locator('[data-static-intro] nav a')).toHaveCount(3)
+    await expect(staticPage.locator('[data-static-intro] nav a').first()).toHaveAttribute('href', './try/?lang=zh')
+  } finally { await staticContext.close() }
   const failedResponses: string[] = []
   const external: string[] = []
   page.on('response', (r) => { if (r.status() >= 400) failedResponses.push(r.url()) })
@@ -116,6 +167,7 @@ test('built homepage → editor → homepage preserves language and desktop stat
     await expect(page).toHaveURL(`${origin}${prefix}/?lang=zh`)
     await page.locator('[data-site-language]').click()
     await expect(page).toHaveTitle('FigWeave — A clearer final step for scientific figures.')
+    await expect(page.locator('meta[name="description"]')).toHaveAttribute('content', /R ggplot2/)
     await page.locator('[data-site-try]').click()
     await expect(page).toHaveURL(`${origin}${prefix}/try/?lang=en`)
     await page.locator('[data-playground-home]').click()
@@ -378,9 +430,21 @@ test('Plotly and pyecharts execute Python, edit, undo and export', async ({ page
     const json = page.waitForEvent('download')
     await page.locator('[data-chart-json]').click()
     expect(readFileSync((await (await json).path())!, 'utf8')).toContain('Edited chart')
+    const savedEvent = page.waitForEvent('download'); await page.locator('[data-project-save]').click()
+    const savedProject = (await (await savedEvent).path())!
+    const bundleEvent = page.waitForEvent('download'); await page.locator('[data-project-bundle]').click()
+    const entries = unzipSync(readFileSync((await (await bundleEvent).path())!))
+    expect(strFromU8(entries['source.py'])).toBe(await page.locator('[data-chart-source]').inputValue())
+    expect(strFromU8(entries['replay.py'])).toContain('Edited chart')
+    expect(JSON.parse(strFromU8(entries['project.json'])).history.length).toBeGreaterThan(0)
+    await page.locator('[data-export-width]').fill('1200'); await page.locator('[data-export-width]').press('Enter')
+    const box = (await page.locator('[data-chart-preview]').boundingBox())!
     const png = page.waitForEvent('download')
     await page.locator('[data-chart-png]').click()
-    expect(readFileSync((await (await png).path())!).subarray(1,4).toString()).toBe('PNG')
+    const pngBytes = readFileSync((await (await png).path())!)
+    expect(pngBytes.subarray(1,4).toString()).toBe('PNG')
+    expect(pngBytes.readUInt32BE(16)).toBe(1200)
+    expect(Math.abs(pngBytes.readUInt32BE(20) - 1200 * (box.height - 2) / (box.width - 2))).toBeLessThan(3)
     const py = page.waitForEvent('download')
     await page.locator('[data-chart-python]').click()
     const code = readFileSync((await (await py).path())!, 'utf8')
@@ -393,19 +457,30 @@ test('Plotly and pyecharts execute Python, edit, undo and export', async ({ page
     await page.locator('[data-chart-run]').click()
     await expect(page.locator('[data-chart-status]')).toHaveText('Preview ready', { timeout: 240_000 })
     await expect(page.locator('[data-chart-label="title"]')).toHaveValue('Edited chart')
+    await page.locator('[data-project-file]').setInputFiles(savedProject)
+    await expect(page.locator('[data-project-restored]')).toHaveCount(1)
+    await expect(page.locator('[data-chart-options]')).toHaveValue('')
+    await page.locator('[data-chart-run]').click()
+    await expect(page.locator('[data-chart-status]')).toHaveText('Preview ready', { timeout: 240_000 })
+    await expect(page.locator('[data-chart-label="title"]')).toHaveValue('Edited chart')
+    await page.locator('[data-chart-undo]').click()
+    await expect(page.locator('[data-chart-label="title"]')).toHaveValue(original)
   }
 })
 
 // The downloaded bytes must reflect current edits, and undo must restore the image.
 test('Matplotlib PNG download includes edits and undo restores the original', async ({ page }) => {
-  test.setTimeout(360_000)
+  // Cold runtime and scientific package downloads have separate product deadlines.
+  // Leave time for both phases and the actual edit/reopen/export assertions.
+  test.setTimeout(600_000)
   await page.goto(`${origin}/try/?lang=zh`)
-  await page.locator('input[type=file]').setInputFiles({
+  await page.locator('[data-playground-upload]').setInputFiles({
     name: 'export-proof.py', mimeType: 'text/x-python',
     buffer: Buffer.from('import matplotlib.pyplot as plt\nfig, ax = plt.subplots(figsize=(6,4))\nax.plot([0,1,2],[0,1,0])\nax.set_title("Export proof", fontsize=10)\nplt.show()\n'),
   })
   const button = page.locator('[data-playground-export]')
-  await expect(button).toBeEnabled({ timeout: 240_000 })
+  await expect(button).toBeEnabled({ timeout: 420_000 })
+  let pngIndex = 0
   const downloadPng = async () => {
     await expect(button).toBeEnabled({ timeout: 60_000 })
     let received = false
@@ -417,6 +492,7 @@ test('Matplotlib PNG download includes edits and undo restores the original', as
     const bytes = readFileSync((await (await download).path())!)
     expect(bytes.subarray(1, 4).toString()).toBe('PNG')
     expect(bytes.readUInt32BE(16)).toBe(2400)
+    await test.info().attach(`png-${pngIndex++}`, { body: bytes, contentType: 'image/png' })
     return createHash('sha256').update(bytes).digest('hex')
   }
   const original = await downloadPng()
@@ -436,9 +512,29 @@ test('Matplotlib PNG download includes edits and undo restores the original', as
   await size.press('Enter')
   const changed = await downloadPng()
   expect(changed).not.toBe(original)
-  await page.keyboard.press('Tab')
-  await page.keyboard.press('ControlOrMeta+z')
+  const savedEvent = page.waitForEvent('download'); await page.locator('[data-project-save]').click()
+  const savedProject = (await (await savedEvent).path())!
+  const bundleEvent = page.waitForEvent('download'); await page.locator('[data-project-bundle]').click()
+  const reproduction = await bundleEvent
+  await reproduction.saveAs(test.info().outputPath('matplotlib-reproduction.zip'))
+  const entries = unzipSync(readFileSync((await reproduction.path())!))
+  expect(JSON.parse(strFromU8(entries['project.json'])).state.overrides).toContainEqual({ gid: 'axes_0.title', prop: 'fontsize', value: 22 })
+  expect(strFromU8(entries['source.py'])).toContain('fontsize=10')
+  await page.locator('[data-playground-undo]').click()
   await expect(size).toHaveValue('10', { timeout: 60_000 })
+  await expect(button).toBeEnabled()
+  const undoEvent = page.waitForEvent('download', { timeout: 15_000 }); await page.locator('[data-project-save]').click()
+  const undoProject = readFileSync((await (await undoEvent).path())!)
+  await test.info().attach('undo-project', { body: undoProject, contentType: 'application/zip' })
+  expect(JSON.parse(strFromU8(unzipSync(undoProject)['project.json'])).state.overrides).toEqual([])
+  expect(await downloadPng()).toBe(original)
+  await page.locator('[data-project-file]').setInputFiles(savedProject)
+  await expect(page.locator('[data-project-restored]')).toHaveCount(1)
+  await expect(page.locator('[data-element-svg]')).toHaveCount(0)
+  await page.locator('[data-project-run]').click()
+  await expect(button).toBeEnabled({ timeout: 240_000 })
+  expect(await downloadPng()).toBe(changed)
+  await page.locator('[data-playground-undo]').click()
   expect(await downloadPng()).toBe(original)
   await page.setViewportSize({ width: 390, height: 844 })
   await expect(button).toBeVisible()
@@ -617,6 +713,12 @@ p <- ggplot(a,aes(x,y,colour="Group A")) + geom_point(size=3) + geom_line() +
       return Array.from(new Uint8Array(await output.arrayBuffer())).join(',') === Array.from(new Uint8Array(await current.arrayBuffer())).join(',')
     }, { pdfBytes, url: `${origin}/r/assets/${module}` })
     expect(equal).toBe(true)
+    const archiveEvent = page.waitForEvent('download'); await page.locator('[data-project-bundle]').click()
+    const archive = unzipSync(readFileSync((await (await archiveEvent).path())!))
+    expect(strFromU8(archive['assets/实验.csv'])).toBe(csv)
+    expect(strFromU8(archive['assets/table.tsv'])).toBe(tsv)
+    expect(Array.from(archive['assets/input.rds'])).toEqual(assets.rds)
+    expect(Array.from(archive['assets/ImportedSans.ttf'])).toEqual(assets.font)
     await text.focus()
     await page.screenshot({ path: test.info().outputPath('ggplot2-data-text-fonts.png'), fullPage: true })
   } finally { await oracle.evaluate((r) => r.close()); await oracle.dispose() }

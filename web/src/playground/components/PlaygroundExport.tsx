@@ -5,13 +5,15 @@ import { ICON_SIZE } from '@/components/ui/Icon'
 import { finishActiveGesture } from '@/store/gestureCoordinator'
 import { useDocumentStore } from '@/store/documentStore'
 import type { PlaygroundClient } from '../pyodideClient'
+import { pngSize } from '@/online/exportSize'
 import { pg } from '../pgText'
 
 /** Download the engine's state-neutral high-resolution PNG, never a DOM screenshot. */
-export function PlaygroundExport({ client, panelId, busy }: {
+export function PlaygroundExport({ client, panelId, busy, width }: {
   client: PlaygroundClient
   panelId: string
   busy: boolean
+  width: number
 }) {
   const [exporting, setExporting] = useState(false)
   const [failed, setFailed] = useState(false)
@@ -41,7 +43,7 @@ export function PlaygroundExport({ client, panelId, busy }: {
     const patches = structuredClone(panel.overrides)
     const stem = panel.fileId.replace(/\.pdf$/, '')
     try {
-      const png = await client.previewPng(stem, patches, 2400, request.signal)
+      const png = await client.previewPng(stem, patches, pngSize(width, panel.nativeW, panel.nativeH).width, request.signal)
       if (request.signal.aborted) return
       const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0))
       if (bytes.length < 8 || ![137, 80, 78, 71, 13, 10, 26, 10].every((v, i) => bytes[i] === v)) {

@@ -10,6 +10,9 @@
  */
 export const PRODUCT_NAME = 'FigWeave'
 export const WEBSITE_URL = 'https://fig-weave.com'
+/** Explicit local downloads for online sessions; existing desktop documents stay compatible. */
+export const ONLINE_PROJECT_KIND = 'tavotto-online-project'
+export const ONLINE_PROJECT_EXT = '.tavotto-online.zip'
 export const UPSTREAM_PRODUCT_NAME = 'Tavotto'
 
 /** FigWeave preview downloads are separate from the upstream update channel. */

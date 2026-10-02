@@ -39,6 +39,7 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "clsx": "^2.1.1",
     "echarts": "^6.1.0",
+    "fflate": "0.8.2",
     "i18next": "^26.3.6",
     "immer": "^11.1.16",
     "pdfjs-dist": "6.3.289",

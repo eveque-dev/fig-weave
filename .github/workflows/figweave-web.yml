@@ -1,10 +1,29 @@
 name: FigWeave web checks
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - 'web/**'
+      - 'packaging/*runtime*.json'
+      - 'packaging/*lock*.json'
+      - 'packaging/chart-wheels.json'
+      - 'src/tavotto/engine/**'
+      - 'scripts/build_*.py'
+      - 'assets/figweave/**'
+      - '.github/workflows/figweave-web.yml'
+  merge_group:
   push:
     branches: [main]
     paths:
       - 'web/**'
+      - 'packaging/*runtime*.json'
+      - 'packaging/*lock*.json'
+      - 'packaging/chart-wheels.json'
+      - 'src/tavotto/engine/**'
+      - 'scripts/build_*.py'
+      - 'assets/figweave/**'
       - '.github/workflows/figweave-web.yml'
 permissions:
   contents: read
@@ -30,3 +49,41 @@ jobs:
       - run: pnpm i18n:check
       - run: pnpm build
       - run: pnpm test
+      - name: Build every online entry and locked runtime assets
+        run: python3 scripts/build_figweave_site.py
+        working-directory: .
+  browser:
+    # PRs get fast checks; full-ci opts into qualification at the PR SHA.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: '10.34.5'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+        timeout-minutes: 5
+      - name: Build the standalone site independently
+        run: python3 scripts/build_figweave_site.py
+        working-directory: .
+        timeout-minutes: 15
+      - name: Real Matplotlib, ggplot2, Plotly and pyecharts flows
+        run: pnpm exec playwright test e2e/figweave-site.spec.ts --project=chromium
+        timeout-minutes: 20
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: figweave-browser-evidence
+          path: |
+            web/playwright-report/
+            web/test-results/
+          retention-days: 7

@@ -437,7 +437,7 @@
     "libraryExamples": "Try more Python plotting libraries",
     "exportPng": "Export PNG",
     "exportingPng": "Generating…",
-    "exportPngNote": "2400 px wide · Includes edits at the time you click export",
+    "exportPngNote": "Export current edits at the selected width, preserving figure proportions.",
     "exportPngFailed": "Export failed. Please retry. If the session has ended, run the script again.",
     "downloadPngReady": "Image ready — download PNG",
     "workspaceTitle": "Figure studio",
@@ -1627,7 +1627,8 @@
         "body": "Use the export button at the top right to download a high-resolution PNG with your current edits.",
         "detail": "Now open the workspace and try your own figure."
       }
-    }
+    },
+    "description": "Edit Matplotlib, Plotly, pyecharts and R ggplot2 scientific figures in your browser. Save local projects and download reproduction bundles. No account required."
   },
   "rStudio": {
     "title": "R / ggplot2 experimental",
@@ -1697,7 +1698,7 @@
     "fontFiles": "Import fonts · TTF / OTF",
     "dataHint": "Up to 20 files; 20 MB each, 50 MB total. Read them in R using the filenames below.",
     "fontImportHint": "Up to 8 files; 32 MB each, 64 MB total. Families use the filename; import your own Arial.ttf to use Arial.",
-    "sessionFiles": "Files stay in this tab and R session. Import them again after refreshing; the app does not upload them.",
+    "sessionFiles": "Files stay in this tab and R session. Save a local project before refreshing; the app does not upload files.",
     "removeFile": "Remove {{name}}",
     "remove": "Remove",
     "wqy-microhei": "WenQuanYi Micro Hei (Chinese)",
@@ -1741,5 +1742,23 @@
     "options": "Advanced editing · chart options JSON",
     "editHint": "Edit titles and axes, or expand chart options to change series, colors and layout. Plotly also supports editing text and dragging legends and annotations directly. Python export reconstructs the edited chart; the original source stays in the input.",
     "open": "Open interactive chart studio"
+  },
+  "onlineProject": {
+    "save": "Save project",
+    "open": "Open project",
+    "bundle": "Reproduction ZIP",
+    "localOnly": "Project files are downloaded locally. Save before refreshing; click Run after opening to restore edits.",
+    "restored": "Project loaded without executing its script. Click Run to restore the figure and undo history.",
+    "working": "Processing local project…",
+    "saved": "Project download started. Check that the file was saved.",
+    "failed": "Could not process the project:",
+    "pngWidth": "PNG width (pixels)",
+    "keepRatio": "Preserves figure proportions",
+    "chartReplayNote": "Python export rebuilds the edited chart configuration; the reproduction ZIP also preserves the original script and data processing.",
+    "retry": "Retry with current input",
+    "elapsed": "Load time: {{seconds}} s",
+    "offline": "You are offline. Reconnect and retry; your input is retained.",
+    "failureAt": "Failed during: {{phase}}. Check the details below and retry; your files and script are retained.",
+    "runSaved": "Run saved project"
   }
 }

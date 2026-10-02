@@ -433,7 +433,7 @@
     "libraryExamples": "试试更多 Python 绘图库",
     "exportPng": "导出 PNG",
     "exportingPng": "正在生成…",
-    "exportPngNote": "宽 2400 像素 · 包含点击导出时的修改",
+    "exportPngNote": "按所选宽度导出当前图表，保持图幅比例。",
     "exportPngFailed": "导出失败，请稍后重试。若会话已失效，请重新运行脚本。",
     "downloadPngReady": "图片已生成，点击下载",
     "workspaceTitle": "绘图工作台",
@@ -1608,7 +1608,8 @@
         "body": "点击右上角的导出按钮，下载包含当前修改的高清 PNG，让最后一步在这里完成。",
         "detail": "演示到这里结束。进入工作台，试试你自己的图。"
       }
-    }
+    },
+    "description": "在浏览器中编辑 Matplotlib、Plotly、pyecharts 和 R ggplot2 科研图表，保存本地项目并下载复现包。无需账号。"
   },
   "rStudio": {
     "title": "R / ggplot2 实验版",
@@ -1678,7 +1679,7 @@
     "fontFiles": "导入字体 · TTF / OTF",
     "dataHint": "单文件 ≤ 20 MB，合计 ≤ 50 MB，最多 20 个。使用下面的文件名在 R 中读取。",
     "fontImportHint": "单文件 ≤ 32 MB，合计 ≤ 64 MB，最多 8 个。字体以文件名命名；如需 Arial，请导入自己的 Arial.ttf。",
-    "sessionFiles": "文件仅保存在当前标签页及 R 会话中，刷新后需重新导入；应用不会上传这些文件。",
+    "sessionFiles": "文件留在当前标签页与 R 会话中；刷新前可保存为本地项目。应用不会上传文件。",
     "removeFile": "移除 {{name}}",
     "remove": "移除",
     "wqy-microhei": "文泉驿微米黑（中文）",
@@ -1722,5 +1723,23 @@
     "options": "高级编辑 · 图表配置 JSON",
     "editHint": "可修改标题与坐标轴，或展开图表配置修改系列、颜色和布局。Plotly 还可直接编辑图内文字、拖动图例与注释。导出 Python 重建当前图表，原脚本保留在输入区。",
     "open": "打开交互图表工作台"
+  },
+  "onlineProject": {
+    "save": "保存项目",
+    "open": "打开项目",
+    "bundle": "下载复现包",
+    "localOnly": "项目文件只下载到本机。刷新前请保存；打开项目后点击运行恢复编辑。",
+    "restored": "项目已读取，尚未执行脚本。点击运行恢复图表和撤销记录。",
+    "working": "正在处理本地项目文件…",
+    "saved": "项目下载已发起，请确认文件已保存。",
+    "failed": "项目文件处理失败：",
+    "pngWidth": "PNG 宽度（像素）",
+    "keepRatio": "保持图幅比例",
+    "chartReplayNote": "Python 导出重建编辑后的图表配置；复现包另外保留原始脚本及其数据处理过程。",
+    "retry": "保留输入并重试",
+    "elapsed": "本次加载用时：{{seconds}} 秒",
+    "offline": "网络已断开。连接恢复后可重试，当前输入仍保留。",
+    "failureAt": "失败阶段：{{phase}}。检查下方详情后重试；输入文件和脚本仍保留。",
+    "runSaved": "运行已保存的项目"
   }
 }

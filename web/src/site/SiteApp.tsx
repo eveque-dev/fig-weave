@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/Button'
 import { ArrowUpRight, FileCodeCorner, MousePointerClick, Download, ShieldCheck } from '@/components/ui/icons'
 import { ICON_SIZE } from '@/components/ui/Icon'
 import { ScrollShowcase } from './ScrollShowcase'
+import { updateSiteMetadata } from './metadata'
 import calibration from '@/playground/generated/calibration.webp'
 import spectrum from '@/playground/generated/spectrum.webp'
 import exampleManifest from '@/playground/generated/examples-manifest.json'
@@ -25,7 +26,7 @@ export function SiteApp() {
   const tryHref = `./try/?lang=${language}`
   useEffect(() => {
     document.documentElement.lang = locale
-    document.title = `${PRODUCT_NAME} — ${t('site.tagline')}`
+    updateSiteMetadata(locale, t('site.tagline'), t('site.description'))
   }, [locale, t])
 
   return (

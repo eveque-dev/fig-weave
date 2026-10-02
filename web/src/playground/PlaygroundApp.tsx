@@ -32,6 +32,14 @@ import { useDocumentStore } from '@/store/documentStore'
 import { usePanelRender } from '@/store/renderStore'
 import type { PanelObject } from '@/types/document'
 import { exampleById, type PlaygroundExample } from './examples'
+import { ProjectControls } from '@/online/ProjectControls'
+import { ExportWidth } from '@/online/ExportWidth'
+import { DEFAULT_PNG_WIDTH } from '@/online/exportSize'
+import { type OnlineProject } from '@/online/project'
+import { matplotlibProject } from '@/online/restore'
+import { reproductionBundle } from '@/online/bundle'
+import { LoadFeedback } from '@/online/LoadFeedback'
+import { playgroundProject, restorePlaygroundEdits } from './project'
 import { PlaygroundExport } from './components/PlaygroundExport'
 import { GuidedTask } from './components/GuidedTask'
 import { PlaygroundFailureActions } from './components/PlaygroundFailureActions'
@@ -95,6 +103,7 @@ function BrandLink() {
 
 type Stage =
   | { kind: 'idle' }
+  | { kind: 'project'; project: OnlineProject }
   | { kind: 'loading'; phase: PlaygroundPhase | 'start'; filename: string; origin: PlaygroundOrigin }
   | { kind: 'pick'; figures: FigureChoice[]; log: string; truncated: number; origin: PlaygroundOrigin }
   | { kind: 'nofigure'; log: string; origin: PlaygroundOrigin }
@@ -113,6 +122,10 @@ type Stage =
  */
 export function PlaygroundApp() {
   const [stage, setStage] = useState<Stage>({ kind: 'idle' })
+  const progressPhase = useRef('loadingRuntime')
+  const [loadSeconds, setLoadSeconds] = useState<number | null>(null)
+  const [pngWidth, setPngWidth] = useState(DEFAULT_PNG_WIDTH)
+  const lastInput = useRef<{ filename: string; source: string; origin: PlaygroundOrigin; project?: OnlineProject } | null>(null)
   const sessionRef = useRef<ActiveSession | null>(null)
   // 启动序号：取消/换案例后，旧启动的迟到结果一律作废（不许两个 Worker）
   const launchSeq = useRef(0)
@@ -156,7 +169,9 @@ export function PlaygroundApp() {
   }, [])
 
   const openSource = useCallback(
-    async (filename: string, source: string, origin: PlaygroundOrigin) => {
+    async (filename: string, source: string, origin: PlaygroundOrigin, project?: OnlineProject) => {
+      lastInput.current = { filename, source, origin, project }
+      const started = performance.now(); progressPhase.current = 'loadingRuntime'; setLoadSeconds(null)
       const seq = ++launchSeq.current
       teardownSession(sessionRef.current)
       sessionRef.current = null
@@ -167,6 +182,7 @@ export function PlaygroundApp() {
           source,
           (phase) => {
             if (seq !== launchSeq.current) return
+            progressPhase.current = phase === 'packages' ? 'loadingPackages' : phase === 'script' || phase === 'figures' ? 'running' : 'loadingRuntime'
             setStage((s) => (s.kind === 'loading' ? { ...s, phase } : s))
           },
           (client) => {
@@ -180,6 +196,19 @@ export function PlaygroundApp() {
           return
         }
         sessionRef.current = session
+        setLoadSeconds(Math.round((performance.now() - started) / 1000))
+        if (project) {
+          const value = matplotlibProject(project)
+          if (!load.figures.some((figure) => figure.stem === value.stem)) throw new Error('Saved figure was not produced by the script')
+          const { panelId, fileId } = await openFigure(session, value.stem)
+          const result = await session.client.render(value.stem, value.overrides)
+          if (seq !== launchSeq.current) return
+          if (result.warnings?.length) throw new Error('Some saved edits could not be replayed: ' + JSON.stringify(result.warnings))
+          restorePlaygroundEdits(project, panelId)
+          setPngWidth(project.pngWidth)
+          setStage({ kind: 'edit', panelId, fileId, stem: value.stem, origin })
+          return
+        }
         if (!load.figures.length) {
           setStage({ kind: 'nofigure', log: load.log, origin })
           return
@@ -299,6 +328,12 @@ export function PlaygroundApp() {
     setLocaleTick((n) => n + 1)
   }, [])
 
+  const restoreProject = (project: OnlineProject) => {
+    matplotlibProject(project)
+    cancelLoading(); setPngWidth(project.pngWidth); setStage({ kind: 'project', project })
+  }
+  const projectEntry = (project?: OnlineProject) => <div className="shrink-0 border-b border-border px-4 py-2"><ProjectControls snapshot={() => { if (!project) throw new Error('Run a figure first'); return project }} restore={restoreProject} revision={project ? JSON.stringify(project.state) : ''} canSave={!!project} /></div>
+  const retry = () => { const input = lastInput.current; if (input) void openSource(input.filename, input.source, input.origin, input.project) }
   const chrome = (body: React.ReactNode) => (
     <div className="flex h-full w-full flex-col bg-bg text-ink">
       <header className="flex h-11 shrink-0 items-center gap-3 border-b border-border bg-surface px-4">
@@ -327,15 +362,17 @@ export function PlaygroundApp() {
 
   switch (stage.kind) {
     case 'idle':
-      return chrome(<PlaygroundLanding onLaunch={openExample} onFile={(f) => void openFile(f)} />)
+      return chrome(<>{projectEntry()}<PlaygroundLanding onLaunch={openExample} onFile={(f) => void openFile(f)} /></>)
+    case 'project':
+      return chrome(<>{projectEntry(stage.project)}<div className="min-h-0 flex-1 space-y-4 overflow-auto p-6"><p data-project-restored>{translate('onlineProject.restored', { ns: 'dialogs' })}</p><pre data-project-source className="whitespace-pre-wrap break-words text-sm">{stage.project.source}</pre><Button data-project-run variant="primary" onClick={() => void openSource(stage.project.filename, stage.project.renderedSource || stage.project.source, { kind: 'upload' }, stage.project)}>{translate('onlineProject.runSaved', { ns: 'dialogs' })}</Button></div></>)
     case 'loading':
       return chrome(
-        <PlaygroundLoading
+        <><LoadFeedback phase={stage.phase === 'packages' ? 'loadingPackages' : stage.phase === 'script' || stage.phase === 'figures' ? 'running' : 'loadingRuntime'} busy error="" retry={retry} /><PlaygroundLoading
           phase={stage.phase}
           filename={stage.filename}
           title={originTitle(stage.origin, stage.filename)}
           onCancel={cancelLoading}
-        />,
+        /></>,
       )
     case 'pick':
       return chrome(
@@ -351,12 +388,12 @@ export function PlaygroundApp() {
       return chrome(<NoFigureView log={stage.log} origin={stage.origin} onBack={reset} />)
     case 'failed':
       return chrome(
-        <FailureView
+        <><LoadFeedback phase={progressPhase.current} busy={false} error={stage.failure.message} retry={retry} /><FailureView
           failure={stage.failure}
           filename={stage.filename}
           onBack={reset}
           onLaunchExample={openExample}
-        />,
+        /></>,
       )
     case 'edit':
       return (
@@ -365,6 +402,10 @@ export function PlaygroundApp() {
           session={sessionRef.current!}
           origin={stage.origin}
           onLoadAnother={reset}
+          onProject={restoreProject}
+          pngWidth={pngWidth}
+          setPngWidth={setPngWidth}
+          loadSeconds={loadSeconds}
           onSwitchLocale={() => void switchLocale()}
         />
       )
@@ -539,12 +580,17 @@ function EditorView({
   origin,
   onLoadAnother,
   onSwitchLocale,
+  onProject, pngWidth, setPngWidth, loadSeconds,
 }: {
   panelId: string
   session: ActiveSession
   origin: PlaygroundOrigin
   onLoadAnother: () => void
   onSwitchLocale: () => void
+  onProject: (project: OnlineProject) => void
+  pngWidth: number
+  setPngWidth: (width: number) => void
+  loadSeconds: number | null
 }) {
   // 既有的引擎同步器：文档一变就按策略重渲染，传输层已经换成 Pyodide
   useEngineSync()
@@ -655,16 +701,16 @@ function EditorView({
           <span className="truncate">{session.scriptName}</span>
           <span className="fw-integrity"><IntegrityBadge integrity={integrity} /></span>
         </Button>
-        <div className="fw-export-slot"><PlaygroundExport client={session.client} panelId={panelId} busy={busy} /></div>
+        <div className="fw-export-slot"><PlaygroundExport client={session.client} panelId={panelId} busy={busy} width={pngWidth} /></div>
       </header>
       <div className="fw-toolbar">
         <div className="fw-toolgroup">
           <Button data-playground-another onClick={onLoadAnother}>{backLabel(origin)}</Button>
           <span className="fw-divider" aria-hidden />
-          <IconButton label={translate('topbar.undo', { ns: 'workspace' })} disabled={!canUndo} onClick={() => runUndoRedo(false)}>
+          <IconButton data-playground-undo label={translate('topbar.undo', { ns: 'workspace' })} disabled={!canUndo} onClick={() => runUndoRedo(false)}>
             <Undo2 size={ICON_SIZE.md} />
           </IconButton>
-          <IconButton label={translate('topbar.redo', { ns: 'workspace' })} disabled={!canRedo} onClick={() => runUndoRedo(true)}>
+          <IconButton data-playground-redo label={translate('topbar.redo', { ns: 'workspace' })} disabled={!canRedo} onClick={() => runUndoRedo(true)}>
             <Redo2 size={ICON_SIZE.md} />
           </IconButton>
           <Button onClick={resetEdits} disabled={overrideCount === 0}>{pg('resetEdits')}</Button>
@@ -677,6 +723,7 @@ function EditorView({
         </div>
       </div>
 
+      <div className="shrink-0 space-y-2 border-b border-border px-4 py-2"><ProjectControls snapshot={() => playgroundProject(session, panelId, pngWidth)} restore={onProject} disabled={busy} revision={JSON.stringify([panel.overrides, pngWidth])} bundle={async () => { const project = playgroundProject(session, panelId, pngWidth); return reproductionBundle(project) }} /><ExportWidth width={pngWidth} change={setPngWidth} disabled={busy} />{loadSeconds !== null && <p data-load-seconds className="text-xs text-ink-3">{translate('onlineProject.elapsed', { ns: 'dialogs', seconds: loadSeconds })}</p>}</div>
       {/* 不变式失效：Tavotto 保证碰不到源文件，而工作区里那个文件确实变了。
           这不是一条提示，是「别再信这个会话」——所以常驻、不可关、带技术细节。 */}
       {integrity.verdict === 'changed' && (

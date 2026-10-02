@@ -506,6 +506,24 @@ export default interface Resources {
       "targetMissing": "找不到这一步的目标。",
       "targetWaiting": "正在等待目标出现…"
     },
+    "onlineProject": {
+      "bundle": "下载复现包",
+      "chartReplayNote": "Python 导出重建编辑后的图表配置；复现包另外保留原始脚本及其数据处理过程。",
+      "elapsed": "本次加载用时：{{seconds}} 秒",
+      "failed": "项目文件处理失败：",
+      "failureAt": "失败阶段：{{phase}}。检查下方详情后重试；输入文件和脚本仍保留。",
+      "keepRatio": "保持图幅比例",
+      "localOnly": "项目文件只下载到本机。刷新前请保存；打开项目后点击运行恢复编辑。",
+      "offline": "网络已断开。连接恢复后可重试，当前输入仍保留。",
+      "open": "打开项目",
+      "pngWidth": "PNG 宽度（像素）",
+      "restored": "项目已读取，尚未执行脚本。点击运行恢复图表和撤销记录。",
+      "retry": "保留输入并重试",
+      "runSaved": "运行已保存的项目",
+      "save": "保存项目",
+      "saved": "项目下载已发起，请确认文件已保存。",
+      "working": "正在处理本地项目文件…"
+    },
     "palette": {
       "commands": {
         "add-text": {
@@ -695,7 +713,7 @@ export default interface Resources {
       "exampleSpectrumEditable": "曲线 · 填充 · 标注",
       "exportPng": "导出 PNG",
       "exportPngFailed": "导出失败，请稍后重试。若会话已失效，请重新运行脚本。",
-      "exportPngNote": "宽 2400 像素 · 包含点击导出时的修改",
+      "exportPngNote": "按所选宽度导出当前图表，保持图幅比例。",
       "exportingPng": "正在生成…",
       "failBackGallery": "返回案例库",
       "failTryExample": "试试「{{name}}」",
@@ -983,7 +1001,7 @@ export default interface Resources {
       "selectObject": "选择文字或整个图例",
       "selectedText": "所选文字",
       "serif": "衬线（serif）",
-      "sessionFiles": "文件仅保存在当前标签页及 R 会话中，刷新后需重新导入；应用不会上传这些文件。",
+      "sessionFiles": "文件留在当前标签页与 R 会话中；刷新前可保存为本地项目。应用不会上传文件。",
       "source": "R 脚本（将图保存为 p）",
       "style": "图表样式",
       "textContent": "文字内容",
@@ -1604,6 +1622,7 @@ export default interface Resources {
       "attribution": "{{product}} 基于 {{upstream}} 开源项目开发。",
       "available": "现在可体验",
       "calibrationAlt": "校准曲线案例：数据点、拟合线和误差范围",
+      "description": "在浏览器中编辑 Matplotlib、Plotly、pyecharts 和 R ggplot2 科研图表，保存本地项目并下载复现包。无需账号。",
       "desktopBody": "{{product}} {{version}} 预览版，提供 Windows x64 与 macOS Apple Silicon 安装包。",
       "desktopBuild": "桌面构建",
       "desktopNote": "安装包未签名，macOS 版未公证；首次安装可能出现系统安全提示。",

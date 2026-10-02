@@ -455,7 +455,7 @@ class BrowserSession:
             w_in = float(state.fig.get_size_inches()[0]) or 1.0
             buf = io.BytesIO()
             with _real_output():
-                _REAL_SAVEFIG(state.fig, buf, format="png", dpi=max(50, int(width) / w_in))
+                _REAL_SAVEFIG(state.fig, buf, format="png", dpi=int(width) / w_in)
         except Exception:  # noqa: BLE001
             return _err("render_error", "位图预览失败", traceback=self._trim_tb())
         finally:

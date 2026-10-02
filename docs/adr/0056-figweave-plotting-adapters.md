@@ -24,7 +24,7 @@ object and replays a closed set of style operations on a copy. It does not prete
 to expose Matplotlib artist-level selection, geometric edits or source write-back.
 Preview and exported R code use the same style expression. Failed renders do not
 commit style history. Cancel/timeout closes the worker and invalidates late results.
-Code stays in memory; the application does not upload or persist it. User code can
+Code stays in memory during editing. The application does not upload it or automatically persist it in browser storage. Explicit local project/reproduction downloads were authorised on 2026-10-02; importing them never executes scripts until Run is clicked. See docs/figweave-online-projects.md. User code can
 make its own network requests; this is not a hostile-code network sandbox.
 
 webR is pinned in `packaging/r-browser-runtime.json`; the compatible R ABI and full

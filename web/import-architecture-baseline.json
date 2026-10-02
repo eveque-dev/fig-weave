@@ -75,8 +75,8 @@
   "unknownDynamic": [
     {
       "from": "src/rstudio/client.ts",
-      "call": "import(/* @vite-ignore */ `${lock.base_url}webr.mjs`)",
-      "reason": "webR is an external runtime pinned in packaging/r-browser-runtime.json; remove this registration if the runtime becomes a bundled module."
+      "call": "import(/* @vite-ignore */ url)",
+      "reason": "webR is an external runtime pinned in packaging/r-browser-runtime.json. url is built only from that lock and a numeric retry query to bypass cached failed module imports; remove this registration if the runtime becomes a bundled module."
     },
     {
       "from": "src/playground/pyodide.worker.ts",

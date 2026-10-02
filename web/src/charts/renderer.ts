@@ -1,8 +1,9 @@
 import type { Data, PlotlyHTMLElement } from 'plotly.js'
 import type { Chart, Kind } from './model'
+import { pngSize } from '@/online/exportSize'
 export interface Renderer {
   draw(chart: Chart): Promise<void>
-  png(): Promise<string>
+  png(width: number): Promise<string>
   close(): void
 }
 export async function createRenderer(element: HTMLDivElement, kind: Kind, edited: (chart: Chart) => void): Promise<Renderer> {
@@ -21,7 +22,10 @@ export async function createRenderer(element: HTMLDivElement, kind: Kind, edited
           if (!bound) {
             bound = true
             const gd = element as unknown as PlotlyHTMLElement
-            const capture = () => {
+            const capture = (change: unknown) => {
+              // Responsive size changes are rendering, not user edits.
+              if (change && !Array.isArray(change) && typeof change === 'object'
+                && Object.keys(change).every((key) => ['width', 'height', 'autosize'].includes(key))) return
               if (!drawing) edited(JSON.parse(JSON.stringify({ data: gd.data, layout: gd.layout })))
             }
             gd.on('plotly_relayout', capture)
@@ -29,7 +33,12 @@ export async function createRenderer(element: HTMLDivElement, kind: Kind, edited
           }
         } finally { drawing = false }
       },
-      png: () => Plotly.toImage(element, { format: 'png', width: 1200, height: 800 }),
+      async png(width) {
+        const layout = (element as unknown as { _fullLayout: { width: number; height: number } })._fullLayout
+        drawing = true
+        try { return await Plotly.toImage(element, { format: 'png', ...pngSize(width, layout.width, layout.height) }) }
+        finally { drawing = false }
+      },
       close() { observer.disconnect(); Plotly.purge(element) },
     }
   }
@@ -46,7 +55,7 @@ export async function createRenderer(element: HTMLDivElement, kind: Kind, edited
         : { ...tooltip as object, renderMode: 'richText' }
       instance.setOption({ ...structuredClone(chart), tooltip: safeTooltip, animation: false }, { notMerge: true })
     },
-    async png() { return instance.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#fff' }) },
+    async png(width) { pngSize(width, instance.getWidth(), instance.getHeight()); return instance.getDataURL({ type: 'png', pixelRatio: width / instance.getWidth(), backgroundColor: '#fff' }) },
     close() { observer.disconnect(); instance.dispose() },
   }
 }

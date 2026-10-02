@@ -9,6 +9,13 @@ import { currentLocale } from '@/i18n'
 import { PRODUCT_NAME, playgroundHomeHref } from '@/lib/brand'
 import { DEFAULT_STYLE, FONT_FAMILIES, LEGEND_POSITIONS, RPlotClient, exportR, type PlotStyle, type RObject } from './client'
 import { AssetError, assetSignature, mergeAssets, readAssets, readSnippet, type RAsset, type AssetKind } from './assets'
+import { ProjectControls } from '@/online/ProjectControls'
+import { ExportWidth } from '@/online/ExportWidth'
+import { DEFAULT_PNG_WIDTH } from '@/online/exportSize'
+import { reproductionBundle } from '@/online/bundle'
+import { emptyProject, type OnlineProject } from '@/online/project'
+import { rProject } from '@/online/restore'
+import { LoadFeedback } from '@/online/LoadFeedback'
 import { TextInspector } from './TextInspector'
 import { DragOverlay } from './DragOverlay'
 import example from './example.R?raw'
@@ -32,6 +39,8 @@ export function RStudio() {
   const [loadedAssets, setLoadedAssets] = useState('')
   const [source, setSource] = useState(example)
   const [loadedSource, setLoadedSource] = useState('')
+  const [pngWidth, setPngWidth] = useState(DEFAULT_PNG_WIDTH)
+  const restored = useRef<OnlineProject | null>(null)
   const [style, setStyle] = useState<PlotStyle>({ ...DEFAULT_STYLE })
   const [history, setHistory] = useState<PlotStyle[]>([])
   const [future, setFuture] = useState<PlotStyle[]>([])
@@ -77,16 +86,19 @@ export function RStudio() {
   }
   const run = async () => {
     const id = ++seq.current
+    const saved = restored.current?.source === source && assetSignature(restored.current.assets) === assetsKey ? restored.current : null
+    const replay = saved ? rProject(saved) : null
     client.current?.close()
     const r = new RPlotClient(); client.current = r
     pending.current = true; setObjects([]); setSelected('')
     setBusy(true); setError(''); setLoadedSource(''); setPreview(null)
     try {
-      await r.load(source, (key) => { if (seq.current === id) setPhase(key) }, data, fonts)
-      const blob = await r.render(DEFAULT_STYLE)
+      await r.load(saved?.renderedSource || source, (key) => { if (seq.current === id) setPhase(key) }, data, fonts)
+      const nextStyle = replay?.state ?? DEFAULT_STYLE
+      const blob = await r.render(nextStyle)
       if (seq.current !== id) return
-      setObjects(r.objects); setPreview(blob); setLoadedSource(source); setLoadedAssets(assetsKey); setStyle({ ...DEFAULT_STYLE })
-      setHistory([]); setFuture([]); setPhase('ready')
+      setObjects(r.objects); setPreview(blob); setLoadedSource(saved?.renderedSource || source); setLoadedAssets(assetsKey); setStyle(structuredClone(nextStyle))
+      setHistory(replay?.history ?? []); setFuture(replay?.future ?? []); restored.current = null; setPhase('ready')
     } catch (e) {
       r.close()
       if (seq.current === id) { setError(String(e)); setPhase('idle') }
@@ -108,23 +120,28 @@ export function RStudio() {
       if (!client.current.objects.some((object) => object.id === selected)) setSelected('')
     } catch (e) {
       if (id === seq.current) {
-        if (client.current?.isClosed) cancel()
+        if (client.current?.isClosed) { restored.current = snapshot(); cancel() }
         setError(String(e))
       }
     } finally { if (id === seq.current) { pending.current = false; setBusy(false) } }
   }
-  const exportPdf = async () => {
+  const exportPdf = async (format: 'png' | 'pdf' = 'pdf') => {
     if (!client.current || !active || pending.current) return
     const id = seq.current; pending.current = true; setBusy(true); setError('')
     try {
-      const blob = await client.current.pdf(style)
-      if (seq.current === id) download(blob, 'figure.pdf')
+      const blob = format === 'pdf' ? await client.current.pdf(style) : await client.current.png(style, pngWidth)
+      if (seq.current === id) download(blob, `figure.${format}`)
     } catch (e) {
       if (seq.current === id) {
-        if (client.current?.isClosed) cancel()
+        if (client.current?.isClosed) { restored.current = snapshot(); cancel() }
         setError(String(e))
       }
     } finally { if (seq.current === id) { pending.current = false; setBusy(false) } }
+  }
+  const snapshot = (): OnlineProject => ({ ...emptyProject('ggplot2', source), renderedSource: loadedSource && assetsKey === loadedAssets ? loadedSource : '', state: style, history, future, assets: [...data, ...fonts], pngWidth })
+  const restore = (project: OnlineProject) => {
+    const checked = rProject(project)
+    cancel(); restored.current = project; setSource(project.source); setData(checked.data); setFonts(checked.fonts); setStyle(checked.state ?? { ...DEFAULT_STYLE }); setHistory([]); setFuture([]); setPngWidth(project.pngWidth); setError('')
   }
   return (
     <div className="r-studio min-h-screen bg-bg text-ink">
@@ -136,6 +153,8 @@ export function RStudio() {
       </header>
       <main className="r-studio-main mx-auto max-w-[1400px] space-y-5 p-6">
         <p className="r-studio-scope text-sm leading-relaxed text-ink-2">{t('rStudio.scope')}</p>
+        <ProjectControls snapshot={() => restored.current ? { ...restored.current, source, assets: [...data, ...fonts], pngWidth } : snapshot()} restore={restore} revision={JSON.stringify([source, style, history, future, assetsKey, pngWidth])} canSave={(!loadedSource || assetsKey === loadedAssets) && (!restored.current || assetSignature(restored.current.assets) === assetsKey)} disabled={busy || reading} bundle={active && assetsKey === loadedAssets ? async () => { const project = structuredClone(snapshot()); return reproductionBundle(project, exportR(project.renderedSource, project.state as PlotStyle, client.current!.fonts), await client.current!.pdf(style)) } : undefined} />
+        {restored.current && <p data-project-restored className="text-sm text-ink-2">{t('onlineProject.restored')}</p>}
         <div className="r-studio-layout grid gap-6 lg:grid-cols-[minmax(280px,360px)_1fr]">
           <section className="r-studio-controls space-y-4">
             {selectedObject?.typography && <TextInspector key={selectedObject.id} object={selectedObject} edit={style.textEdits[selected] ?? {}} families={families} disabled={!active} commit={(patch) => { const textEdits = { ...style.textEdits }; if (Object.keys(patch).length) textEdits[selected] = patch; else delete textEdits[selected]; void apply({ ...style, textEdits }) }} />}
@@ -179,6 +198,7 @@ export function RStudio() {
             </div>
             <p data-r-status className="text-sm text-ink-3">{t(`rStudio.${phase}`)}</p>
             {loadedSource && (source !== loadedSource || assetsKey !== loadedAssets) && <p className="text-sm text-ink-2">{t('rStudio.changed')}</p>}
+            <LoadFeedback phase={phase} busy={busy} error={error} retry={() => void run()} />
             {error && <pre data-r-error role="alert" className="whitespace-pre-wrap break-words text-sm text-danger">{error}</pre>}
             <fieldset disabled={!active} className="space-y-3 border-t border-border pt-4">
               <legend className="text-sm font-medium">{t('rStudio.style')}</legend>
@@ -229,8 +249,9 @@ export function RStudio() {
             </fieldset>
           </section>
           <section className="r-studio-output min-w-0 space-y-4">
+            <ExportWidth width={pngWidth} change={setPngWidth} disabled={busy || reading} />
             <div className="flex flex-wrap gap-2">
-              <Button data-r-png disabled={!active || !preview} onClick={() => { if (preview) download(preview, 'figure.png') }}>{t('rStudio.png')}</Button>
+              <Button data-r-png disabled={!active || !preview} onClick={() => void exportPdf('png')}>{t('rStudio.png')}</Button>
               <Button data-r-pdf disabled={!active} onClick={() => void exportPdf()}>{t('rStudio.pdf')}</Button>
               <Button data-r-export disabled={!active} onClick={() => download(new Blob([exportR(loadedSource, style, client.current!.fonts)], { type: 'text/plain;charset=utf-8' }), 'figure-styled.R')}>{t('rStudio.exportR')}</Button>
             </div>

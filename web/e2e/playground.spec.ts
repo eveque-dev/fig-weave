@@ -286,7 +286,7 @@ test('哨兵：上传的源码内容不出现在任何网络请求里', async ({
 
   const requests = recordRequests(page)
   await page.goto(`${origin}/?lang=zh`)
-  await page.locator('input[type=file]').setInputFiles({
+  await page.locator('[data-playground-upload]').setInputFiles({
     name: 'sentinel_case.py',
     mimeType: 'text/x-python',
     buffer: Buffer.from(src, 'utf-8'),
@@ -351,7 +351,7 @@ test('完整性核对独立于用户解释器：脚本改掉自己并伪造 hash
   ].join('\n')
 
   await page.goto(`${origin}/?lang=zh`)
-  await page.locator('input[type=file]').setInputFiles({
+  await page.locator('[data-playground-upload]').setInputFiles({
     name: 'tamper_case.py',
     mimeType: 'text/x-python',
     buffer: Buffer.from(src, 'utf-8'),
@@ -428,7 +428,7 @@ test('Python 够不着 js：拿不到 Worker 全局，也就伪造不了完整�
   ].join('\n')
 
   await page.goto(`${origin}/?lang=zh`)
-  await page.locator('input[type=file]').setInputFiles({
+  await page.locator('[data-playground-upload]').setInputFiles({
     name: 'jsesc.py',
     mimeType: 'text/x-python',
     buffer: Buffer.from(src, 'utf-8'),
@@ -505,7 +505,7 @@ test('draw_event 里改写自己：load 之后 open 之前的窗口也要核到'
   ].join('\n')
 
   await page.goto(`${origin}/?lang=zh`)
-  await page.locator('input[type=file]').setInputFiles({
+  await page.locator('[data-playground-upload]').setInputFiles({
     name: 'drawevt.py',
     mimeType: 'text/x-python',
     buffer: Buffer.from(src, 'utf-8'),
@@ -520,7 +520,7 @@ test('draw_event 里改写自己：load 之后 open 之前的窗口也要核到'
 test('不支持的依赖：在下载科学栈之前拒绝，并给桌面版出口', async ({ page }) => {
   const requests = recordRequests(page)
   await page.goto(`${origin}/?lang=zh`)
-  await page.locator('input[type=file]').setInputFiles({
+  await page.locator('[data-playground-upload]').setInputFiles({
     name: 'needs_rdkit.py',
     mimeType: 'text/x-python',
     buffer: Buffer.from('import rdkit\nimport matplotlib.pyplot as plt\n', 'utf-8'),
@@ -536,7 +536,7 @@ test('不支持的依赖：在下载科学栈之前拒绝，并给桌面版出�
 
 test('死循环：脚本阶段硬超时，Worker 被杀，错误诚实', async ({ page }) => {
   await page.goto(`${origin}/?lang=zh`)
-  await page.locator('input[type=file]').setInputFiles({
+  await page.locator('[data-playground-upload]').setInputFiles({
     name: 'spin.py',
     mimeType: 'text/x-python',
     buffer: Buffer.from('while True:\n    pass\n', 'utf-8'),

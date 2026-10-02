@@ -16,8 +16,10 @@
     解释器里，这是 §49「不许移植第二份规范化」的看护）。
 """
 
+import base64
 import hashlib
 import json
+import struct
 import subprocess
 from pathlib import Path
 
@@ -358,6 +360,20 @@ fig.savefig("F.pdf")
     assert "line 19999" in load["log"]  # 留的是尾部
 
 
+def test_preview_png_honours_small_width_on_a_large_figure(tmp_path):
+    source = "import matplotlib.pyplot as plt\nfig, ax = plt.subplots(figsize=(20,5))\nfig.savefig('large.pdf')"
+    loaded, png = drive(
+        [
+            {"cmd": "load", "filename": "large.py", "source": source},
+            {"cmd": "preview_png", "stem": "large", "patches": [], "width": 320},
+        ],
+        tmp_path,
+    )
+    assert loaded["ok"] and png["ok"]
+    # Subject: dimensions in the actual downloaded PNG, not the requested value.
+    assert struct.unpack(">II", base64.b64decode(png["png"])[16:24]) == (320, 80)
+
+
 def test_preview_png_is_state_neutral(tmp_path):
     src = """
 import matplotlib.pyplot as plt
@@ -520,15 +536,15 @@ def test_classify_optional_try_import_is_not_blocking(tmp_path):
     src = """
 import matplotlib.pyplot as plt
 try:
-    import seaborn as sns
+    import statsmodels as sm
 except ImportError:
-    sns = None
+    sm = None
 """
     (out,) = drive(
         [{"cmd": "classify", "source": src, "supported_roots": SUPPORTED_ROOTS}], tmp_path
     )
     assert out["unsupported"] == []
-    assert out["optional_unsupported"] == ["seaborn"]
+    assert out["optional_unsupported"] == ["statsmodels"]
 
 
 def test_classify_syntax_error_has_code(tmp_path):
