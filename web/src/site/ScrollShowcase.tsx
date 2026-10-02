@@ -84,10 +84,15 @@ export function ScrollShowcase({ tryHref }: { tryHref: string }) {
           <div className="story-copy">
             <p className="story-kicker">{PRODUCT_NAME} / {t('site.story.kicker')}</p>
             <div className="story-copy-content">
-              <span className="story-index" aria-hidden>0{chapter + 1} / 05</span>
-              <h1>{t(`site.story.${key}.title`)}</h1>
-              <p className="story-body">{t(`site.story.${key}.body`)}</p>
-              <p className="story-detail">{t(`site.story.${key}.detail`)}</p>
+              {CHAPTERS.map((item, index) => {
+                const Heading = index === chapter ? 'h1' : 'div'
+                return <div key={item} className="story-copy-slide" data-active={index === chapter} aria-hidden={index !== chapter}>
+                  <span className="story-index" aria-hidden>0{index + 1} / 05</span>
+                  <Heading className="story-copy-heading">{t(`site.story.${item}.title`)}</Heading>
+                  <p className="story-body">{t(`site.story.${item}.body`)}</p>
+                  <p className="story-detail">{t(`site.story.${item}.detail`)}</p>
+                </div>
+              })}
             </div>
             <nav className="story-chapters" aria-label={t('site.story.chapters')}>
               {CHAPTERS.map((item, index) => <button key={item} data-story-jump={item} onClick={() => go(index)} aria-label={t(`site.story.${item}.title`)} aria-current={chapter === index ? 'step' : undefined}><span aria-hidden>0{index + 1}</span></button>)}

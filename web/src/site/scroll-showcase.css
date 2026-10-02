@@ -34,9 +34,13 @@
 .story-file div span { display:block; font-size:11px; color:var(--color-ink-3); margin-top:4px; }
 .story-stage figcaption { position:absolute; bottom:-30px; right:0; font-size:11px; color:var(--color-ink-3); }
 .story-kicker { color:var(--color-ink-3); font-size:12px; letter-spacing:.04em; margin-bottom:36px; }
-.story-copy-content { min-height:310px; }
+/* All chapters share one grid cell: its height follows the longest translation
+   at this width/font, so changing the active copy never moves the pinned scene. */
+.story-copy-content { display:grid; min-height:310px; }
+.story-copy-slide { grid-area:1 / 1; visibility:hidden; }
+.story-copy-slide[data-active='true'] { visibility:visible; }
 .story-index { font-size:12px; color:var(--color-ink-3); font-variant-numeric:tabular-nums; }
-.story-copy h1 { font-size:clamp(28px,2.8vw,43px); font-weight:500; line-height:1.3; letter-spacing:-.035em; text-wrap:balance; margin:15px 0 24px; }
+.story-copy .story-copy-heading { font-size:clamp(28px,2.8vw,43px); font-weight:500; line-height:1.3; letter-spacing:-.035em; text-wrap:balance; margin:15px 0 24px; }
 .story-body { font-size:15px; line-height:1.9; color:var(--color-ink-2); }
 .story-detail { margin-top:18px; font-size:12px; color:var(--color-ink-3); }
 .story-chapters { display:flex; gap:8px; margin:24px 0; }
@@ -48,7 +52,7 @@
 .story-scroll-cue { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--color-ink-3); margin-top:30px; }
 .story-progress { position:absolute; bottom:20px; left:0; right:0; height:1px; background:var(--color-border); }
 .story-progress span { display:block; width:100%; height:1px; background:var(--color-ink); transform:scaleX(var(--story-progress)); transform-origin:left; }
-@media(max-width:1000px) { .story-layout { grid-template-columns:minmax(0,1fr) 260px; gap:24px; } .story-elements,.story-inspector { padding:14px 6px; font-size:10px; } .story-windowbar { gap:8px; padding-inline:8px; } .story-copy h1 { font-size:30px; } }
+@media(max-width:1000px) { .story-layout { grid-template-columns:minmax(0,1fr) 260px; gap:24px; } .story-elements,.story-inspector { padding:14px 6px; font-size:10px; } .story-windowbar { gap:8px; padding-inline:8px; } .story-copy .story-copy-heading { font-size:30px; } }
 @media(max-width:720px) {
  .scroll-story { height:430svh; }
  .story-pin { top:0; height:100svh; min-height:620px; padding:16px 0 30px; }
@@ -65,7 +69,7 @@
  .story-copy { width:100%; }
  .story-kicker,.story-index,.story-detail,.story-scroll-cue { display:none; }
  .story-copy-content { min-height:122px; }
- .story-copy h1 { font-size:27px; margin:0 0 12px; }
+ .story-copy .story-copy-heading { font-size:27px; margin:0 0 12px; }
  .story-body { font-size:13px; line-height:1.7; }
  .story-chapters { margin:14px 0; }
  .story-skip { margin-top:8px; }

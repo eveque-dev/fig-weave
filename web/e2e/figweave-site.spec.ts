@@ -547,39 +547,41 @@ test('Matplotlib PNG download includes edits and undo restores the original', as
 // rendered figure must change, then restore when scrolling back.
 test('homepage scroll keeps the workbench pinned and reverses figure changes', async ({ page }) => {
   const { horizontalOffenders } = await import('./overflow')
-  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-    await page.setViewportSize(viewport)
-    await page.goto(`${origin}/?lang=zh`)
-    const story = page.locator('[data-scroll-story]')
-    const scene = page.locator('[data-story-scene]')
-    const paper = page.locator('[data-story-paper]')
-    await expect(story).toHaveAttribute('data-chapter', 'source')
-    await expect.poll(() => paper.locator('img').evaluateAll((images) => images.every((image) => (image as HTMLImageElement).naturalWidth > 0))).toBe(true)
-    const originalWidth = (await paper.boundingBox())!.width
-    await page.mouse.wheel(0, 800)
-    await expect.poll(() => paper.boundingBox().then((box) => box!.width)).toBeLessThan(originalWidth * 0.85)
-    await page.locator('[data-story-jump="select"]').click()
-    await expect(story).toHaveAttribute('data-chapter', 'select')
-    const pinnedY = (await scene.boundingBox())!.y
-    const selectedScroll = await page.evaluate(() => window.scrollY)
-    const visibleFigure = () => paper.locator('img').evaluateAll((images) => images.filter((img) => getComputedStyle(img).opacity === '1').map((img) => (img as HTMLImageElement).src))
-    const sourceFigure = await visibleFigure()
-    expect(sourceFigure).toHaveLength(1)
-    for (const chapter of ['type', 'legend', 'export']) {
-      await page.locator(`[data-story-jump="${chapter}"]`).click()
-      await expect(story).toHaveAttribute('data-chapter', chapter)
+  for (const lang of ['zh', 'en']) {
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport)
+      await page.goto(`${origin}/?lang=${lang}`)
+      const story = page.locator('[data-scroll-story]')
+      const scene = page.locator('[data-story-scene]')
+      const paper = page.locator('[data-story-paper]')
+      await expect(story).toHaveAttribute('data-chapter', 'source')
+      await expect.poll(() => paper.locator('img').evaluateAll((images) => images.every((image) => (image as HTMLImageElement).naturalWidth > 0))).toBe(true)
+      const originalWidth = (await paper.boundingBox())!.width
+      await page.mouse.wheel(0, 800)
+      await expect.poll(() => paper.boundingBox().then((box) => box!.width)).toBeLessThan(originalWidth * 0.85)
+      await page.locator('[data-story-jump="select"]').click()
+      await expect(story).toHaveAttribute('data-chapter', 'select')
+      const pinnedY = (await scene.boundingBox())!.y
+      const selectedScroll = await page.evaluate(() => window.scrollY)
+      const visibleFigure = () => paper.locator('img').evaluateAll((images) => images.filter((img) => getComputedStyle(img).opacity === '1').map((img) => (img as HTMLImageElement).src))
+      const sourceFigure = await visibleFigure()
+      expect(sourceFigure).toHaveLength(1)
+      for (const chapter of ['type', 'legend', 'export']) {
+        await page.locator(`[data-story-jump="${chapter}"]`).click()
+        await expect(story).toHaveAttribute('data-chapter', chapter)
+        expect((await scene.boundingBox())!.y).toBeCloseTo(pinnedY, 0)
+        expect(await visibleFigure()).not.toEqual(sourceFigure)
+        expect(await horizontalOffenders(page, '#root')).toEqual([])
+      }
+      await page.screenshot({ path: test.info().outputPath(`scroll-export-${lang}-${viewport.width}.png`) })
+      await page.mouse.wheel(0, selectedScroll - await page.evaluate(() => window.scrollY))
+      await expect(story).toHaveAttribute('data-chapter', 'select')
+      expect(await visibleFigure()).toEqual(sourceFigure)
       expect((await scene.boundingBox())!.y).toBeCloseTo(pinnedY, 0)
-      expect(await visibleFigure()).not.toEqual(sourceFigure)
-      expect(await horizontalOffenders(page, '#root')).toEqual([])
+      await page.locator('[data-story-skip]').click()
+      await expect(page).toHaveURL(/#support$/)
+      await expect.poll(async () => (await page.locator('#support').boundingBox())!.y).toBeLessThan(100)
     }
-    await page.screenshot({ path: test.info().outputPath(`scroll-export-${viewport.width}.png`) })
-    await page.mouse.wheel(0, selectedScroll - await page.evaluate(() => window.scrollY))
-    await expect(story).toHaveAttribute('data-chapter', 'select')
-    expect(await visibleFigure()).toEqual(sourceFigure)
-    expect((await scene.boundingBox())!.y).toBeCloseTo(pinnedY, 0)
-    await page.locator('[data-story-skip]').click()
-    await expect(page).toHaveURL(/#support$/)
-    await expect.poll(async () => (await page.locator('#support').boundingBox())!.y).toBeLessThan(100)
   }
 })
 
