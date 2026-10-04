@@ -41,7 +41,8 @@ UUIDv4 browser identifier, UUIDv4 event identifier, closed event name, closed en
 Unknown keys and arbitrary content are rejected. The server HMACs browser IDs;
 does not store IP, User-Agent, queries, referrers, chart text, scripts or filenames;
 counts only explicit successful render/export boundaries. Duplicate event IDs are
-idempotent. Export means file generated and download initiated, not proof that the
+idempotent. Export counts generated PNG/PDF images; script/JSON/project downloads
+are outside this metric. It means file generated and download initiated, not proof that the
 user saved it. Opt-outs, blocked networks/storage and closed pages can undercount.
 Public events can be forged; this is product observation, not identity verification.
 
