@@ -18,6 +18,23 @@ sys.path.insert(0, str(REPO / "scripts"))
 import build_browser_playground as bbp  # noqa: E402
 
 
+def test_fingerprint_changes_when_online_collection_scope_changes(tmp_path, monkeypatch):
+    """Subject: browser bundle drift when its shared consent contract changes alone."""
+    web = tmp_path / "web"
+    (web / "src").mkdir(parents=True)
+    (web / "src" / "sample.ts").write_text("export const unchanged = true")
+    contract = tmp_path / "services" / "figweave_admin" / "contract.json"
+    contract.parent.mkdir(parents=True)
+    contract.write_text('{"consent_version":1}')
+    monkeypatch.setattr(bbp, "ROOT", tmp_path)
+    monkeypatch.setattr(bbp, "WEB", web)
+    monkeypatch.setattr(bbp, "ENGINE_FILES", [])
+    monkeypatch.setattr(bbp, "RUNTIME_LOCK", tmp_path / "runtime.json")
+    before = bbp.source_fingerprint()
+    contract.write_text('{"consent_version":2}')
+    assert bbp.source_fingerprint() != before
+
+
 def _flat_imports(path: Path) -> set[str]:
     """一个模块里**平铺 import** 的同目录兄弟（`import manifest` 这种）。
 

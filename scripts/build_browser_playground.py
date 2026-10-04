@@ -97,6 +97,7 @@ def source_fingerprint() -> str:
         WEB / "vite.playground.config.ts",
         WEB / "package.json",
         RUNTIME_LOCK,
+        ROOT / "services" / "figweave_admin" / "contract.json",
         ROOT / "src" / "tavotto" / "profiles" / "publication.json",
         # 字形覆盖表也经路径别名整份进 bundle（`@glyphcoverage`）：换一版
         # PyMuPDF 重新生成之后，画布对「这个字导出后是不是方框」的答案就变了。
