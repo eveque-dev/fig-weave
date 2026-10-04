@@ -252,3 +252,10 @@ def test_log_rotation_gzip_reimports_and_growth_are_idempotent(app, tmp_path):
         data = "\n".join(db.iterdump()).encode()
     for private in (b"192.0.2.1", b"secret=private", b"private.example", b"Mozilla"):
         assert private not in data
+
+
+def test_missing_access_records_are_not_reported_as_zero(app):
+    """Subject: missing server page records in a selected day's series, not actual humans."""
+    summary = app.store.summary(7)
+    assert all(day["views"] is None for day in summary["series"])
+    assert summary["all"]["views"] == 0  # total of collected records, not evidence of no visitors

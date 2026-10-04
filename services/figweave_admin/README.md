@@ -19,7 +19,8 @@ under `engine.config.data_dir()/figweave-admin`, with restricted permissions.
 that sent a `render_completed` event. It is not a count of natural persons. Repeated
 runs count once per browser but add to render counts. Different engines can share
 a browser, so their distinct counts cannot be summed. All timestamps use Beijing
-time. The daily table is authoritative for the chart and CSV.
+time. Missing page records are null, displayed as no record and blank in CSV,
+not manufactured zeroes. The daily table is authoritative for the chart and CSV.
 
 **Page requests** come from nginx logs: GET, status 200/304, exact homepage or
 workspace routes, browser-like User-Agent, excluding known bots. Refreshes count
@@ -69,6 +70,7 @@ segment, so historical counts neither vanish after rotation nor double count.
    /var/lib/figweave/figweave-admin/config.json --credentials <private-path>`.
    Existing files will not be overwritten. Store the credentials privately.
 4. Install the three systemd files in `deploy/`. The app uses only loopback 8791.
+   The unused Gunicorn control socket is disabled, so it never writes to HOME.
    Only the log importer has `SupplementaryGroups=adm` to read existing nginx logs.
 5. Include `nginx-http.conf` in the http block, `nginx-locations.conf` in the HTTPS
    site, and copy `nginx-proxy.conf` to the named snippets path. Change the site's

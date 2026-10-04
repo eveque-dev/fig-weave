@@ -10,7 +10,7 @@ WorkingDirectory=/opt/figweave-admin/current
 Environment=PYTHONPATH=/opt/figweave-admin/current/src
 Environment=TAVOTTO_DATA_DIR=/var/lib/figweave
 Environment=FIGWEAVE_ADMIN_CONFIG=/var/lib/figweave/figweave-admin/config.json
-ExecStart=/opt/figweave-admin/venv/bin/gunicorn --bind 127.0.0.1:8791 --workers 2 --threads 2 --timeout 15 --limit-request-line 2048 --limit-request-field_size 4096 services.figweave_admin.app:application
+ExecStart=/opt/figweave-admin/venv/bin/gunicorn --bind 127.0.0.1:8791 --workers 2 --threads 2 --timeout 15 --no-control-socket --limit-request-line 2048 --limit-request-field_size 4096 services.figweave_admin.app:application
 Restart=on-failure
 RestartSec=3
 UMask=0077

@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 let snapshot = null, busy = false;
-const number = (value) => Number(value || 0).toLocaleString('zh-CN');
+const number = (value) => value == null ? '无记录' : Number(value).toLocaleString('zh-CN');
 const names = {site:'首页',matplotlib:'Matplotlib',ggplot2:'ggplot2',plotly:'Plotly',pyecharts:'pyecharts',charts:'Charts 入口'};
 function loginView(show) { $('[data-login]').hidden = !show; $('[data-dashboard]').hidden = show; $('[data-logout]').hidden = show; }
 function error(message='') { $('[data-error]').textContent=message; $('[data-error]').hidden=!message; }
@@ -20,7 +20,7 @@ function chart() {
   const points=snapshot.series,max=Math.max(1,...points.flatMap(p=>[p.views,p.users])), pad=35, plot=w-pad*2;
   ctx.font='11px system-ui';ctx.fillStyle='#a7adb5';ctx.strokeStyle='#30343a';
   for(let step=0;step<4;step++){const y=20+step*55;ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(w-pad,y);ctx.stroke();ctx.fillText(number(Math.round(max*(3-step)/3)),0,y+4)}
-  for(const [field,color] of [['views','#9ac4ff'],['users','#99ddb9']]){ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();points.forEach((point,index)=>{const x=pad+index/(points.length-1)*plot,y=185-point[field]/max*165;index?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke()}
+  for(const [field,color] of [['views','#9ac4ff'],['users','#99ddb9']]){ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();let connected=false;points.forEach((point,index)=>{if(point[field]==null){connected=false;return}const x=pad+index/(points.length-1)*plot,y=185-point[field]/max*165;connected?ctx.lineTo(x,y):ctx.moveTo(x,y);connected=true});ctx.stroke()}
   ctx.fillStyle='#a7adb5';ctx.fillText(points[0].day.slice(5),pad,222);ctx.textAlign='right';ctx.fillText(points.at(-1).day.slice(5),w-pad,222);
 }
 function render(data) {
@@ -30,7 +30,7 @@ function render(data) {
   rows('[data-engines]',data.engines.map(p=>[names[p.engine] || p.engine,...['views','users','renders','exports'].map(k=>number(p[k]))]));
   rows('[data-series]',[...data.series].reverse().map(p=>[p.day,...['views','users','renders','exports'].map(k=>number(p[k]))]));
   $('[data-empty]').hidden=Boolean(data.all.renders);
-  $('[data-coverage]').textContent=`历史访问日志从 ${data.traffic_start || '暂无数据'} 开始；最后同步：${data.metadata.traffic_refreshed || '尚未同步'}。使用事件从 ${data.usage_start || '上线后首次有人同意统计'} 开始。统计时区：北京时间。${data.telemetry_enabled ? '' : '匿名使用统计已被服务器硬开关关闭。'}`;
+  $('[data-coverage]').textContent=`缺少页面日志的日期显示「无记录」，CSV 留空。历史访问日志从 ${data.traffic_start || '暂无数据'} 开始；最后同步：${data.metadata.traffic_refreshed || '尚未同步'}。使用事件从 ${data.usage_start || '上线后首次有人同意统计'} 开始。统计时区：北京时间。${data.telemetry_enabled ? '' : '匿名使用统计已被服务器硬开关关闭。'}`;
   chart();
 }
 async function refresh() {if(busy)return;busy=true;error();$('[data-loading]').hidden=false;try{render(await api('summary?days='+$('[data-days]').value))}catch(e){error(e.message)}finally{busy=false;$('[data-loading]').hidden=true}}

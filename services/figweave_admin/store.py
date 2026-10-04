@@ -147,7 +147,7 @@ class Store:
                 series.append(
                     {
                         "day": day,
-                        "views": traffic_days.get(day, 0),
+                        "views": traffic_days.get(day),
                         **{
                             key: usage_days.get(day, {}).get(key, 0)
                             for key in ("users", "renders", "exports")
