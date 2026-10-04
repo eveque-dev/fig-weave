@@ -5,6 +5,7 @@ import { TooltipProvider } from '@/components/ui/Tooltip'
 import { SiteApp } from './SiteApp'
 import '@/index.css'
 import { initOnlineAppearance } from '@/lib/onlineAppearance'
+import { UsageConsent } from '@/online/UsageConsent'
 
 initOnlineAppearance()
 
@@ -12,6 +13,6 @@ initI18n(onlineLocale())
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <TooltipProvider><SiteApp /></TooltipProvider>
+    <TooltipProvider><SiteApp /><UsageConsent engine="site" /></TooltipProvider>
   </StrictMode>,
 )

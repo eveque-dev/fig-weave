@@ -196,6 +196,7 @@ src = [
     "codex-plugin/mcp",                      # tavotto_mcp
     "codex-plugin/skills/tavotto-figure/scripts",   # handoff、update_check
     "services/telemetry_proxy",              # tavotto_telemetry_proxy
+    "services",                              # independent figweave_admin service
 ]
 # 实测出来的数字，不是抄模板：全仓 85762 行 Python 里超过 100 列的只有 33 行
 # （0.04%），超过 88 列的有 474 行（0.55%）——这个代码库事实上写到 100。

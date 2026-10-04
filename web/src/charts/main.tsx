@@ -6,10 +6,11 @@ import { IconProvider } from '@/components/ui/Icon'
 import { ChartStudio } from './ChartStudio'
 import '@/index.css'
 import { initOnlineAppearance } from '@/lib/onlineAppearance'
+import { UsageConsent } from '@/online/UsageConsent'
 
 initOnlineAppearance()
 
 initI18n(onlineLocale())
 createRoot(document.getElementById('root')!).render(
-  <StrictMode><TooltipProvider><IconProvider><ChartStudio /></IconProvider></TooltipProvider></StrictMode>,
+  <StrictMode><TooltipProvider><IconProvider><ChartStudio /><UsageConsent engine="plotly" /></IconProvider></TooltipProvider></StrictMode>,
 )

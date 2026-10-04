@@ -14,6 +14,7 @@ import { chartProject } from '@/online/restore'
 import { reproductionBundle } from '@/online/bundle'
 import { emptyProject, type OnlineProject } from '@/online/project'
 import { LoadFeedback } from '@/online/LoadFeedback'
+import { captureUsage } from '@/online/usage'
 import { createRenderer, type Renderer } from './renderer'
 import { editLabels, exportPython, labelsOf, parseChart, type Chart, type Kind } from './model'
 import plotlyExample from './plotly-example.py?raw'
@@ -108,6 +109,7 @@ export function ChartStudio() {
         await r.draw(next)
         if (id !== generation.current) return
         store(next); setHistory(replay?.history ?? []); setFuture(replay?.future ?? []); setLoadedSource(saved?.renderedSource || source); restored.current = null; if (saved?.draft) { setOptions(saved.draft.options); setLabels(saved.draft.labels) } setBusy(false); setPhase('ready')
+        captureUsage('render_completed', kind)
       } catch (e) { fail(String(e)) }
     }
     w.postMessage({ source: saved?.renderedSource || source, kind, wheels: new URL('./wheels/', location.href).href })
@@ -145,7 +147,7 @@ export function ChartStudio() {
         <section className="r-studio-output min-w-0 space-y-4">
           <ExportWidth width={pngWidth} change={setPngWidth} disabled={busy} />
           <div className="flex flex-wrap gap-2">
-            <Button data-chart-png disabled={!chart || busy} onClick={async () => { const id = generation.current; setBusy(true); try { const url = await renderer.current!.png(pngWidth); const blob = await (await fetch(url)).blob(); if (id === generation.current) download(blob, 'figure.png') } catch (e) { if (id === generation.current) setError(String(e)) } finally { if (id === generation.current) setBusy(false) } }}>{t('rStudio.png')}</Button>
+            <Button data-chart-png disabled={!chart || busy} onClick={async () => { const id = generation.current; setBusy(true); try { const url = await renderer.current!.png(pngWidth); const blob = await (await fetch(url)).blob(); if (id === generation.current) { download(blob, 'figure.png'); captureUsage('export_completed', kind) } } catch (e) { if (id === generation.current) setError(String(e)) } finally { if (id === generation.current) setBusy(false) } }}>{t('rStudio.png')}</Button>
             <Button data-chart-python disabled={!chart || busy} onClick={() => download(new Blob([exportPython(chart!, kind)], { type: 'text/plain;charset=utf-8' }), 'figure-edited.py')}>{t('charts.exportPython')}</Button>
             <Button data-chart-json disabled={!chart || busy} onClick={() => download(new Blob([JSON.stringify(chart, null, 2)], { type: 'application/json' }), 'figure.json')}>{t('charts.exportJson')}</Button>
           </div>

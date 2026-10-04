@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "consent_version": 1,
+  "events": ["page_view", "render_completed", "export_completed"],
+  "engines": ["site", "matplotlib", "ggplot2", "plotly", "pyecharts"]
+}

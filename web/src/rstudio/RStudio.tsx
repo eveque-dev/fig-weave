@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { captureUsage } from '@/online/usage'
 import { useTranslation } from 'react-i18next'
 import { BackgroundPicker } from '@/components/ui/BackgroundPicker'
 import { Details, Summary } from '@/components/ui/Details'
@@ -99,6 +100,7 @@ export function RStudio() {
       if (seq.current !== id) return
       setObjects(r.objects); setPreview(blob); setLoadedSource(saved?.renderedSource || source); setLoadedAssets(assetsKey); setStyle(structuredClone(nextStyle))
       setHistory(replay?.history ?? []); setFuture(replay?.future ?? []); restored.current = null; setPhase('ready')
+      captureUsage('render_completed', 'ggplot2')
     } catch (e) {
       r.close()
       if (seq.current === id) { setError(String(e)); setPhase('idle') }
@@ -130,7 +132,7 @@ export function RStudio() {
     const id = seq.current; pending.current = true; setBusy(true); setError('')
     try {
       const blob = format === 'pdf' ? await client.current.pdf(style) : await client.current.png(style, pngWidth)
-      if (seq.current === id) download(blob, `figure.${format}`)
+      if (seq.current === id) { download(blob, `figure.${format}`); captureUsage('export_completed', 'ggplot2') }
     } catch (e) {
       if (seq.current === id) {
         if (client.current?.isClosed) { restored.current = snapshot(); cancel() }

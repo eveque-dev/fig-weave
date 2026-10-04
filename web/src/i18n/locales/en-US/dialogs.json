@@ -1760,5 +1760,17 @@
     "offline": "You are offline. Reconnect and retry; your input is retained.",
     "failureAt": "Failed during: {{phase}}. Check the details below and retry; your files and script are retained.",
     "runSaved": "Run saved project"
+  },
+  "onlineUsage": {
+    "title": "Optional usage statistics",
+    "status": "Usage statistics: {{state}}",
+    "unset": "not chosen",
+    "enabled": "enabled",
+    "disabled": "disabled",
+    "disclosure": "Allow page opens, successful renders and exports, the entry / engine, and a random browser identifier to help us understand usage. Collection starts only after consent.",
+    "privacy": "No scripts, figures, names, paths, chart text or IPs. No third-party analytics or fingerprints. The identifier stays in this browser; turn collection off anytime. Normal page requests still contribute to aggregate server page counts.",
+    "allow": "Allow statistics",
+    "refuse": "Disable statistics",
+    "storageFailed": "Could not save your preference. Statistics remain disabled."
   }
 }

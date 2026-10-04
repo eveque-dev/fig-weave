@@ -1,0 +1,19 @@
+[Unit]
+Description=Import aggregate FigWeave page counts
+
+[Service]
+Type=oneshot
+User=figweave
+Group=figweave
+SupplementaryGroups=adm
+WorkingDirectory=/opt/figweave-admin/current
+Environment=PYTHONPATH=/opt/figweave-admin/current/src
+Environment=TAVOTTO_DATA_DIR=/var/lib/figweave
+Environment=FIGWEAVE_ADMIN_CONFIG=/var/lib/figweave/figweave-admin/config.json
+ExecStart=/opt/figweave-admin/venv/bin/python -m services.figweave_admin.manage import-logs
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/figweave

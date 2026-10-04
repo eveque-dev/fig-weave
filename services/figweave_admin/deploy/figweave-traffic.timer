@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh FigWeave page counts every five minutes
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+Persistent=true
+Unit=figweave-traffic.service
+
+[Install]
+WantedBy=timers.target

@@ -177,3 +177,28 @@ to other computers.
 Changes to this policy will be recorded in the repository history. Privacy or
 security questions can be raised through the public issue tracker:
 <https://github.com/Tavotto/Tavotto/issues>.
+
+## FigWeave online usage dashboard (2026-10-05)
+
+The derived online site has a separate, optional usage scope and consent version 1.
+It does not inherit desktop consent. Until explicit online opt-in, no usage event
+is sent and no browser identifier is created. Refusal/withdrawal stops future events;
+changing the scope returns to unset. The browser keeps only the preference and
+random UUID, with no behavior queue. `TAVOTTO_NO_TELEMETRY=1` disables collection.
+
+The online endpoint accepts only schema/consent versions, random UUIDv4 browser/event
+IDs, an allowlisted event (page opened, successful render, successful export), and
+an allowlisted entry/engine. Script/figure/project contents, filenames, paths, chart
+text, arbitrary strings, network addresses and fingerprints are not accepted. The
+server HMACs the browser ID and stores counts/events on the owner’s server, without
+third-party analytics. Browser counts are pseudonymous and are not natural persons.
+Disabling collection does not erase previously collected counts.
+
+Existing nginx logs are processed locally into daily page totals, without retaining
+IPs, queries, referrers or raw User-Agents in the usage database. Page requests still
+contribute to those totals without client opt-in; they do not track individual
+visitors. Future access logs omit those fields; original logs follow existing
+rotation. Admin and event requests are not access-logged. Login protection uses
+purpose-separated HMAC address keys for a 15-minute window, separate from statistics.
+The authenticated owner can see totals, trends, engine breakdowns and download a
+daily CSV. [Deployment and full definitions](../services/figweave_admin/README.md).

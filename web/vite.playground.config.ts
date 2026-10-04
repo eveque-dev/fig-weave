@@ -16,6 +16,7 @@ import { fileURLToPath, URL } from 'node:url'
  * 钉死的版本在运行时从 CDN 拉（决定与代价见 ADR 0007）。
  */
 export default defineConfig({
+  define: { 'import.meta.env.FIGWEAVE_TELEMETRY_OFF': JSON.stringify(process.env.TAVOTTO_NO_TELEMETRY === '1' ? '1' : '0') },
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

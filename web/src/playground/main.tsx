@@ -8,6 +8,7 @@ import { PRODUCT_NAME, playgroundDesktopHref } from '@/lib/brand'
 import { PlaygroundApp } from './PlaygroundApp'
 import '@/index.css'
 import { initOnlineAppearance } from '@/lib/onlineAppearance'
+import { UsageConsent } from '@/online/UsageConsent'
 
 initOnlineAppearance()
 
@@ -61,7 +62,7 @@ if (missing.length) {
         {/* 画布与属性页里有 Tooltip：Provider 必须在根上（与 App.tsx 同） */}
         <TooltipProvider>
           <IconProvider>
-            <PlaygroundApp />
+            <PlaygroundApp /><UsageConsent engine="matplotlib" />
           </IconProvider>
         </TooltipProvider>
       </ErrorBoundary>

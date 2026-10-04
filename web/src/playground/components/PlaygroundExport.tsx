@@ -7,6 +7,7 @@ import { useDocumentStore } from '@/store/documentStore'
 import type { PlaygroundClient } from '../pyodideClient'
 import { pngSize } from '@/online/exportSize'
 import { pg } from '../pgText'
+import { captureUsage } from '@/online/usage'
 
 /** Download the engine's state-neutral high-resolution PNG, never a DOM screenshot. */
 export function PlaygroundExport({ client, panelId, busy, width }: {
@@ -58,6 +59,7 @@ export function PlaygroundExport({ client, panelId, busy, width }: {
       document.body.append(link)
       link.click()
       link.remove()
+      captureUsage('export_completed', 'matplotlib')
       // Retain a real download link if the browser blocks the automatic download.
     } catch {
       if (!request.signal.aborted) setFailed(true)

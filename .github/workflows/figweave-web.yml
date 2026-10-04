@@ -12,6 +12,8 @@ on:
       - 'src/tavotto/engine/**'
       - 'scripts/build_*.py'
       - 'assets/figweave/**'
+      - 'services/figweave_admin/**'
+      - 'tests/test_figweave_admin.py'
       - '.github/workflows/figweave-web.yml'
   merge_group:
   push:
@@ -24,6 +26,8 @@ on:
       - 'src/tavotto/engine/**'
       - 'scripts/build_*.py'
       - 'assets/figweave/**'
+      - 'services/figweave_admin/**'
+      - 'tests/test_figweave_admin.py'
       - '.github/workflows/figweave-web.yml'
 permissions:
   contents: read
@@ -49,6 +53,12 @@ jobs:
       - run: pnpm i18n:check
       - run: pnpm build
       - run: pnpm test
+      - name: Independent usage service security and aggregation
+        working-directory: .
+        run: |
+          python3 -m venv /tmp/figweave-admin-test
+          /tmp/figweave-admin-test/bin/pip install pytest==9.1.1
+          /tmp/figweave-admin-test/bin/python -m pytest tests/test_figweave_admin.py
       - name: Build every online entry and locked runtime assets
         run: python3 scripts/build_figweave_site.py
         working-directory: .

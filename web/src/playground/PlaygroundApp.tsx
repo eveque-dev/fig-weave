@@ -1,4 +1,5 @@
 import './workspace.css'
+import { captureUsage } from '@/online/usage'
 import { Button, IconButton } from '@/components/ui/Button'
 import { useViewportStore } from '@/store/viewportStore'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -207,6 +208,7 @@ export function PlaygroundApp() {
           restorePlaygroundEdits(project, panelId)
           setPngWidth(project.pngWidth)
           setStage({ kind: 'edit', panelId, fileId, stem: value.stem, origin })
+          captureUsage('render_completed', 'matplotlib')
           return
         }
         if (!load.figures.length) {
@@ -216,6 +218,7 @@ export function PlaygroundApp() {
         if (load.figures.length === 1) {
           const { panelId, fileId } = await openFigure(session, load.figures[0].stem)
           setStage({ kind: 'edit', panelId, fileId, stem: load.figures[0].stem, origin })
+          captureUsage('render_completed', 'matplotlib')
           return
         }
         setStage({
@@ -225,6 +228,7 @@ export function PlaygroundApp() {
           truncated: load.truncated_figures,
           origin,
         })
+        captureUsage('render_completed', 'matplotlib')
       } catch (err) {
         loadingClientRef.current = null
         if (seq !== launchSeq.current) return // 被取消的那次，错误也作废

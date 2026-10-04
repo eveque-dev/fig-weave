@@ -524,6 +524,18 @@ export default interface Resources {
       "saved": "项目下载已发起，请确认文件已保存。",
       "working": "正在处理本地项目文件…"
     },
+    "onlineUsage": {
+      "allow": "允许统计",
+      "disabled": "已关闭",
+      "disclosure": "允许发送打开页面、成功绘图和成功导出次数，以及入口 / 引擎和随机浏览器标识，帮助我们了解有多少人使用。仅从同意后开始。",
+      "enabled": "已开启",
+      "privacy": "不发送脚本、图表、文件名、路径、图内文字或 IP；无第三方分析和指纹。标识保存在此浏览器中，可随时关闭。普通网页访问仍会进入服务器的页面访问总数。",
+      "refuse": "关闭统计",
+      "status": "匿名统计：{{state}}",
+      "storageFailed": "无法保存偏好，统计保持关闭。",
+      "title": "可选的匿名使用统计",
+      "unset": "未选择"
+    },
     "palette": {
       "commands": {
         "add-text": {

@@ -143,3 +143,7 @@ widget JavaScript 资源；保留 Python、普通 HTML 渲染资源和许可证�
 
 `figweave-web.yml` 在 PR 上检查类型、翻译、单测和完整站点构建；合并队列、
 `full-ci` PR、主分支落地和手动触发运行真实四引擎 Playwright，保留失败 trace 与截图。
+
+## 2026-10-05：独立使用统计后台
+
+按用户要求新增 `/admin/`，独立认证，只查看使用统计，不暴露本地桌面 API。历史日志仅汇总页面访问次数，不推断真人或曾经成功画图的人数。在线统计是独立、可选、三态、版本化的同意；默认 unset，未同意不发事件、不生成标识。成功绘图和导出才计数。事件闭表唯一权威在 `services/figweave_admin/contract.json`，服务实现、口径、部署和数据边界见 [后台说明](../services/figweave_admin/README.md)。
